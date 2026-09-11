@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "tia": {
+      "command": "C:\\path\\to\\TiaMcp.Host.exe",
+      "args": []
+    }
+  }
+}

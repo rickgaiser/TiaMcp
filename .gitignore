@@ -1,0 +1,23 @@
+# Build output
+bin/
+obj/
+
+# Local MCP server registration (machine-specific path) — copy .mcp.json.example instead
+.mcp.json
+
+# IDE
+.vs/
+*.user
+
+# Local Claude Code settings
+.claude/
+CLAUDE.md
+
+# TIA Portal project exports (may contain proprietary customer data - never commit)
+source_tree/
+_export_summary.txt
+_import_report.txt
+
+# Docs (too noisy) and internal development spikes
+docs/
+spike/
