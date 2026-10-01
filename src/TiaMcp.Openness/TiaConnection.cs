@@ -1999,17 +1999,18 @@ public sealed class TiaConnection : IDisposable
             try
             {
                 var existing = table.Tags.OfType<PlcTag>().FirstOrDefault(t => t.Name == spec.Name);
-                if (existing != null)
+                var tag = existing;
+                if (tag != null)
                 {
-                    existing.DataTypeName = spec.DataType;
-                    if (spec.LogicalAddress != null) existing.LogicalAddress = spec.LogicalAddress;
-                    messages.Add($"Updated '{spec.Name}'.");
+                    tag.DataTypeName = spec.DataType;
+                    if (spec.LogicalAddress != null) tag.LogicalAddress = spec.LogicalAddress;
                 }
                 else
                 {
-                    table.Tags.Create(spec.Name, spec.DataType, spec.LogicalAddress ?? "");
-                    messages.Add($"Created '{spec.Name}'.");
+                    tag = table.Tags.Create(spec.Name, spec.DataType, spec.LogicalAddress ?? "");
                 }
+                if (spec.Comment != null) SetComment(tag.Comment, spec.Comment);
+                messages.Add(existing != null ? $"Updated '{spec.Name}'." : $"Created '{spec.Name}'.");
             }
             catch (Exception ex)
             {
@@ -2027,6 +2028,18 @@ public sealed class TiaConnection : IDisposable
         var items = text.Items.Cast<MultilingualTextItem>().Where(i => !string.IsNullOrEmpty(i.Text)).ToArray();
         if (items.Length == 0) return null;
         return string.Join(" | ", items.Select(i => i.Text));
+    }
+
+    // Tag comments are plain text (unlike Unified alarm texts, see SetText) and are written into
+    // the project's editing language only. ExtractText joins every non-empty language with " | ",
+    // so a value read back unchanged (e.g. a read -> write or source_tree round trip) is skipped
+    // rather than collapsing all languages into the editing-language item.
+    private void SetComment(MultilingualText? text, string value)
+    {
+        if (text == null) return;
+        if (value == (ExtractText(text) ?? "")) return;
+        var item = text.Items.Find(_project!.LanguageSettings.EditingLanguage);
+        if (item != null) item.Text = value;
     }
 
     private static PlcTagTable? FindTagTableByName(PlcTagTableComposition tables, PlcTagTableUserGroupComposition groups, string name)
@@ -2321,6 +2334,7 @@ public sealed class TiaConnection : IDisposable
                 // not a genuine Openness restriction on struct-typed HMI tags. spec.DataType is
                 // still accepted/required by the tool schema for the bound case (kept so callers
                 // don't need two shapes), but is ignored here.
+                if (spec.Comment != null) SetComment(tag.Comment, spec.Comment);
                 messages.Add(existing != null ? $"Updated '{spec.Name}'." : $"Created '{spec.Name}'.");
             }
             catch (Exception ex)

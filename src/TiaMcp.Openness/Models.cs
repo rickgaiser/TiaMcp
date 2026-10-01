@@ -27,7 +27,7 @@ public sealed record TagInfo(string Name, string DataType, string LogicalAddress
 
 public sealed record TagTableResult(bool Success, IReadOnlyList<TagInfo> Tags, string? Error);
 
-public sealed record TagSpec(string Name, string DataType, string? LogicalAddress);
+public sealed record TagSpec(string Name, string DataType, string? LogicalAddress, string? Comment = null);
 
 public sealed record WriteTagsResult(bool Success, IReadOnlyList<string> Messages);
 
@@ -43,7 +43,7 @@ public sealed record HmiTagInfo(string Name, string DataType, string? Address, s
 
 public sealed record HmiTagTableResult(bool Success, IReadOnlyList<HmiTagInfo> Tags, string? Error);
 
-public sealed record HmiTagSpec(string Name, string DataType, string? Address, string? Connection, string? PlcName, string? PlcTag);
+public sealed record HmiTagSpec(string Name, string DataType, string? Address, string? Connection, string? PlcName, string? PlcTag, string? Comment = null);
 
 public sealed record HmiAlarmClassInfo(string Name, int Priority, string? Log, int Id, bool IsSystem);
 

@@ -467,7 +467,7 @@ END_TYPE")]
     });
 
     [McpServerTool(Name = "write_plc_tag_table")]
-    [Description("Create or update tags in a PLC tag table by name, data type, and logical address (e.g. %M10.0). Tags matching an existing name are updated in place; unmatched names are created new. Comment text is not editable via this tool.")]
+    [Description("Create or update tags in a PLC tag table by name, data type, and logical address (e.g. %M10.0). Tags matching an existing name are updated in place; unmatched names are created new. An optional Comment sets the tag comment (project editing language); omit it to leave the existing comment untouched.")]
     public Task<string> WriteTagTable(
         [Description("PLC software name, from list_plc_devices")] string plcName,
         [Description("Tag table name, from list_plc_tag_tables")] string tableName,
@@ -578,7 +578,7 @@ END_TYPE")]
     });
 
     [McpServerTool(Name = "write_hmi_tag_table")]
-    [Description("Create or update tags in a WinCC Unified HMI tag table by name, data type, address, and PLC binding (Connection/PlcTag). Tags matching an existing name are updated in place; unmatched names are created new. To bind a tag to a PLC tag, set Connection (an existing HMI connection name, e.g. from another tag in this project via read_hmi_tag_table) and PlcTag (the PLC tag's name, dot-qualified for a nested DB member); PlcName is then derived automatically by TIA Portal from the connection and is not independently settable (any value passed for it is ignored) - read_hmi_tag_table will show it filled in afterward. When both Connection and PlcTag are set, dataType is IGNORED and TIA Portal derives the tag's real type from the PLC binding itself (matches the GUI, which never lets you set Data type on a bound tag) - this is also what makes struct/UDT-typed PLC tags (e.g. a whole instance-DB member) bindable as a single HMI tag: pass any placeholder string for dataType, only Connection+PlcTag matter. dataType is used as-is only for an internal tag (Connection/PlcTag both omitted), where there is nothing else to infer it from. Omit Connection/PlcTag to create an internal (non-PLC-linked) tag.")]
+    [Description("Create or update tags in a WinCC Unified HMI tag table by name, data type, address, and PLC binding (Connection/PlcTag). Tags matching an existing name are updated in place; unmatched names are created new. To bind a tag to a PLC tag, set Connection (an existing HMI connection name, e.g. from another tag in this project via read_hmi_tag_table) and PlcTag (the PLC tag's name, dot-qualified for a nested DB member); PlcName is then derived automatically by TIA Portal from the connection and is not independently settable (any value passed for it is ignored) - read_hmi_tag_table will show it filled in afterward. When both Connection and PlcTag are set, dataType is IGNORED and TIA Portal derives the tag's real type from the PLC binding itself (matches the GUI, which never lets you set Data type on a bound tag) - this is also what makes struct/UDT-typed PLC tags (e.g. a whole instance-DB member) bindable as a single HMI tag: pass any placeholder string for dataType, only Connection+PlcTag matter. dataType is used as-is only for an internal tag (Connection/PlcTag both omitted), where there is nothing else to infer it from. Omit Connection/PlcTag to create an internal (non-PLC-linked) tag. An optional Comment sets the tag comment (project editing language); omit it to leave the existing comment untouched.")]
     public Task<string> WriteHmiTagTable(
         [Description("HMI software name, from list_hmi_devices")] string hmiName,
         [Description("HMI tag table name, from list_hmi_tag_tables")] string tableName,
@@ -1113,7 +1113,7 @@ Returns (and also writes to '<sourceDirectory>/_import_report.txt') a per-item r
             if (!File.Exists(file)) { failed.Add($"tag table '{label}': no .csv file found at {file}"); continue; }
 
             var tags = ParseCsv(File.ReadAllText(file))
-                .Select(r => new TagSpec(r["Name"], r["DataType"], NullIfEmpty(GetField(r, "LogicalAddress"))))
+                .Select(r => new TagSpec(r["Name"], r["DataType"], NullIfEmpty(GetField(r, "LogicalAddress")), NullIfEmpty(GetField(r, "Comment"))))
                 .ToArray();
 
             var exists = existingTables.Contains(item.ItemName);
@@ -1164,7 +1164,7 @@ Returns (and also writes to '<sourceDirectory>/_import_report.txt') a per-item r
             var tags = ParseCsv(File.ReadAllText(file))
                 .Select(r => new HmiTagSpec(
                     r["Name"], r["DataType"], NullIfEmpty(GetField(r, "Address")), NullIfEmpty(GetField(r, "Connection")),
-                    NullIfEmpty(GetField(r, "PlcName")), NullIfEmpty(GetField(r, "PlcTag"))))
+                    NullIfEmpty(GetField(r, "PlcName")), NullIfEmpty(GetField(r, "PlcTag")), NullIfEmpty(GetField(r, "Comment"))))
                 .ToArray();
 
             var exists = existingTables.Contains(item.ItemName);
