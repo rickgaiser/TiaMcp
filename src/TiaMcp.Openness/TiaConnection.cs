@@ -1967,6 +1967,26 @@ public sealed class TiaConnection : IDisposable
         }
     }
 
+    // All tag table group paths, including empty groups that ListTagTables can't reveal.
+    public IReadOnlyList<string> ListTagTableGroups(string plcName)
+    {
+        EnsureConnected();
+        var software = GetSoftware(plcName);
+        var result = new List<string>();
+        WalkTagTableGroups(software.TagTableGroup.Groups, "", result);
+        return result;
+    }
+
+    private static void WalkTagTableGroups(PlcTagTableUserGroupComposition groups, string groupPath, List<string> result)
+    {
+        foreach (var group in groups)
+        {
+            var childPath = string.IsNullOrEmpty(groupPath) ? group.Name : $"{groupPath}/{group.Name}";
+            result.Add(childPath);
+            WalkTagTableGroups(group.Groups, childPath, result);
+        }
+    }
+
     public TagTableResult ReadTagTable(string plcName, string tableName)
     {
         EnsureConnected();
@@ -1978,12 +1998,13 @@ public sealed class TiaConnection : IDisposable
         }
 
         var tags = table.Tags
-            .Select(t => new TagInfo(t.Name, t.DataTypeName, t.LogicalAddress, ExtractText(t.Comment)))
+            .Select(t => new TagInfo(t.Name, t.DataTypeName, t.LogicalAddress, ExtractText(t.Comment),
+                t.ExternalAccessible, t.ExternalVisible, t.ExternalWritable))
             .ToArray();
         return new TagTableResult(true, tags, null);
     }
 
-    public WriteTagsResult WriteTagTable(string plcName, string tableName, IReadOnlyList<TagSpec> tags)
+    public WriteTagsResult WriteTagTable(string plcName, string tableName, IReadOnlyList<TagSpec> tags, bool deleteMissing = false)
     {
         EnsureConnected();
         var software = GetSoftware(plcName);
@@ -1993,12 +2014,29 @@ public sealed class TiaConnection : IDisposable
             return new WriteTagsResult(false, new[] { $"Tag table '{tableName}' not found in PLC '{plcName}'." });
         }
 
+        // Validate the whole input before touching the table, so a bad spec (especially with
+        // deleteMissing) can't leave it half-written.
+        var errors = new List<string>();
+        foreach (var dup in tags.GroupBy(t => t.Name, StringComparer.OrdinalIgnoreCase).Where(g => g.Count() > 1))
+        {
+            errors.Add($"FAILED: tag name '{dup.Key}' appears {dup.Count()} times in the input.");
+        }
+        foreach (var spec in tags.Where(t => t.ExternalAccessible == false && (t.ExternalVisible == true || t.ExternalWritable == true)))
+        {
+            errors.Add($"FAILED '{spec.Name}': ExternalVisible/ExternalWritable require ExternalAccessible=True.");
+        }
+        if (errors.Count > 0)
+        {
+            errors.Add("Nothing was written.");
+            return new WriteTagsResult(false, errors);
+        }
+
         var messages = new List<string>();
         foreach (var spec in tags)
         {
             try
             {
-                var existing = table.Tags.OfType<PlcTag>().FirstOrDefault(t => t.Name == spec.Name);
+                var existing = table.Tags.OfType<PlcTag>().FirstOrDefault(t => string.Equals(t.Name, spec.Name, StringComparison.OrdinalIgnoreCase));
                 var tag = existing;
                 if (tag != null)
                 {
@@ -2010,6 +2048,7 @@ public sealed class TiaConnection : IDisposable
                     tag = table.Tags.Create(spec.Name, spec.DataType, spec.LogicalAddress ?? "");
                 }
                 if (spec.Comment != null) SetComment(tag.Comment, spec.Comment);
+                SetExternalFlags(tag, spec);
                 messages.Add(existing != null ? $"Updated '{spec.Name}'." : $"Created '{spec.Name}'.");
             }
             catch (Exception ex)
@@ -2018,8 +2057,81 @@ public sealed class TiaConnection : IDisposable
             }
         }
 
+        if (deleteMissing)
+        {
+            var keep = new HashSet<string>(tags.Select(t => t.Name), StringComparer.OrdinalIgnoreCase);
+            foreach (var tag in table.Tags.OfType<PlcTag>().Where(t => !keep.Contains(t.Name)).ToArray())
+            {
+                var name = tag.Name;
+                try
+                {
+                    tag.Delete();
+                    messages.Add($"Deleted '{name}'.");
+                }
+                catch (Exception ex)
+                {
+                    messages.Add($"FAILED '{name}': delete failed: {ex.Message}");
+                }
+            }
+        }
+
         var success = messages.All(m => !m.StartsWith("FAILED"));
         return new WriteTagsResult(success, messages);
+    }
+
+    // Renames the tag object in place (same as renaming in the GUI), so blocks keep their
+    // reference to it - unlike a delete + create through write_plc_tag_table.
+    public SimpleResult RenameTag(string plcName, string tagName, string newName)
+    {
+        EnsureConnected();
+        var software = GetSoftware(plcName);
+        var tag = FindTagByName(software.TagTableGroup.TagTables, software.TagTableGroup.Groups, tagName);
+        if (tag == null)
+        {
+            return new SimpleResult(false, $"Tag '{tagName}' not found in any tag table of PLC '{plcName}'.");
+        }
+
+        var existing = FindTagByName(software.TagTableGroup.TagTables, software.TagTableGroup.Groups, newName);
+        if (existing != null && !string.Equals(tagName, newName, StringComparison.OrdinalIgnoreCase))
+        {
+            return new SimpleResult(false, $"A tag named '{newName}' already exists in PLC '{plcName}' (tag names are unique per-PLC).");
+        }
+
+        try
+        {
+            tag.Name = newName;
+            return new SimpleResult(true, null);
+        }
+        catch (Exception ex)
+        {
+            return new SimpleResult(false, ex.Message);
+        }
+    }
+
+    private static PlcTag? FindTagByName(PlcTagTableComposition tables, PlcTagTableUserGroupComposition groups, string name)
+    {
+        foreach (PlcTagTable table in tables)
+        {
+            var tag = table.Tags.Find(name);
+            if (tag != null) return tag;
+        }
+
+        foreach (var group in groups)
+        {
+            var found = FindTagByName(group.TagTables, group.Groups, name);
+            if (found != null) return found;
+        }
+
+        return null;
+    }
+
+    // Visible/Writable depend on Accessible: enable Accessible before them, disable it after them.
+    private static void SetExternalFlags(PlcTag tag, TagSpec spec)
+    {
+        if (spec.ExternalAccessible == true && !tag.ExternalAccessible) tag.ExternalAccessible = true;
+        if (spec.ExternalVisible is bool visible && tag.ExternalVisible != visible) tag.ExternalVisible = visible;
+        if (spec.ExternalWritable is bool writable && tag.ExternalWritable != writable) tag.ExternalWritable = writable;
+        if (spec.ExternalAccessible == false && tag.ExternalAccessible) tag.ExternalAccessible = false;
     }
 
     private static string? ExtractText(MultilingualText? text)
@@ -2262,6 +2374,26 @@ public sealed class TiaConnection : IDisposable
         }
     }
 
+    // All HMI tag table group paths, including empty groups that ListHmiTagTables can't reveal.
+    public IReadOnlyList<string> ListHmiTagTableGroups(string hmiName)
+    {
+        EnsureConnected();
+        var software = GetHmiSoftware(hmiName);
+        var result = new List<string>();
+        WalkHmiTagTableGroups(software.TagTableGroups, "", result);
+        return result;
+    }
+
+    private static void WalkHmiTagTableGroups(HmiTagTableGroupComposition groups, string groupPath, List<string> result)
+    {
+        foreach (var group in groups)
+        {
+            var childPath = string.IsNullOrEmpty(groupPath) ? group.Name : $"{groupPath}/{group.Name}";
+            result.Add(childPath);
+            WalkHmiTagTableGroups(group.Groups, childPath, result);
+        }
+    }
+
     private static HmiTagTable? FindHmiTagTableByName(HmiTagTableComposition tables, HmiTagTableGroupComposition groups, string name)
     {
         var direct = tables.OfType<HmiTagTable>().FirstOrDefault(t => t.Name == name);
@@ -2288,12 +2420,12 @@ public sealed class TiaConnection : IDisposable
 
         var tags = table.Tags
             .OfType<HmiTag>()
-            .Select(t => new HmiTagInfo(t.Name, t.DataType, t.Address, t.Connection, t.PlcName, t.PlcTag, ExtractText(t.Comment)))
+            .Select(t => new HmiTagInfo(t.Name, t.DataType, t.Address, t.Connection, t.PlcName, t.PlcTag, ExtractText(t.Comment), t.AcquisitionCycle))
             .ToArray();
         return new HmiTagTableResult(true, tags, null);
     }
 
-    public WriteTagsResult WriteHmiTagTable(string hmiName, string tableName, IReadOnlyList<HmiTagSpec> tags)
+    public WriteTagsResult WriteHmiTagTable(string hmiName, string tableName, IReadOnlyList<HmiTagSpec> tags, bool deleteMissing = false)
     {
         EnsureConnected();
         var software = GetHmiSoftware(hmiName);
@@ -2303,15 +2435,27 @@ public sealed class TiaConnection : IDisposable
             return new WriteTagsResult(false, new[] { $"HMI tag table '{tableName}' not found in HMI '{hmiName}'." });
         }
 
+        // Same up-front check as WriteTagTable: a bad spec must not leave the table half-written.
+        var duplicates = tags.GroupBy(t => t.Name, StringComparer.OrdinalIgnoreCase).Where(g => g.Count() > 1).ToArray();
+        if (duplicates.Length > 0)
+        {
+            var errors = duplicates.Select(d => $"FAILED: tag name '{d.Key}' appears {d.Count()} times in the input.").ToList();
+            errors.Add("Nothing was written.");
+            return new WriteTagsResult(false, errors);
+        }
+
         var messages = new List<string>();
         foreach (var spec in tags)
         {
             try
             {
-                var existing = table.Tags.OfType<HmiTag>().FirstOrDefault(t => t.Name == spec.Name);
+                var existing = table.Tags.OfType<HmiTag>().FirstOrDefault(t => string.Equals(t.Name, spec.Name, StringComparison.OrdinalIgnoreCase));
                 var tag = existing ?? table.Tags.Create(spec.Name);
-                bool isPlcBound = !string.IsNullOrEmpty(spec.Connection) && !string.IsNullOrEmpty(spec.PlcTag);
-                if (!isPlcBound)
+                // Bound either by this spec or already in the project - a row that only updates,
+                // say, the comment of a bound tag carries no Connection/PlcTag of its own.
+                bool isPlcBound = (!string.IsNullOrEmpty(spec.Connection) && !string.IsNullOrEmpty(spec.PlcTag))
+                    || (existing != null && !string.IsNullOrEmpty(existing.PlcTag));
+                if (!isPlcBound && tag.DataType != spec.DataType)
                 {
                     // No PLC binding (an internal tag) - nothing else can tell TIA what type this
                     // is, so DataType must be set explicitly here.
@@ -2335,6 +2479,14 @@ public sealed class TiaConnection : IDisposable
                 // still accepted/required by the tool schema for the bound case (kept so callers
                 // don't need two shapes), but is ignored here.
                 if (spec.Comment != null) SetComment(tag.Comment, spec.Comment);
+                if (spec.AcquisitionCycle != null && tag.AcquisitionCycle != spec.AcquisitionCycle)
+                {
+                    // TIA locks the cycle of internal tags (always T1s) and rejects the set with
+                    // an opaque "Set is not allowed for disabled fields".
+                    if (!isPlcBound)
+                        throw new InvalidOperationException($"AcquisitionCycle can only be changed on PLC-bound tags; internal tags are fixed at '{tag.AcquisitionCycle}'.");
+                    tag.AcquisitionCycle = spec.AcquisitionCycle;
+                }
                 messages.Add(existing != null ? $"Updated '{spec.Name}'." : $"Created '{spec.Name}'.");
             }
             catch (Exception ex)
@@ -2343,8 +2495,53 @@ public sealed class TiaConnection : IDisposable
             }
         }
 
+        if (deleteMissing)
+        {
+            var keep = new HashSet<string>(tags.Select(t => t.Name), StringComparer.OrdinalIgnoreCase);
+            foreach (var tag in table.Tags.OfType<HmiTag>().Where(t => !keep.Contains(t.Name)).ToArray())
+            {
+                var name = tag.Name;
+                try
+                {
+                    tag.Delete();
+                    messages.Add($"Deleted '{name}'.");
+                }
+                catch (Exception ex)
+                {
+                    messages.Add($"FAILED '{name}': delete failed: {ex.Message}");
+                }
+            }
+        }
+
         var success = messages.All(m => !m.StartsWith("FAILED"));
         return new WriteTagsResult(success, messages);
+    }
+
+    // Renames the tag object in place, mirroring RenameTag on the PLC side.
+    public SimpleResult RenameHmiTag(string hmiName, string tagName, string newName)
+    {
+        EnsureConnected();
+        var software = GetHmiSoftware(hmiName);
+        var tag = software.Tags.Find(tagName);
+        if (tag == null)
+        {
+            return new SimpleResult(false, $"HMI tag '{tagName}' not found in HMI '{hmiName}'.");
+        }
+
+        if (software.Tags.Find(newName) != null && !string.Equals(tagName, newName, StringComparison.OrdinalIgnoreCase))
+        {
+            return new SimpleResult(false, $"An HMI tag named '{newName}' already exists in HMI '{hmiName}' (tag names are unique per-HMI).");
+        }
+
+        try
+        {
+            tag.Name = newName;
+            return new SimpleResult(true, null);
+        }
+        catch (Exception ex)
+        {
+            return new SimpleResult(false, ex.Message);
+        }
     }
 
     public SimpleResult CreateHmiTagTable(string hmiName, string groupPath, string tableName)

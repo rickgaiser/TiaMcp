@@ -91,6 +91,7 @@ All MCP tools exposed by the server, grouped by area.
 |---|---|
 | `list_plc_tag_tables` / `read_plc_tag_table` | List/read PLC tag tables |
 | `write_plc_tag_table` | Create or update tags by name/data type/logical address |
+| `rename_plc_tag` | Rename a single tag, keeping references in blocks intact |
 | `create_plc_tag_table` | Create a new, empty PLC tag table in a group (or the root) |
 | `delete_plc_tag_table` / `rename_plc_tag_table` | Delete or rename a PLC tag table by name |
 | `create_plc_tag_table_group` / `delete_plc_tag_table_group` / `rename_plc_tag_table_group` | Manage PLC tag table group folders |
@@ -112,6 +113,7 @@ All MCP tools exposed by the server, grouped by area.
 | `list_hmi_devices` | List WinCC Unified HMI devices in the project |
 | `list_hmi_tag_tables` / `read_hmi_tag_table` | List/read WinCC Unified HMI tag tables |
 | `write_hmi_tag_table` | Create or update HMI tags by name/data type/address/PLC binding |
+| `rename_hmi_tag` | Rename a single HMI tag, keeping references in alarms intact |
 | `create_hmi_tag_table` | Create a new, empty HMI tag table in a group (or the root) |
 | `delete_hmi_tag_table` / `rename_hmi_tag_table` | Delete or rename a WinCC Unified HMI tag table by name |
 | `create_hmi_tag_table_group` / `delete_hmi_tag_table_group` / `rename_hmi_tag_table_group` | Manage HMI tag table group folders |

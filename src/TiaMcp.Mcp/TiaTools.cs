@@ -443,16 +443,27 @@ END_TYPE")]
     });
 
     [McpServerTool(Name = "list_plc_tag_tables")]
-    [Description("List all PLC tag tables (with group path) for a given PLC software name.")]
+    [Description("List all PLC tag tables (with group path) for a given PLC software name. Groups that contain no tag table anywhere below them are listed as their path with a trailing '/', e.g. 'IO/Spare/'.")]
     public Task<string> ListTagTables([Description("PLC software name, from list_plc_devices")] string plcName) => Safe(async () =>
     {
         var tables = await _session.ListTagTablesAsync(plcName);
-        return string.Join("\n", tables.Select(t =>
-            $"{(string.IsNullOrEmpty(t.GroupPath) ? "" : t.GroupPath + "/")}{t.Name}"));
+        var groups = await _session.ListTagTableGroupsAsync(plcName);
+        return FormatTableList(tables.Select(t => (t.GroupPath, t.Name)).ToList(), groups);
     });
 
+    // One line per table as 'group/path/name', plus 'group/path/' for every group with no table
+    // anywhere below it - otherwise empty groups would be invisible.
+    private static string FormatTableList(IReadOnlyList<(string GroupPath, string Name)> tables, IReadOnlyList<string> groups)
+    {
+        var lines = tables.Select(t => $"{(string.IsNullOrEmpty(t.GroupPath) ? "" : t.GroupPath + "/")}{t.Name}").ToList();
+        lines.AddRange(groups
+            .Where(g => !tables.Any(t => t.GroupPath == g || t.GroupPath.StartsWith(g + "/")))
+            .Select(g => g + "/"));
+        return string.Join("\n", lines);
+    }
+
     [McpServerTool(Name = "read_plc_tag_table")]
-    [Description("Read all tags (name, data type, logical address, comment) in a PLC tag table, as Excel-compatible CSV text (comma-separated, quoted fields where needed, CRLF line endings, header row).")]
+    [Description("Read all tags in a PLC tag table, as Excel-compatible CSV text (comma-separated, quoted fields where needed, CRLF line endings, header row). Columns: Name, DataType, LogicalAddress, Comment, ExternalAccessible, ExternalVisible, ExternalWritable (the last three are the 'Accessible/Visible/Writable from HMI/OPC UA/Web API' flags, True/False). The output can be edited and passed back to write_plc_tag_table.")]
     public Task<string> ReadTagTable(
         [Description("PLC software name, from list_plc_devices")] string plcName,
         [Description("Tag table name, from list_plc_tag_tables")] string tableName) => Safe(async () =>
@@ -467,14 +478,33 @@ END_TYPE")]
     });
 
     [McpServerTool(Name = "write_plc_tag_table")]
-    [Description("Create or update tags in a PLC tag table by name, data type, and logical address (e.g. %M10.0). Tags matching an existing name are updated in place; unmatched names are created new. An optional Comment sets the tag comment (project editing language); omit it to leave the existing comment untouched.")]
+    [Description(@"Create, update and optionally delete tags in an existing PLC tag table from CSV text, in the same format read_plc_tag_table returns (header row required; columns Name, DataType, LogicalAddress, Comment, ExternalAccessible, ExternalVisible, ExternalWritable - only Name and DataType are required, the rest may be omitted).
+Rows matching an existing tag name are updated in place; other rows are created as new tags. An empty or missing LogicalAddress/Comment/flag cell leaves that value unchanged (Comment is written in the project editing language). Flags accept True/False/1/0; ExternalVisible/ExternalWritable require ExternalAccessible=True.
+By default tags not in the CSV are left alone. With deleteMissing=true they are DELETED, so the table ends up exactly matching the CSV - this is destructive, confirm with the user before calling. Changing a tag's name in the CSV is a delete + create, which breaks references to it in blocks - use rename_plc_tag instead.
+The input is validated first (duplicate names, bad booleans, missing Name/DataType); on a validation error nothing is written.")]
     public Task<string> WriteTagTable(
         [Description("PLC software name, from list_plc_devices")] string plcName,
         [Description("Tag table name, from list_plc_tag_tables")] string tableName,
-        [Description("Tags to create or update")] TagSpec[] tags) => Safe(async () =>
+        [Description("CSV text with a header row, as returned by read_plc_tag_table")] string csv,
+        [Description("Delete tags that are in the table but not in the CSV (default false)")] bool deleteMissing = false) => Safe(async () =>
     {
-        var result = await _session.WriteTagTableAsync(plcName, tableName, tags);
+        TagSpec[] tags;
+        try { tags = ParseTagCsv(csv); }
+        catch (FormatException ex) { return $"FAILED: {ex.Message}\nNothing was written."; }
+
+        var result = await _session.WriteTagTableAsync(plcName, tableName, tags, deleteMissing);
         return $"{(result.Success ? "Success" : "Completed with failures")}\n{string.Join("\n", result.Messages)}";
+    });
+
+    [McpServerTool(Name = "rename_plc_tag")]
+    [Description("Rename a single PLC tag in place, in whichever tag table it lives. Unlike changing the name in a write_plc_tag_table CSV (a delete + create), this keeps references to the tag in blocks intact; read_plc_block shows the new name in those blocks only after compile_plc. Fails if a tag with the new name already exists (names are unique per-PLC).")]
+    public Task<string> RenameTag(
+        [Description("PLC software name, from list_plc_devices")] string plcName,
+        [Description("Current tag name")] string tagName,
+        [Description("New tag name")] string newName) => Safe(async () =>
+    {
+        var result = await _session.RenameTagAsync(plcName, tagName, newName);
+        return result.Success ? "Success" : $"FAILED: {result.Error}";
     });
 
     [McpServerTool(Name = "create_plc_tag_table")]
@@ -552,16 +582,16 @@ END_TYPE")]
     });
 
     [McpServerTool(Name = "list_hmi_tag_tables")]
-    [Description("List all WinCC Unified HMI tag tables (with group path) for a given HMI software name.")]
+    [Description("List all WinCC Unified HMI tag tables (with group path) for a given HMI software name. Groups that contain no tag table anywhere below them are listed as their path with a trailing '/', e.g. 'Plant/Spare/'.")]
     public Task<string> ListHmiTagTables([Description("HMI software name, from list_hmi_devices")] string hmiName) => Safe(async () =>
     {
         var tables = await _session.ListHmiTagTablesAsync(hmiName);
-        return string.Join("\n", tables.Select(t =>
-            $"{(string.IsNullOrEmpty(t.GroupPath) ? "" : t.GroupPath + "/")}{t.Name}"));
+        var groups = await _session.ListHmiTagTableGroupsAsync(hmiName);
+        return FormatTableList(tables.Select(t => (t.GroupPath, t.Name)).ToList(), groups);
     });
 
     [McpServerTool(Name = "read_hmi_tag_table")]
-    [Description("Read all tags (name, data type, address, PLC connection/tag binding, comment) in a WinCC Unified HMI tag table, as Excel-compatible CSV text.")]
+    [Description("Read all tags in a WinCC Unified HMI tag table, as Excel-compatible CSV text. Columns: Name, DataType, Address, Connection, PlcName, PlcTag, Comment, AcquisitionCycle. The output can be edited and passed back to write_hmi_tag_table.")]
     public Task<string> ReadHmiTagTable(
         [Description("HMI software name, from list_hmi_devices")] string hmiName,
         [Description("HMI tag table name, from list_hmi_tag_tables")] string tableName) => Safe(async () =>
@@ -572,20 +602,38 @@ END_TYPE")]
             return $"Read failed: {result.Error}";
         }
 
-        return FormatCsv(
-            new[] { "Name", "DataType", "Address", "Connection", "PlcName", "PlcTag", "Comment" },
-            result.Tags.Select(t => new[] { t.Name, t.DataType, t.Address ?? "", t.Connection ?? "", t.PlcName ?? "", t.PlcTag ?? "", t.Comment ?? "" }));
+        return FormatHmiTagTable(result.Tags);
     });
 
     [McpServerTool(Name = "write_hmi_tag_table")]
-    [Description("Create or update tags in a WinCC Unified HMI tag table by name, data type, address, and PLC binding (Connection/PlcTag). Tags matching an existing name are updated in place; unmatched names are created new. To bind a tag to a PLC tag, set Connection (an existing HMI connection name, e.g. from another tag in this project via read_hmi_tag_table) and PlcTag (the PLC tag's name, dot-qualified for a nested DB member); PlcName is then derived automatically by TIA Portal from the connection and is not independently settable (any value passed for it is ignored) - read_hmi_tag_table will show it filled in afterward. When both Connection and PlcTag are set, dataType is IGNORED and TIA Portal derives the tag's real type from the PLC binding itself (matches the GUI, which never lets you set Data type on a bound tag) - this is also what makes struct/UDT-typed PLC tags (e.g. a whole instance-DB member) bindable as a single HMI tag: pass any placeholder string for dataType, only Connection+PlcTag matter. dataType is used as-is only for an internal tag (Connection/PlcTag both omitted), where there is nothing else to infer it from. Omit Connection/PlcTag to create an internal (non-PLC-linked) tag. An optional Comment sets the tag comment (project editing language); omit it to leave the existing comment untouched.")]
+    [Description(@"Create, update and optionally delete tags in an existing WinCC Unified HMI tag table from CSV text, in the same format read_hmi_tag_table returns (header row required; columns Name, DataType, Address, Connection, PlcName, PlcTag, Comment, AcquisitionCycle - only Name and DataType are required, the rest may be omitted).
+Rows matching an existing tag name are updated in place; other rows are created as new tags. An empty or missing Address/Connection/PlcTag/Comment/AcquisitionCycle cell leaves that value unchanged (Comment is written in the project editing language). AcquisitionCycle takes the cycle name as read_hmi_tag_table shows it (e.g. T500ms, T1s, T2s) and can only be changed on PLC-bound tags; internal tags are fixed at T1s.
+PLC binding: set Connection (an existing HMI connection name, e.g. from another tag via read_hmi_tag_table) and PlcTag (the PLC tag's name, dot-qualified for a nested DB member). PlcName is derived by TIA Portal from the connection and is ignored on write. When both Connection and PlcTag are set, DataType is IGNORED and TIA Portal derives the type from the PLC binding (as the GUI does) - this is also what makes struct/UDT-typed PLC tags bindable as a single HMI tag, so any placeholder DataType will do. DataType is only used for internal tags (no Connection/PlcTag).
+By default tags not in the CSV are left alone. With deleteMissing=true they are DELETED, so the table ends up exactly matching the CSV - this is destructive, confirm with the user before calling. Changing a tag's name in the CSV is a delete + create - use rename_hmi_tag instead.
+The input is validated first (duplicate names, missing Name/DataType); on a validation error nothing is written.")]
     public Task<string> WriteHmiTagTable(
         [Description("HMI software name, from list_hmi_devices")] string hmiName,
         [Description("HMI tag table name, from list_hmi_tag_tables")] string tableName,
-        [Description("Tags to create or update")] HmiTagSpec[] tags) => Safe(async () =>
+        [Description("CSV text with a header row, as returned by read_hmi_tag_table")] string csv,
+        [Description("Delete tags that are in the table but not in the CSV (default false)")] bool deleteMissing = false) => Safe(async () =>
     {
-        var result = await _session.WriteHmiTagTableAsync(hmiName, tableName, tags);
+        HmiTagSpec[] tags;
+        try { tags = ParseHmiTagCsv(csv); }
+        catch (FormatException ex) { return $"FAILED: {ex.Message}\nNothing was written."; }
+
+        var result = await _session.WriteHmiTagTableAsync(hmiName, tableName, tags, deleteMissing);
         return $"{(result.Success ? "Success" : "Completed with failures")}\n{string.Join("\n", result.Messages)}";
+    });
+
+    [McpServerTool(Name = "rename_hmi_tag")]
+    [Description("Rename a single WinCC Unified HMI tag in place, in whichever tag table it lives. Unlike changing the name in a write_hmi_tag_table CSV (a delete + create), this renames the existing tag object. Fails if a tag with the new name already exists (names are unique per-HMI).")]
+    public Task<string> RenameHmiTag(
+        [Description("HMI software name, from list_hmi_devices")] string hmiName,
+        [Description("Current tag name")] string tagName,
+        [Description("New tag name")] string newName) => Safe(async () =>
+    {
+        var result = await _session.RenameHmiTagAsync(hmiName, tagName, newName);
+        return result.Success ? "Success" : $"FAILED: {result.Error}";
     });
 
     [McpServerTool(Name = "create_hmi_tag_table")]
@@ -1112,9 +1160,9 @@ Returns (and also writes to '<sourceDirectory>/_import_report.txt') a per-item r
             var file = Path.Combine(dir, Sanitize(item.ItemName) + ".csv");
             if (!File.Exists(file)) { failed.Add($"tag table '{label}': no .csv file found at {file}"); continue; }
 
-            var tags = ParseCsv(File.ReadAllText(file))
-                .Select(r => new TagSpec(r["Name"], r["DataType"], NullIfEmpty(GetField(r, "LogicalAddress")), NullIfEmpty(GetField(r, "Comment"))))
-                .ToArray();
+            TagSpec[] tags;
+            try { tags = ParseTagCsv(File.ReadAllText(file)); }
+            catch (FormatException ex) { failed.Add($"tag table '{label}': {ex.Message}"); continue; }
 
             var exists = existingTables.Contains(item.ItemName);
             if (exists)
@@ -1161,11 +1209,9 @@ Returns (and also writes to '<sourceDirectory>/_import_report.txt') a per-item r
             var file = Path.Combine(dir, Sanitize(item.ItemName) + ".csv");
             if (!File.Exists(file)) { failed.Add($"HMI tag table '{label}': no .csv file found at {file}"); continue; }
 
-            var tags = ParseCsv(File.ReadAllText(file))
-                .Select(r => new HmiTagSpec(
-                    r["Name"], r["DataType"], NullIfEmpty(GetField(r, "Address")), NullIfEmpty(GetField(r, "Connection")),
-                    NullIfEmpty(GetField(r, "PlcName")), NullIfEmpty(GetField(r, "PlcTag")), NullIfEmpty(GetField(r, "Comment"))))
-                .ToArray();
+            HmiTagSpec[] tags;
+            try { tags = ParseHmiTagCsv(File.ReadAllText(file)); }
+            catch (FormatException ex) { failed.Add($"HMI tag table '{label}': {ex.Message}"); continue; }
 
             var exists = existingTables.Contains(item.ItemName);
             if (exists)
@@ -1591,13 +1637,69 @@ Returns (and also writes to '<sourceDirectory>/_import_report.txt') a per-item r
     // directly rather than going through its text-import wizard.
     private static string FormatTagTable(IReadOnlyList<TagInfo> tags) =>
         FormatCsv(
-            new[] { "Name", "DataType", "LogicalAddress", "Comment" },
-            tags.Select(t => new[] { t.Name, t.DataType, t.LogicalAddress, t.Comment ?? "" }));
+            new[] { "Name", "DataType", "LogicalAddress", "Comment", "ExternalAccessible", "ExternalVisible", "ExternalWritable" },
+            tags.Select(t => new[] { t.Name, t.DataType, t.LogicalAddress, t.Comment ?? "",
+                t.ExternalAccessible.ToString(), t.ExternalVisible.ToString(), t.ExternalWritable.ToString() }));
+
+    // Inverse of FormatTagTable. Missing columns and empty cells map to null ("leave unchanged"),
+    // so CSVs from before the flag columns existed still import. Throws FormatException on bad input.
+    private static TagSpec[] ParseTagCsv(string csv)
+    {
+        var rows = ParseCsv(csv);
+        var tags = new List<TagSpec>();
+        for (var i = 0; i < rows.Count; i++)
+        {
+            var r = rows[i];
+            var line = i + 2; // 1-based, after the header row
+            var name = GetField(r, "Name");
+            var dataType = GetField(r, "DataType");
+            if (string.IsNullOrEmpty(name) && string.IsNullOrEmpty(dataType)) continue; // blank line
+            if (string.IsNullOrEmpty(name) || string.IsNullOrEmpty(dataType))
+                throw new FormatException($"CSV line {line}: Name and DataType are required.");
+
+            tags.Add(new TagSpec(name!, dataType!,
+                NullIfEmpty(GetField(r, "LogicalAddress")), NullIfEmpty(GetField(r, "Comment")),
+                ParseCsvBool(r, "ExternalAccessible", line), ParseCsvBool(r, "ExternalVisible", line), ParseCsvBool(r, "ExternalWritable", line)));
+        }
+        return tags.ToArray();
+    }
+
+    private static bool? ParseCsvBool(Dictionary<string, string> row, string column, int line)
+    {
+        var value = GetField(row, column)?.Trim();
+        if (string.IsNullOrEmpty(value)) return null;
+        if (value == "1" || value!.Equals("true", StringComparison.OrdinalIgnoreCase)) return true;
+        if (value == "0" || value.Equals("false", StringComparison.OrdinalIgnoreCase)) return false;
+        throw new FormatException($"CSV line {line}: {column} must be True/False/1/0, got '{value}'.");
+    }
 
     private static string FormatHmiTagTable(IReadOnlyList<HmiTagInfo> tags) =>
         FormatCsv(
-            new[] { "Name", "DataType", "Address", "Connection", "PlcName", "PlcTag", "Comment" },
-            tags.Select(t => new[] { t.Name, t.DataType, t.Address ?? "", t.Connection ?? "", t.PlcName ?? "", t.PlcTag ?? "", t.Comment ?? "" }));
+            new[] { "Name", "DataType", "Address", "Connection", "PlcName", "PlcTag", "Comment", "AcquisitionCycle" },
+            tags.Select(t => new[] { t.Name, t.DataType, t.Address ?? "", t.Connection ?? "", t.PlcName ?? "", t.PlcTag ?? "", t.Comment ?? "", t.AcquisitionCycle ?? "" }));
+
+    // Inverse of FormatHmiTagTable, same rules as ParseTagCsv.
+    private static HmiTagSpec[] ParseHmiTagCsv(string csv)
+    {
+        var rows = ParseCsv(csv);
+        var tags = new List<HmiTagSpec>();
+        for (var i = 0; i < rows.Count; i++)
+        {
+            var r = rows[i];
+            var line = i + 2; // 1-based, after the header row
+            var name = GetField(r, "Name");
+            var dataType = GetField(r, "DataType");
+            if (string.IsNullOrEmpty(name) && string.IsNullOrEmpty(dataType)) continue; // blank line
+            if (string.IsNullOrEmpty(name) || string.IsNullOrEmpty(dataType))
+                throw new FormatException($"CSV line {line}: Name and DataType are required.");
+
+            tags.Add(new HmiTagSpec(name!, dataType!,
+                NullIfEmpty(GetField(r, "Address")), NullIfEmpty(GetField(r, "Connection")),
+                NullIfEmpty(GetField(r, "PlcName")), NullIfEmpty(GetField(r, "PlcTag")), NullIfEmpty(GetField(r, "Comment")),
+                NullIfEmpty(GetField(r, "AcquisitionCycle"))));
+        }
+        return tags.ToArray();
+    }
 
     private static string FormatCsv(string[] headers, IEnumerable<string[]> rows)
     {

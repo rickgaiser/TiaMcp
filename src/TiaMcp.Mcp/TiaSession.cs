@@ -115,6 +115,11 @@ public sealed class TiaSession
         return _sta.InvokeAsync(() => _connection.ListTagTables(plcName));
     }
 
+    public Task<IReadOnlyList<string>> ListTagTableGroupsAsync(string plcName)
+    {
+        return _sta.InvokeAsync(() => _connection.ListTagTableGroups(plcName));
+    }
+
     public Task<TagTableResult> ReadTagTableAsync(string plcName, string tableName)
     {
         return _sta.InvokeAsync(() => _connection.ReadTagTable(plcName, tableName));
@@ -125,9 +130,14 @@ public sealed class TiaSession
         return _sta.InvokeAsync(() => _connection.WriteBlock(plcName, blockName, documents));
     }
 
-    public Task<WriteTagsResult> WriteTagTableAsync(string plcName, string tableName, IReadOnlyList<TagSpec> tags)
+    public Task<WriteTagsResult> WriteTagTableAsync(string plcName, string tableName, IReadOnlyList<TagSpec> tags, bool deleteMissing = false)
     {
-        return _sta.InvokeAsync(() => _connection.WriteTagTable(plcName, tableName, tags));
+        return _sta.InvokeAsync(() => _connection.WriteTagTable(plcName, tableName, tags, deleteMissing));
+    }
+
+    public Task<SimpleResult> RenameTagAsync(string plcName, string tagName, string newName)
+    {
+        return _sta.InvokeAsync(() => _connection.RenameTag(plcName, tagName, newName));
     }
 
     public Task<SimpleResult> CreateTagTableAsync(string plcName, string groupPath, string tableName)
@@ -250,14 +260,24 @@ public sealed class TiaSession
         return _sta.InvokeAsync(() => _connection.ListHmiTagTables(hmiName));
     }
 
+    public Task<IReadOnlyList<string>> ListHmiTagTableGroupsAsync(string hmiName)
+    {
+        return _sta.InvokeAsync(() => _connection.ListHmiTagTableGroups(hmiName));
+    }
+
     public Task<HmiTagTableResult> ReadHmiTagTableAsync(string hmiName, string tableName)
     {
         return _sta.InvokeAsync(() => _connection.ReadHmiTagTable(hmiName, tableName));
     }
 
-    public Task<WriteTagsResult> WriteHmiTagTableAsync(string hmiName, string tableName, IReadOnlyList<HmiTagSpec> tags)
+    public Task<WriteTagsResult> WriteHmiTagTableAsync(string hmiName, string tableName, IReadOnlyList<HmiTagSpec> tags, bool deleteMissing = false)
     {
-        return _sta.InvokeAsync(() => _connection.WriteHmiTagTable(hmiName, tableName, tags));
+        return _sta.InvokeAsync(() => _connection.WriteHmiTagTable(hmiName, tableName, tags, deleteMissing));
+    }
+
+    public Task<SimpleResult> RenameHmiTagAsync(string hmiName, string tagName, string newName)
+    {
+        return _sta.InvokeAsync(() => _connection.RenameHmiTag(hmiName, tagName, newName));
     }
 
     public Task<SimpleResult> CreateHmiTagTableAsync(string hmiName, string groupPath, string tableName)
