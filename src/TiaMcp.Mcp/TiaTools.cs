@@ -804,6 +804,95 @@ The input is validated first (duplicate names, missing Name/DataType); on a vali
         return result.Success ? "Success" : $"FAILED: {result.Error}";
     });
 
+    // ---- Classic WinCC (Comfort/Advanced/RT Advanced panels, Openness type HmiTarget) ----
+
+    private const string HmiClassicKindList = "TextLists, GraphicLists, TagTables, ScreenTemplates, PopupScreens, Screens";
+
+    private static IReadOnlyList<string>? SplitList(string? text) =>
+        string.IsNullOrWhiteSpace(text) ? null
+            : text!.Split(new[] { ',', ';', '\n' }, StringSplitOptions.RemoveEmptyEntries).Select(s => s.Trim()).Where(s => s.Length > 0).ToList();
+
+    [McpServerTool(Name = "list_hmi_classic_devices")]
+    [Description("List classic WinCC HMI devices (Comfort/Advanced panels, WinCC RT Advanced - Openness type HmiTarget) in the connected project. These are separate from the WinCC Unified devices list_hmi_devices shows. The HMI name returned here is what the other *_hmi_classic tools take as hmiName. The index is built at tia_connect time - call tia_connect again after renaming a device.")]
+    public Task<string> ListHmiClassicDevices() => Safe(async () =>
+    {
+        if (!_session.IsConnected) return "Not connected. Call tia_connect first.";
+        var devices = await _session.ListHmiClassicDevicesAsync();
+        if (devices.Count == 0) return "No classic WinCC HMI devices found.";
+        return string.Join("\n", devices.Select(d => $"- {d.DeviceName} / {d.ItemName} -> classic HMI '{d.HmiTargetName}'"));
+    });
+
+    [McpServerTool(Name = "list_hmi_classic_objects")]
+    [Description("List the objects of a classic WinCC HMI with their folder path: screens, screen templates, popup screens, HMI tag tables, text lists and graphic lists. One line per object: '[Kind] folder/path/Name'. Empty folders are listed as '[Kind] folder/path/' (trailing slash). Text lists and graphic lists have no folders. HMI discrete/analog alarms are not reachable via classic Openness and are not listed.")]
+    public Task<string> ListHmiClassicObjects(
+        [Description("Classic HMI name, from list_hmi_classic_devices")] string hmiName,
+        [Description("Optional comma-separated kinds to list (" + HmiClassicKindList + "); omit for all")] string? kinds = null) => Safe(async () =>
+    {
+        var kindList = SplitList(kinds);
+        var objects = await _session.ListHmiClassicObjectsAsync(hmiName, kindList);
+        var folders = await _session.ListHmiClassicFoldersAsync(hmiName, kindList);
+
+        var lines = objects.Select(o => $"[{o.Kind}] {(o.FolderPath.Length == 0 ? "" : o.FolderPath + "/")}{o.Name}").ToList();
+        lines.AddRange(folders
+            .Where(f => !objects.Any(o => o.Kind == f.Kind && (o.FolderPath == f.FolderPath || o.FolderPath.StartsWith(f.FolderPath + "/", StringComparison.Ordinal))))
+            .Select(f => $"[{f.Kind}] {f.FolderPath}/"));
+        if (lines.Count == 0) return "No objects found.";
+
+        var counts = string.Join(", ", objects.GroupBy(o => o.Kind).Select(g => $"{g.Count()} {g.Key}"));
+        return $"{counts}\n{string.Join("\n", lines)}";
+    });
+
+    [McpServerTool(Name = "export_hmi_classic")]
+    [Description("Export objects of a classic WinCC HMI as Openness XML (ExportOptions.WithDefaults), one file per object, into a directory tree mirroring the project tree: <targetDirectory>/<Kind>/<folder path>/<Name>.xml with Kind one of " + HmiClassicKindList + ". With no kinds filter, everything except GraphicLists is exported. WARNING: in TIA Portal V21 exporting a graphic list crashed the entire TIA Portal process (internal InvalidCastException) - only pass kinds=GraphicLists after the user has saved the project and explicitly agreed. Read-only towards the TIA project. Existing files are skipped unless overwriteFiles=true. The resulting tree can be fed back into import_hmi_classic (also into another classic HMI).")]
+    public Task<string> ExportHmiClassic(
+        [Description("Classic HMI name, from list_hmi_classic_devices")] string hmiName,
+        [Description("Target root directory (created if needed); a path as seen by the TIA Portal machine")] string targetDirectory,
+        [Description("Optional comma-separated kinds (" + HmiClassicKindList + "); omit for all except GraphicLists")] string? kinds = null,
+        [Description("Optional comma-separated exact object names to export; omit for all")] string? names = null,
+        [Description("Optional folder path filter, e.g. 'Area1' - exports only objects in that folder and its subfolders (ignored for text/graphic lists, which have no folders - use kinds to exclude them)")] string? folderPath = null,
+        [Description("Overwrite XML files that already exist at the target path (default false: skip them)")] bool overwriteFiles = false) => Safe(async () =>
+    {
+        if (!_session.IsConnected) return "Not connected. Call tia_connect first.";
+        var result = await _session.ExportHmiClassicAsync(hmiName, targetDirectory, SplitList(kinds), SplitList(names), folderPath, overwriteFiles);
+        return $"Export to {targetDirectory}: {result.Exported} exported, {result.Failed} failed, {result.Skipped} skipped.\n{string.Join("\n", result.Messages)}";
+    });
+
+    [McpServerTool(Name = "import_hmi_classic")]
+    [Description(@"Import Openness XML files (as written by export_hmi_classic) into a classic WinCC HMI. sourcePath is a single .xml file or a directory searched recursively. The object kind and name are read from each XML file; files that are not classic screen/template/popup/tag table/text list/graphic list exports are skipped.
+Import order is fixed: text lists, graphic lists, tag tables, screen templates, popup screens, screens - so references between them resolve. Referenced objects outside the imported set (HMI connections, graphics, PLC tags behind HMI tags, faceplates) must already exist in the target project, otherwise the import of that object fails or leaves unresolved references.
+Target folder: targetFolderPath (default root) under each kind's system folder; with preserveFolders=true (default) the subfolder below the '<Kind>' directory of an export tree is appended. Missing folders fail the object unless createMissingFolders=true.
+Existing objects (same kind and name anywhere in the HMI): by default SKIPPED. With overwriteExisting=true they are replaced via ImportOptions.Override in the folder where the existing object lives - this is destructive, confirm with the user first.
+Screens whose <Number> is already used by another screen are reported FAILED and never passed to TIA Portal - in V21 a duplicate screen number on import makes TIA Portal terminate itself. Any other import error can do the same, so only run real imports on a saved project.
+ALWAYS run with dryRun=true first: it reports per object WOULD CREATE / WOULD OVERWRITE / SKIPPED / FAILED and writes nothing. The project is not saved - use save_project afterwards if wanted.")]
+    public Task<string> ImportHmiClassic(
+        [Description("Classic HMI name, from list_hmi_classic_devices")] string hmiName,
+        [Description("A .xml file or a directory (recursive), as seen by the TIA Portal machine")] string sourcePath,
+        [Description("Folder path below each kind's root to import into, e.g. 'Area1'; empty for the root")] string? targetFolderPath = null,
+        [Description("Append the subfolder below the '<Kind>' directory of an export tree to targetFolderPath (default true)")] bool preserveFolders = true,
+        [Description("Create missing target folders (default false)")] bool createMissingFolders = false,
+        [Description("Replace existing objects of the same name (default false: skip them). Destructive - confirm with the user.")] bool overwriteExisting = false,
+        [Description("Only report what would happen, write nothing (default true)")] bool dryRun = true) => Safe(async () =>
+    {
+        if (!_session.IsConnected) return "Not connected. Call tia_connect first.";
+        var result = await _session.ImportHmiClassicAsync(hmiName, sourcePath, targetFolderPath, preserveFolders, createMissingFolders, overwriteExisting, dryRun);
+        var header = dryRun
+            ? $"DRY RUN - nothing written. {result.Imported} would be imported, {result.Failed} would fail, {result.Skipped} skipped."
+            : $"{result.Imported} imported, {result.Failed} failed, {result.Skipped} skipped.";
+        return $"{header}\n{string.Join("\n", result.Messages)}";
+    });
+
+    [McpServerTool(Name = "create_hmi_classic_folder")]
+    [Description("Create a user folder in a classic WinCC HMI: a screen folder, screen template folder, popup screen folder or HMI tag table folder. Fails if the parent folder does not exist or the folder already exists.")]
+    public Task<string> CreateHmiClassicFolder(
+        [Description("Classic HMI name, from list_hmi_classic_devices")] string hmiName,
+        [Description("'Screens', 'ScreenTemplates', 'PopupScreens' or 'TagTables'")] string kind,
+        [Description("Parent folder path; empty string for the root")] string parentFolderPath,
+        [Description("Name of the new folder")] string folderName) => Safe(async () =>
+    {
+        var result = await _session.CreateHmiClassicFolderAsync(hmiName, kind, parentFolderPath, folderName);
+        return result.Success ? "Success" : $"FAILED: {result.Error}";
+    });
+
     [McpServerTool(Name = "compile_plc")]
     [Description("Compile a PLC's software and report errors/warnings.")]
     public Task<string> Compile([Description("PLC software name, from list_plc_devices")] string plcName) => Safe(async () =>

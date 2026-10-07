@@ -330,6 +330,38 @@ public sealed class TiaSession
         return _sta.InvokeAsync(() => _connection.DeleteHmiAlarm(hmiName, type, alarmName));
     }
 
+    public Task<IReadOnlyList<HmiClassicDeviceSummary>> ListHmiClassicDevicesAsync()
+    {
+        return _sta.InvokeAsync(() => _connection.ListHmiClassicDevices());
+    }
+
+    public Task<IReadOnlyList<HmiClassicObjectSummary>> ListHmiClassicObjectsAsync(string hmiName, IReadOnlyList<string>? kinds = null)
+    {
+        return _sta.InvokeAsync(() => _connection.ListHmiClassicObjects(hmiName, kinds));
+    }
+
+    public Task<IReadOnlyList<HmiClassicFolderSummary>> ListHmiClassicFoldersAsync(string hmiName, IReadOnlyList<string>? kinds = null)
+    {
+        return _sta.InvokeAsync(() => _connection.ListHmiClassicFolders(hmiName, kinds));
+    }
+
+    public Task<HmiClassicExportResult> ExportHmiClassicAsync(string hmiName, string targetDirectory, IReadOnlyList<string>? kinds,
+        IReadOnlyList<string>? names, string? folderPath, bool overwriteFiles)
+    {
+        return _sta.InvokeAsync(() => _connection.ExportHmiClassic(hmiName, targetDirectory, kinds, names, folderPath, overwriteFiles));
+    }
+
+    public Task<HmiClassicImportResult> ImportHmiClassicAsync(string hmiName, string sourcePath, string? targetFolderPath, bool preserveFolders,
+        bool createMissingFolders, bool overwriteExisting, bool dryRun)
+    {
+        return _sta.InvokeAsync(() => _connection.ImportHmiClassic(hmiName, sourcePath, targetFolderPath, preserveFolders, createMissingFolders, overwriteExisting, dryRun));
+    }
+
+    public Task<SimpleResult> CreateHmiClassicFolderAsync(string hmiName, string kind, string parentFolderPath, string folderName)
+    {
+        return _sta.InvokeAsync(() => _connection.CreateHmiClassicFolder(hmiName, kind, parentFolderPath, folderName));
+    }
+
     public async Task<(IReadOnlyList<BlockSummary> Blocks, IReadOnlyList<TagTableSummary> TagTables, IReadOnlyList<TypeSummary> Types)> SearchAsync(string plcName, string text)
     {
         var blocks = await ListBlocksAsync(plcName);
