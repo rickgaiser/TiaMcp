@@ -330,6 +330,21 @@ public sealed class TiaSession
         return _sta.InvokeAsync(() => _connection.DeleteHmiAlarm(hmiName, type, alarmName));
     }
 
+    public Task<IReadOnlyList<PlcAlarmTextlistSummary>> ListPlcAlarmTextlistsAsync(string plcName)
+    {
+        return _sta.InvokeAsync(() => _connection.ListPlcAlarmTextlists(plcName));
+    }
+
+    public Task<SimpleResult> ImportPlcAlarmTextlistsAsync(string plcName, string sourceFile, bool dryRun)
+    {
+        return _sta.InvokeAsync(() => _connection.ImportPlcAlarmTextlists(plcName, sourceFile, dryRun));
+    }
+
+    public Task<SimpleResult> ExportPlcAlarmTextlistsAsync(string plcName, string targetFile)
+    {
+        return _sta.InvokeAsync(() => _connection.ExportPlcAlarmTextlists(plcName, targetFile));
+    }
+
     public Task<IReadOnlyList<HmiClassicDeviceSummary>> ListHmiClassicDevicesAsync()
     {
         return _sta.InvokeAsync(() => _connection.ListHmiClassicDevices());

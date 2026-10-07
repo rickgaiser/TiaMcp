@@ -95,3 +95,5 @@ public sealed record HmiClassicFolderSummary(string HmiName, string Kind, string
 public sealed record HmiClassicExportResult(int Exported, int Failed, int Skipped, IReadOnlyList<string> Messages);
 
 public sealed record HmiClassicImportResult(int Imported, int Failed, int Skipped, IReadOnlyList<string> Messages);
+
+public sealed record PlcAlarmTextlistSummary(string Kind, int Id, string Name, string ListRange);

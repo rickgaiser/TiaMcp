@@ -804,6 +804,40 @@ The input is validated first (duplicate names, missing Name/DataType); on a vali
         return result.Success ? "Success" : $"FAILED: {result.Error}";
     });
 
+    [McpServerTool(Name = "list_plc_alarm_textlists")]
+    [Description("List the PLC alarm text lists (PLC-Meldetextlisten) of a PLC: kind (User/System), ID, name and list range. Read-only. The entries themselves are only available via export_plc_alarm_textlists.")]
+    public Task<string> ListPlcAlarmTextlists([Description("PLC software name, from list_plc_devices")] string plcName) => Safe(async () =>
+    {
+        if (!_session.IsConnected) return "Not connected. Call tia_connect first.";
+        var lists = await _session.ListPlcAlarmTextlistsAsync(plcName);
+        if (lists.Count == 0) return "No PLC alarm text lists found.";
+        return "Kind;ID;Name;ListRange\n" + string.Join("\n", lists.Select(l => $"{l.Kind};{l.Id};{l.Name};{l.ListRange}"));
+    });
+
+    [McpServerTool(Name = "export_plc_alarm_textlists")]
+    [Description("Export all PLC alarm text lists (PLC-Meldetextlisten) of a PLC including all entries and languages to one Excel file (.xlsx) via TIA Portal's own text list export. Read-only towards the project. Fails if the target file already exists.")]
+    public Task<string> ExportPlcAlarmTextlists(
+        [Description("PLC software name, from list_plc_devices")] string plcName,
+        [Description("Target .xlsx file path, as seen by the TIA Portal machine")] string targetFile) => Safe(async () =>
+    {
+        if (!_session.IsConnected) return "Not connected. Call tia_connect first.";
+        var result = await _session.ExportPlcAlarmTextlistsAsync(plcName, targetFile);
+        return result.Success ? $"Exported to {targetFile}. Log: {result.Error}" : $"FAILED: {result.Error}";
+    });
+
+    [McpServerTool(Name = "import_plc_alarm_textlists")]
+    [Description("Import PLC alarm text lists (PLC-Meldetextlisten) from an Excel file in the format written by export_plc_alarm_textlists (sheets TextList and TextListEntry). DEFAULT IS A DRY RUN: the current lists are exported to a temp file and compared entry by entry (new / overwritten / unchanged, per list, with the first differences) - nothing is imported. Only with dryRun=false is the file imported. IMPORTANT: TIA replaces the COMPLETE content of every list contained in the file - entries of such a list that are missing in the file are DELETED (lists not in the file stay untouched). So always import complete lists (e.g. an edited full export); the dry run reports WOULD DELETE for such entries. Real imports only on a saved project, after export_plc_alarm_textlists as a backup and the user's confirmation.")]
+    public Task<string> ImportPlcAlarmTextlists(
+        [Description("PLC software name, from list_plc_devices")] string plcName,
+        [Description("Source .xlsx file path, as seen by the TIA Portal machine")] string sourceFile,
+        [Description("Only compare and report, import nothing (default true)")] bool dryRun = true) => Safe(async () =>
+    {
+        if (!_session.IsConnected) return "Not connected. Call tia_connect first.";
+        var result = await _session.ImportPlcAlarmTextlistsAsync(plcName, sourceFile, dryRun);
+        if (!result.Success) return $"FAILED: {result.Error}";
+        return dryRun ? result.Error ?? "" : $"Imported {sourceFile}. Log: {result.Error}";
+    });
+
     // ---- Classic WinCC (Comfort/Advanced/RT Advanced panels, Openness type HmiTarget) ----
 
     private const string HmiClassicKindList = "TextLists, GraphicLists, TagTables, ScreenTemplates, PopupScreens, Screens";
