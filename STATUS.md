@@ -29,7 +29,7 @@ For object types TiaMcp doesn't support yet, the notes say what the Openness API
 | External source group | ❌ | ❌ | — | — | ❌ | ❌ | Openness: create, delete |
 | Technology object (PID, motion, counter) | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | Openness: create, delete, import/export |
 | Technology object group | ❌ | ❌ | — | — | ❌ | ❌ | Openness: create, delete |
-| PLC alarm text list | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | Openness: create, delete, Excel export |
+| PLC alarm text list | ✅ | ❌ | ✅ | ⚠️ | ❌ | ❌ | `.xlsx` via TIA's text list export/import; import replaces the complete content of every list in the file. Openness: create, delete |
 | PLC alarm class | ❌ | — | ❌ | ❌ | — | — | Openness: import/export only |
 | Supervision (ProDiag) settings | — | — | ❌ | ❌ | — | — | Openness: import/export only |
 | Software unit (S7-1500) + relations | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | Openness: create, delete |
@@ -51,6 +51,17 @@ For object types TiaMcp doesn't support yet, the notes say what the Openness API
 | HMI connection | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | Openness: create, delete |
 | Data log / alarm log / logging tag | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | Openness: create, delete |
 
+## HMI (classic WinCC: Comfort/Advanced, RT Advanced)
+
+| Object | List | Create | Read | Update | Rename | Delete | Notes |
+|---|---|---|---|---|---|---|---|
+| Screen / screen template / popup screen | ✅ | ✅ | ✅ | ✅ | ❌ | ❌ | Openness `.xml`; create/update via import (`overwriteExisting`); duplicate screen numbers are rejected before import |
+| HMI tag table | ✅ | ✅ | ✅ | ✅ | ❌ | ❌ | Openness `.xml` |
+| Text list | ✅ | ✅ | ✅ | ✅ | ❌ | ❌ | Openness `.xml` |
+| Graphic list | ✅ | ✅ | ⚠️ | ✅ | ❌ | ❌ | Export crashed TIA Portal V21, so it is opt-in only |
+| Screen / template / popup / tag table folder | ✅ | ✅ | — | — | ❌ | ❌ | |
+| Alarm | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | Not reachable via classic Openness |
+
 ## Project
 
 | Object | List | Create | Read | Update | Rename | Delete | Notes |
@@ -63,7 +74,7 @@ For object types TiaMcp doesn't support yet, the notes say what the Openness API
 
 | Object | List | Create | Read | Update | Rename | Delete | Notes |
 |---|---|---|---|---|---|---|---|
-| Device + device group | ⚠️ | ❌ | ❌ | ❌ | ❌ | ❌ | `list_plc_devices` / `list_hmi_devices` list PLC and WinCC Unified devices only (Classic WinCC panels not supported). Openness: create, delete |
+| Device + device group | ⚠️ | ❌ | ❌ | ❌ | ❌ | ❌ | `list_plc_devices` / `list_hmi_devices` / `list_hmi_classic_devices` list PLC, WinCC Unified and classic WinCC devices. Openness: create, delete |
 | Device item (module) | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | Openness: create (plug), delete; attributes via properties |
 | Subnet / IO system | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | Openness: create, delete, connect nodes |
 | Sync domain / MRP domain | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | Openness: create, delete |
