@@ -2144,7 +2144,7 @@ public sealed class TiaConnection : IDisposable
 
     // Tag comments are plain text (unlike Unified alarm texts, see SetText) and are written into
     // the project's editing language only. ExtractText joins every non-empty language with " | ",
-    // so a value read back unchanged (e.g. a read -> write or source_tree round trip) is skipped
+    // so a value read back unchanged (e.g. a read -> write or read_source_tree round trip) is skipped
     // rather than collapsing all languages into the editing-language item.
     private void SetComment(MultilingualText? text, string value)
     {

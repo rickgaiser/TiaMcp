@@ -827,9 +827,9 @@ The input is validated first (duplicate names, missing Name/DataType); on a vali
         return lines.Count == 0 ? "No matches." : string.Join("\n", lines);
     });
 
-    [McpServerTool(Name = "source_tree")]
+    [McpServerTool(Name = "read_source_tree")]
     [Description("Export the entire connected project's readable source to disk, organized into folders that mirror the TIA Portal project tree: <targetDirectory>/<PlcName>/Program blocks/<group path>/..., .../PLC tags/<group path>/..., .../PLC data types/<group path>/..., plus <targetDirectory>/<HmiSoftwareName>/HMI tags/<group path>/... and .../HMI alarms/ (DiscreteAlarms.csv, AnalogAlarms.csv, AlarmClasses.csv - always these three fixed files, since alarms/alarm classes have no folder/group concept in Openness). Every program block, tag table, UDT, HMI tag table, and HMI alarm/alarm class is written out (block/UDT source content via the same routes as read_plc_block/read_plc_udt, each file keeping its native extension - .s7dcl/.s7res/.graph.il/.awl/.xml/etc - with '.txt' appended only for content that has no extension of its own; PLC and HMI tag tables as Excel-compatible '.csv' text via the same format as read_plc_tag_table/read_hmi_tag_table; HMI alarms/alarm classes as Excel-compatible '.csv' text via the same format as list_hmi_alarms/list_hmi_alarm_classes; all CSV written with a UTF-8 BOM so double-clicking the file opens correctly in Excel). Creates the target directory if needed; existing files at the same paths are overwritten. If an item fails to export (e.g. an inconsistent block) but a file from a previous successful export is still on disk at that path, that leftover file is renamed with a '.stale' suffix instead of being left in place looking current - it's restored (the suffix removed) automatically the next time that item exports successfully. Also writes a '_export_summary.txt' at the root of targetDirectory listing every exported item, any failures, any files marked stale, and the export timestamp. Returns that same summary as the tool result text.")]
-    public Task<string> SourceTree(
+    public Task<string> ReadSourceTree(
         [Description("Target root directory to export the project source into. Created if it doesn't exist.")] string targetDirectory) => Safe(async () =>
     {
         if (!_session.IsConnected) return "Not connected. Call tia_connect first.";
@@ -898,7 +898,7 @@ The input is validated first (duplicate names, missing Name/DataType); on a vali
         return summaryText;
     });
 
-    // One parsed 'OK'/'FAILED'/'STALE' line from source_tree's _export_summary.txt (or a
+    // One parsed 'OK'/'FAILED'/'STALE' line from read_source_tree's _export_summary.txt (or a
     // hand-trimmed copy/inline excerpt of it) - see write_source_tree. A plain class rather than a
     // record: this project (net48) has no IsExternalInit polyfill for record/init-only support.
     private sealed class ImportListItem
@@ -920,7 +920,7 @@ The input is validated first (duplicate names, missing Name/DataType); on a vali
     }
 
     [McpServerTool(Name = "write_source_tree")]
-    [Description(@"Write a previously exported source tree (from source_tree) back into the connected project. This is the reverse of source_tree: it re-reads the same on-disk files it produced and re-imports each item via the same routes write_plc_block/create_plc_block/write_plc_udt/create_plc_udt/write_plc_tag_table/create_plc_tag_table/write_hmi_tag_table/create_hmi_tag_table/write_hmi_alarm/write_hmi_alarm_class already use.
+    [Description(@"Write a previously exported source tree (from read_source_tree) back into the connected project. This is the reverse of read_source_tree: it re-reads the same on-disk files it produced and re-imports each item via the same routes write_plc_block/create_plc_block/write_plc_udt/create_plc_udt/write_plc_tag_table/create_plc_tag_table/write_hmi_tag_table/create_hmi_tag_table/write_hmi_alarm/write_hmi_alarm_class already use.
 
 _export_summary.txt doubles as the list of what to write back - no separate list format exists. Passing nothing re-imports the whole tree from '<sourceDirectory>/_export_summary.txt' (its 'OK' lines only - 'FAILED'/'STALE' lines have no valid export on disk and are skipped). To write back only a subset, make a copy of that file, delete the device sections/lines you don't want, and pass its path as itemList - or, since this list format is just plain text, pass a trimmed excerpt directly as itemList's string value instead of a file path (whichever is an existing file path is read as a file; anything else is parsed as literal list text). Lines/sections you don't recognize or that don't parse are silently ignored, so the file's header/footer lines (timestamp, 'Project:', 'Target:', 'Done: ...') don't need to be stripped out.
 
@@ -928,9 +928,9 @@ For each item: if it already exists in the project, overwriteExisting controls w
 
 Set dryRun to preview exactly what would be created/updated/skipped without writing anything - recommended before a real bulk write against a live project.
 
-Returns (and also writes to '<sourceDirectory>/_import_report.txt') a per-item report in the same style as source_tree's own summary: one CREATED/UPDATED/SKIPPED/FAILED line per item, grouped by device, with a final counts line.")]
+Returns (and also writes to '<sourceDirectory>/_import_report.txt') a per-item report in the same style as read_source_tree's own summary: one CREATED/UPDATED/SKIPPED/FAILED line per item, grouped by device, with a final counts line.")]
     public Task<string> WriteSourceTree(
-        [Description("Root directory previously used as source_tree's targetDirectory.")] string sourceDirectory,
+        [Description("Root directory previously used as read_source_tree's targetDirectory.")] string sourceDirectory,
         [Description("What to write back: omit to use '<sourceDirectory>/_export_summary.txt' in full; pass a path to a (possibly hand-trimmed) copy of that file to write back only what it lists; or pass list text directly (same format) for an inline subset.")] string? itemList = null,
         [Description("Create items that don't yet exist in the connected project. Default true.")] bool createMissing = true,
         [Description("Overwrite items that already exist in the connected project. Default true.")] bool overwriteExisting = true,
@@ -945,7 +945,7 @@ Returns (and also writes to '<sourceDirectory>/_import_report.txt') a per-item r
             var defaultPath = Path.Combine(sourceDirectory, "_export_summary.txt");
             if (!File.Exists(defaultPath))
             {
-                return $"No itemList given and no _export_summary.txt found at '{defaultPath}'. Run source_tree first, or pass itemList.";
+                return $"No itemList given and no _export_summary.txt found at '{defaultPath}'. Run read_source_tree first, or pass itemList.";
             }
             listText = File.ReadAllText(defaultPath);
             listSource = defaultPath;
@@ -1307,7 +1307,7 @@ Returns (and also writes to '<sourceDirectory>/_import_report.txt') a per-item r
         return (created, updated, skipped, failed);
     }
 
-    // Locates the on-disk source file(s) source_tree wrote for one block and packages them as the
+    // Locates the on-disk source file(s) read_source_tree wrote for one block and packages them as the
     // BlockDocument(s) write_plc_block/create_plc_block expect - mirroring ExportBlocks' own
     // extension priority (GRAPH's '.graph.il', whole-block STL's '.awl', else the normal
     // '.s7dcl'[+'.s7res'] pair). '.interface.txt' and '.stl-networks.xml' are read-only companions
@@ -1367,7 +1367,7 @@ Returns (and also writes to '<sourceDirectory>/_import_report.txt') a per-item r
     private Task EnsureHmiTagTableGroupPath(string hmiName, string groupPath) =>
         EnsureGroupPath(groupPath, (parent, segment) => _session.CreateHmiTagTableGroupAsync(hmiName, parent, segment));
 
-    // Parses source_tree's _export_summary.txt format (or a hand-trimmed copy/inline excerpt of
+    // Parses read_source_tree's _export_summary.txt format (or a hand-trimmed copy/inline excerpt of
     // it) back into importable items - see write_source_tree. Unrecognized lines (headers, blank
     // lines, the trailing 'Done: ...' line) are silently skipped rather than treated as errors, so
     // callers don't need to strip them out first.
@@ -1733,7 +1733,7 @@ Returns (and also writes to '<sourceDirectory>/_import_report.txt') a per-item r
 
     // Renames leftover files from a previous successful export of this item to "<name>.stale" so
     // a failed re-export (e.g. the block went inconsistent) can't leave a same-named file on disk
-    // that looks current but isn't - source_tree itself never deletes on failure, so without this
+    // that looks current but isn't - read_source_tree itself never deletes on failure, so without this
     // an old export is otherwise indistinguishable from a fresh one. Returns true if anything was
     // marked.
     private static bool MarkStale(string dir, string itemName)

@@ -132,8 +132,8 @@ All MCP tools exposed by the server, grouped by area.
 
 | Tool | Purpose |
 |---|---|
-| `source_tree` | Export the whole project's readable source to disk (each file keeping its native extension; tag tables as `.csv`), folder structure mirroring the TIA Portal project tree |
-| `write_source_tree` | Write a `source_tree` export back into the project — the whole tree, or a trimmed subset of `_export_summary.txt` — with independent control over creating missing items and overwriting existing ones, plus a dry-run preview |
+| `read_source_tree` | Export the whole project's readable source to disk (each file keeping its native extension; tag tables as `.csv`), folder structure mirroring the TIA Portal project tree |
+| `write_source_tree` | Write a `read_source_tree` export back into the project — the whole tree, or a trimmed subset of `_export_summary.txt` — with independent control over creating missing items and overwriting existing ones, plus a dry-run preview |
 
 Full argument descriptions are on each tool via MCP `[Description]` attributes — see `src\TiaMcp.Mcp\TiaTools.cs`.
 
@@ -168,7 +168,7 @@ New GRAPH blocks are created via `create_plc_block`'s `graphTemplateBlockName` (
 
 ## Source tree export
 
-`source_tree` dumps every PLC block/tag table/UDT and every WinCC Unified HMI tag table/alarm the server can read to disk, one call for the whole project, in folders mirroring the TIA Portal project tree:
+`read_source_tree` dumps every PLC block/tag table/UDT and every WinCC Unified HMI tag table/alarm the server can read to disk, one call for the whole project, in folders mirroring the TIA Portal project tree:
 
 ```
 <targetDirectory>/
