@@ -28,7 +28,7 @@ namespace TiaMcp.Openness;
 /// dedicated STA thread (see <see cref="StaDispatcher"/>) - this class does not manage
 /// threading itself.
 /// </summary>
-public sealed class TiaConnection : IDisposable
+public sealed partial class TiaConnection : IDisposable
 {
     private TiaPortal? _tiaPortal;
     private Project? _project;
@@ -175,6 +175,7 @@ public sealed class TiaConnection : IDisposable
         _project = project;
         _softwareByName.Clear();
         _hmiSoftwareByName.Clear();
+        _hmiTargetByName.Clear();
         foreach (Device device in project.Devices)
         {
             CollectSoftware(device.DeviceItems);
@@ -220,6 +221,7 @@ public sealed class TiaConnection : IDisposable
             _project = null;
             _softwareByName.Clear();
             _hmiSoftwareByName.Clear();
+            _hmiTargetByName.Clear();
             return new SimpleResult(true, null);
         }
         catch (Exception ex)
@@ -254,6 +256,7 @@ public sealed class TiaConnection : IDisposable
             {
                 _hmiSoftwareByName[hmiSoftware.Name] = hmiSoftware;
             }
+            IndexHmiClassic(container);
 
             CollectSoftware(item.DeviceItems);
         }

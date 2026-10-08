@@ -25,6 +25,8 @@ Special features that make TiaMcp fast for LLM's and human-readable friendly:
 | PLC tag table | `.csv`, Excel-compatible (synthesized) | Yes | Yes |
 | HMI tag table (WinCC Unified) | `.csv`, Excel-compatible (synthesized) | Yes | Yes |
 | HMI alarms (WinCC Unified) | `.csv`, Excel-compatible (synthesized) | Yes | Yes |
+| Classic WinCC screens, templates, popups, tag tables, text lists, graphic lists | Openness `.xml` (one file per object) | Yes | Yes |
+| PLC alarm text lists | `.xlsx` (TIA Portal's own text list export) | Yes | Yes |
 | Source tree export/import (whole project) | native extension per item (`.txt` appended only when an item has none) | Yes | Yes |
 
 ## Prerequisites
@@ -128,6 +130,24 @@ All MCP tools exposed by the server, grouped by area.
 | `write_hmi_alarm` | Create or update a discrete or analog HMI alarm |
 | `delete_hmi_alarm` | Delete a discrete or analog HMI alarm by name |
 
+### PLC alarm text lists
+
+| Tool | Purpose |
+|---|---|
+| `list_plc_alarm_textlists` | List a PLC's alarm text lists (kind, ID, name, range) |
+| `export_plc_alarm_textlists` | Export all alarm text lists with all entries and languages to one `.xlsx` |
+| `import_plc_alarm_textlists` | Import an `.xlsx` in the export format; dry run by default (new / overwritten / unchanged / would delete). TIA replaces the complete content of every list in the file, so import complete lists only |
+
+### Classic WinCC (Comfort/Advanced panels, WinCC RT Advanced)
+
+| Tool | Purpose |
+|---|---|
+| `list_hmi_classic_devices` | List classic WinCC HMI devices (Openness `HmiTarget`), separate from `list_hmi_devices` |
+| `list_hmi_classic_objects` | List screens, screen templates, popup screens, tag tables, text lists and graphic lists with their folder paths |
+| `export_hmi_classic` | Export objects as Openness XML into `<Kind>/<folder>/<Name>.xml`; graphic lists only on explicit request (see Known limitations) |
+| `import_hmi_classic` | Import such XML files in dependency order; dry run by default, existing objects skipped unless `overwriteExisting`, screens with an already used screen number rejected before TIA sees them |
+| `create_hmi_classic_folder` | Create a screen, screen template, popup screen or tag table folder |
+
 ### Source tree (whole-project export/import)
 
 | Tool | Purpose |
@@ -209,4 +229,5 @@ AGPL-3.0 (see [LICENSE](LICENSE)). Contributions require signing the [CLA](CLA.m
 
 - STL embedded in a mixed FBD/LAD/SCL block is read-only; whole-block STL is fully supported (see the STL section above).
 - GRAPH blocks can only be created by cloning an existing one (see the GRAPH section above), not from scratch.
-- Classic WinCC (Comfort/Advanced/RT) — its Openness object model has no alarm objects and no tag `Create` factory.
+- Classic WinCC (Comfort/Advanced/RT) is supported as XML export/import of screens, templates, popups, tag tables and text/graphic lists only — its Openness object model has no alarm objects and no tag `Create` factory. Classic objects are not part of `source_tree`.
+- Classic WinCC on TIA Portal V21: exporting a graphic list crashed the whole TIA Portal process, so `export_hmi_classic` skips graphic lists unless asked for them. Any import error can make TIA Portal terminate itself; run real imports only on a saved project.

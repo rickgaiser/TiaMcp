@@ -83,3 +83,17 @@ public sealed record HmiAlarmSpec(
     string? Origin);
 
 public sealed record HmiAlarmResult(bool Success, IReadOnlyList<HmiAlarmInfo> Alarms, string? Error);
+
+// Classic WinCC (Comfort/Advanced/RT Advanced) - Siemens.Engineering.Hmi.HmiTarget.
+public sealed record HmiClassicDeviceSummary(string DeviceName, string ItemName, string HmiTargetName);
+
+// Kind is one of HmiClassicKinds.All; FolderPath is "" for the root of that kind's system folder.
+public sealed record HmiClassicObjectSummary(string HmiName, string Kind, string FolderPath, string Name);
+
+public sealed record HmiClassicFolderSummary(string HmiName, string Kind, string FolderPath);
+
+public sealed record HmiClassicExportResult(int Exported, int Failed, int Skipped, IReadOnlyList<string> Messages);
+
+public sealed record HmiClassicImportResult(int Imported, int Failed, int Skipped, IReadOnlyList<string> Messages);
+
+public sealed record PlcAlarmTextlistSummary(string Kind, int Id, string Name, string ListRange);
