@@ -918,94 +918,136 @@ An item that fails to export (e.g. an inconsistent block - GRAPH blocks must be 
         public string GroupPath { get; }
         public string ItemName { get; }
         public bool Ok { get; }
+
+        public bool Is(string device, string kind, string name) =>
+            string.Equals(DeviceName, device, StringComparison.OrdinalIgnoreCase)
+            && Kind == kind
+            && string.Equals(ItemName, name, StringComparison.OrdinalIgnoreCase);
     }
 
     [McpServerTool(Name = "write_source_tree")]
-    [Description(@"Write a previously exported source tree (from read_source_tree) back into the connected project. This is the reverse of read_source_tree: it re-reads the same on-disk files it produced and re-imports each item via the same routes write_plc_block/create_plc_block/write_plc_udt/create_plc_udt/write_plc_tag_table/create_plc_tag_table/write_hmi_tag_table/create_hmi_tag_table/write_hmi_alarm/write_hmi_alarm_class already use.
+    [Description(@"Write a source tree from read_source_tree back into the connected project: every item whose files were edited since the last read, and every new file - a new block, UDT or tag table is created by adding its file in the right folder (the folder gives the group, the file name the item's name; for a new block or UDT start from an existing file of the same kind). Written items are read back into the tree afterward, so their files show what TIA Portal made of them. Not compiled - call compile_plc afterward, and after an FB interface change read the instance DBs again. Deleting a file does not delete the item in the project (use the delete_* tools).
 
-_export_summary.txt doubles as the list of what to write back - no separate list format exists. Passing nothing re-imports the whole tree from '<sourceDirectory>/_export_summary.txt' (its 'OK' lines only - 'FAILED'/'STALE' lines have no valid export on disk and are skipped). To write back only a subset, make a copy of that file, delete the device sections/lines you don't want, and pass its path as itemList - or, since this list format is just plain text, pass a trimmed excerpt directly as itemList's string value instead of a file path (whichever is an existing file path is read as a file; anything else is parsed as literal list text). Lines/sections you don't recognize or that don't parse are silently ignored, so the file's header/footer lines (timestamp, 'Project:', 'Target:', 'Done: ...') don't need to be stripped out.
+Refuses (FAILED, nothing written for that item) to overwrite an item that was changed in TIA Portal since it was read, or that exists in the project but was never read into the tree; force=true overwrites anyway. A tree read from another project (e.g. to restore it into an emptied copy) is written in full, without these checks.
 
-For each item: if it already exists in the project, overwriteExisting controls whether it's updated in place or skipped; if it doesn't exist yet, createMissing controls whether it's created or skipped. Missing groups (folders) - for blocks, UDTs, tag tables, and HMI tag tables alike - are created automatically as needed, so restoring a full tree into an empty/new PLC or HMI doesn't require pre-creating any folders. A brand-new GRAPH block needs an existing GRAPH block in the same PLC to clone as a structural template (see create_plc_block) - this tool picks one automatically; if the PLC has no GRAPH block at all yet, new GRAPH blocks are skipped with a message to create one manually first.
+Writing rules per file type:
+- SCL block: the '{ S7_EditorMode := ""SCL"" }' attribute block before FUNCTION/FUNCTION_BLOCK/DATA_BLOCK is required. FBD/LAD: never hand-write NETWORK/RUNG notation from scratch - copy a similar existing block's .s7dcl/.s7res and adapt it.
+- Comments and titles: an { S7_MLC := ""MLC_x"" } attribute (S7_NetworkTitle/S7_NetworkComment for networks) referring to an entry in the .s7res; '//' comments in the source are dropped by TIA Portal. Keep text ids unique within a .s7res.
+- GRAPH ('.graph.il'): step/transition attributes, actions and conditions are writable, steps/transitions can be added or removed, and BRANCHES/CONNECTIONS of a SEQUENCE are rewritten when present; INTERFACE and PREOPERATIONS are read-only. A condition still containing a construct shown as generic 'PartName(args)' is refused. A new GRAPH block is made by cloning an existing GRAPH block of the PLC (picked automatically) and reshaping it. The write recompiles the block and reports errors.
+- Whole-block STL ('.awl'): AWL text as TIA Portal's 'Generate source' produces it, block name in the header unchanged. A block with embedded STL networks can't be written.
+- Instance DB: its .s7dcl ('DATA_BLOCK ""x"" ... : FB_y'); the FB must exist.
+- PLC tag table CSV: Name, DataType, LogicalAddress, Comment, ExternalAccessible, ExternalVisible, ExternalWritable (True/False). Rows update or add tags; an empty cell leaves that value unchanged; tags missing from the CSV are kept. Renaming a tag in the CSV makes a new tag - use rename_plc_tag.
+- HMI tag table CSV: Name, DataType, Address, Connection, PlcName, PlcTag, Comment, AcquisitionCycle. Bind to a PLC tag with Connection + PlcTag (dot-qualified for a DB member); DataType then follows from the PLC tag. PlcName is ignored on write. AcquisitionCycle (e.g. T1s) only on PLC-bound tags.
+- HMI alarms CSV: rows update or add alarms by name. RaisedStateTag binds the trigger (a tag or member path whose base HMI tag exists); TriggerAddress is computed and read-only. EventText/InfoText are plain text. AlarmClasses.csv: Name, Priority, Log; system classes accept no Priority change.
 
-Writes in dependency order: UDTs, then tag tables, then blocks, with UDTs and blocks each split into layers by what their source references (nested UDTs first; global DBs and called FBs before their callers and instance DBs), compiling the PLC between UDT layers - imports can fail, or a UDT can silently lose nested start values, when what they reference isn't there yet. Not compiled at the end - call compile_plc afterward.
+Writes in dependency order: UDTs, then tag tables, then blocks, with UDTs and blocks each split into layers by what their source references (nested UDTs first; global DBs and called FBs before their callers and instance DBs), compiling the PLC between UDT layers - imports can fail, or a UDT can silently lose nested start values, when what they reference isn't there yet.
 
-Set dryRun to preview exactly what would be created/updated/skipped without writing anything - recommended before a real bulk write against a live project.
+itemList limits what is considered, in _export_summary.txt's format (a trimmed copy's path, or the lines inline); all=true writes those items even if unchanged. Set dryRun to preview what would be created/updated/skipped/refused.
 
-Returns (and also writes to '<sourceDirectory>/_import_report.txt') a per-item report in the same style as read_source_tree's own summary: one CREATED/UPDATED/SKIPPED/FAILED line per item, grouped by device, with a final counts line.")]
+Returns (and also writes to '<sourceDirectory>/_import_report.txt') one CREATED/UPDATED/SKIPPED/FAILED line per item, grouped by device, with a final counts line.")]
     public Task<string> WriteSourceTree(
-        [Description("Root directory previously used as read_source_tree's targetDirectory.")] string sourceDirectory,
-        [Description("What to write back: omit to use '<sourceDirectory>/_export_summary.txt' in full; pass a path to a (possibly hand-trimmed) copy of that file to write back only what it lists; or pass list text directly (same format) for an inline subset.")] string? itemList = null,
+        [Description("Root directory of the source tree, as passed to read_source_tree.")] string sourceDirectory,
+        [Description("Optional: consider only these items - a path to a (trimmed) copy of _export_summary.txt, or that list text inline. Omit to consider the whole tree, including new files.")] string? itemList = null,
+        [Description("Write every item considered, not only those changed or added since read_source_tree. Default false.")] bool all = false,
         [Description("Create items that don't yet exist in the connected project. Default true.")] bool createMissing = true,
         [Description("Overwrite items that already exist in the connected project. Default true.")] bool overwriteExisting = true,
+        [Description("Also overwrite items that were changed in TIA Portal since read_source_tree, discarding those changes. Default false.")] bool force = false,
         [Description("Preview only - report what would happen without writing any changes.")] bool dryRun = false) => Safe(async () =>
     {
         if (!_session.IsConnected) return "Not connected. Call tia_connect first.";
 
-        string listText;
-        string listSource;
-        if (string.IsNullOrEmpty(itemList))
+        var manifest = SourceTreeManifest.Load(sourceDirectory);
+        // A tree read from another project (e.g. restoring into an emptied copy) isn't a working
+        // copy of this one: all of it is written, and nothing is compared with or refreshed from it.
+        var workingCopy = manifest != null && manifest.Project == _session.ProjectName;
+        var notes = new List<string>();
+
+        List<ImportListItem> items;
+        var invalidCount = 0;
+        if (!string.IsNullOrEmpty(itemList) || manifest == null)
         {
-            var defaultPath = Path.Combine(sourceDirectory, "_export_summary.txt");
-            if (!File.Exists(defaultPath))
-            {
-                return $"No itemList given and no _export_summary.txt found at '{defaultPath}'. Run read_source_tree first, or pass itemList.";
-            }
-            listText = File.ReadAllText(defaultPath);
-            listSource = defaultPath;
-        }
-        else if (File.Exists(itemList))
-        {
-            listText = File.ReadAllText(itemList);
-            listSource = itemList!;
+            var listPath = string.IsNullOrEmpty(itemList) ? Path.Combine(sourceDirectory, "_export_summary.txt") : itemList!;
+            if (string.IsNullOrEmpty(itemList) && !File.Exists(listPath))
+                return $"No itemList given and no source tree found at '{sourceDirectory}'. Run read_source_tree first, or pass itemList.";
+
+            var allItems = ParseSourceTreeList(File.Exists(listPath) ? File.ReadAllText(listPath) : itemList!);
+            if (allItems.Count == 0) return "No items recognized in the given list.";
+            invalidCount = allItems.Count(i => !i.Ok);
+            items = allItems.Where(i => i.Ok).ToList();
         }
         else
         {
-            listText = itemList!;
-            listSource = "(inline list text)";
+            items = manifest.Items.Where(i => i.Ok)
+                .Select(i => new ImportListItem(i.Device, i.Kind, i.GroupPath, i.Name, true))
+                .Concat(NewItemsInTree(sourceDirectory, manifest))
+                .ToList();
         }
 
-        var allItems = ParseSourceTreeList(listText);
-        if (allItems.Count == 0) return "No items recognized in the given list.";
+        if (manifest == null)
+            notes.Add("No _manifest.json in the tree (read before this version): every listed item is written, without change or conflict checks.");
+        else if (!workingCopy)
+            notes.Add($"The tree was read from project '{manifest.Project}', not the connected '{_session.ProjectName}': every listed item is written, and nothing is compared with or refreshed from this project.");
 
-        var invalidCount = allItems.Count(i => !i.Ok);
-        var items = allItems.Where(i => i.Ok).ToList();
-        if (items.Count == 0) return $"The list has {allItems.Count} line(s) but none were 'OK' (all FAILED/STALE) - nothing to import.";
+        if (workingCopy && !all)
+        {
+            var changed = new List<ImportListItem>();
+            var unchanged = 0;
+            foreach (var item in items)
+            {
+                var entry = manifest!.Find(item.DeviceName, item.Kind, item.ItemName);
+                var state = entry == null ? DiskState.Changed : CompareWithDisk(sourceDirectory, entry);
+                if (state == DiskState.Changed) changed.Add(item);
+                else if (state == DiskState.Unchanged) unchanged++;
+                else notes.Add($"{Describe(item.Kind, item.GroupPath, item.ItemName)}: its files were deleted from the tree. That doesn't delete it in the project - use the delete_* tool for that.");
+            }
+            if (unchanged > 0) notes.Add($"{unchanged} item(s) unchanged since read_source_tree were not written (all=true writes them anyway).");
+            items = changed;
+        }
+
+        var conflicts = new List<(ImportListItem Item, string Reason)>();
+        if (workingCopy && !force && items.Count > 0)
+        {
+            conflicts = await FindConflicts(manifest!, items);
+            items = items.Where(i => !conflicts.Any(c => c.Item == i)).ToList();
+        }
 
         var startedAt = DateTime.Now;
         var summary = new StringBuilder();
-        summary.AppendLine($"Source tree import - {startedAt:yyyy-MM-dd HH:mm:ss}{(dryRun ? " (dry run)" : "")}");
+        summary.AppendLine($"Source tree write - {startedAt:yyyy-MM-dd HH:mm:ss}{(dryRun ? " (dry run)" : "")}");
         summary.AppendLine($"Project: {_session.ProjectName}");
         summary.AppendLine($"Source: {sourceDirectory}");
-        summary.AppendLine($"List: {listSource}");
         summary.AppendLine();
 
+        var written = new List<ImportListItem>();
         int totalCreated = 0, totalUpdated = 0, totalSkipped = 0, totalFailed = 0;
-        foreach (var deviceGroup in items.GroupBy(i => i.DeviceName))
+        foreach (var deviceGroup in items.Concat(conflicts.Select(c => c.Item)).GroupBy(i => i.DeviceName, StringComparer.OrdinalIgnoreCase))
         {
             var deviceName = deviceGroup.Key;
             var deviceDir = Path.Combine(sourceDirectory, Sanitize(deviceName));
-            var deviceItems = deviceGroup.ToList();
-            var isHmi = deviceItems.All(i => i.Kind.StartsWith("HMI"));
+            var deviceItems = deviceGroup.Where(items.Contains).ToList();
+            var isHmi = deviceGroup.All(i => i.Kind.StartsWith("HMI"));
             summary.AppendLine(isHmi ? $"=== {deviceName} (HMI) ===" : $"=== {deviceName} ===");
 
             var logs = new List<(List<string> Created, List<string> Updated, List<string> Skipped, List<string> Failed)>();
+            var conflictLines = conflicts.Where(c => deviceGroup.Contains(c.Item)).Select(c => $"{Describe(c.Item.Kind, c.Item.GroupPath, c.Item.ItemName)}: {c.Reason}").ToList();
+            if (conflictLines.Count > 0) logs.Add((new List<string>(), new List<string>(), new List<string>(), conflictLines));
 
             // Dependency order: tags can be UDT-typed, and blocks reference both UDTs and tags -
             // a block imported before what it references fails to import.
             var udtItems = deviceItems.Where(i => i.Kind == "udt").ToList();
-            if (udtItems.Count > 0) logs.Add(await ImportTypes(deviceName, deviceDir, udtItems, createMissing, overwriteExisting, dryRun));
+            if (udtItems.Count > 0) logs.Add(await ImportTypes(deviceName, deviceDir, udtItems, createMissing, overwriteExisting, dryRun, written));
 
             var tagTableItems = deviceItems.Where(i => i.Kind == "tag table").ToList();
-            if (tagTableItems.Count > 0) logs.Add(await ImportTagTables(deviceName, deviceDir, tagTableItems, createMissing, overwriteExisting, dryRun));
+            if (tagTableItems.Count > 0) logs.Add(await ImportTagTables(deviceName, deviceDir, tagTableItems, createMissing, overwriteExisting, dryRun, written));
 
             var blockItems = deviceItems.Where(i => i.Kind == "block").ToList();
-            if (blockItems.Count > 0) logs.Add(await ImportBlocks(deviceName, deviceDir, blockItems, createMissing, overwriteExisting, dryRun));
+            if (blockItems.Count > 0) logs.Add(await ImportBlocks(deviceName, deviceDir, blockItems, createMissing, overwriteExisting, dryRun, written));
 
             var hmiTagTableItems = deviceItems.Where(i => i.Kind == "HMI tag table").ToList();
-            if (hmiTagTableItems.Count > 0) logs.Add(await ImportHmiTagTables(deviceName, deviceDir, hmiTagTableItems, createMissing, overwriteExisting, dryRun));
+            if (hmiTagTableItems.Count > 0) logs.Add(await ImportHmiTagTables(deviceName, deviceDir, hmiTagTableItems, createMissing, overwriteExisting, dryRun, written));
 
-            var hmiAlarmItems = deviceItems.Where(i => i.Kind is "HMI DiscreteAlarms" or "HMI AnalogAlarms" or "HMI AlarmClasses").ToList();
-            if (hmiAlarmItems.Count > 0) logs.Add(await ImportHmiAlarms(deviceName, deviceDir, hmiAlarmItems, createMissing, overwriteExisting, dryRun));
+            var hmiAlarmItems = deviceItems.Where(i => HmiAlarmKinds.Contains(i.Kind)).ToList();
+            if (hmiAlarmItems.Count > 0) logs.Add(await ImportHmiAlarms(deviceName, deviceDir, hmiAlarmItems, createMissing, overwriteExisting, dryRun, written));
 
             foreach (var log in logs)
             {
@@ -1023,10 +1065,23 @@ Returns (and also writes to '<sourceDirectory>/_import_report.txt') a per-item r
 
         if (invalidCount > 0)
         {
-            summary.AppendLine($"({invalidCount} line(s) in the list were FAILED/STALE in the source export and were not imported.)");
+            notes.Add($"{invalidCount} line(s) in the list were FAILED/STALE in the source export and were not written.");
             totalSkipped += invalidCount;
         }
 
+        // What TIA Portal made of the written items (it normalizes e.g. quoting) becomes the tree's
+        // new baseline, so the next write sees them as unchanged.
+        if (workingCopy && written.Count > 0)
+        {
+            var (exported, _) = await ExportItems((device, kind, _, name) => written.Any(w => w.Is(device, kind, name)), null);
+            WriteExport(sourceDirectory, manifest!, exported);
+            manifest!.Save(sourceDirectory);
+            File.WriteAllText(Path.Combine(sourceDirectory, "_export_summary.txt"), FormatSummary(sourceDirectory, manifest));
+            notes.Add($"Refreshed the {exported.Count(e => e.Ok)} written item(s) in the tree from the project.");
+        }
+
+        foreach (var note in notes) summary.AppendLine(note);
+        if (totalCreated + totalUpdated + totalFailed + totalSkipped == 0 && !dryRun) summary.AppendLine("Nothing to write.");
         summary.AppendLine($"Done: {totalCreated} created, {totalUpdated} updated, {totalSkipped} skipped, {totalFailed} failed. Finished {DateTime.Now:yyyy-MM-dd HH:mm:ss} (started {startedAt:HH:mm:ss}).");
 
         var summaryText = summary.ToString();
@@ -1034,8 +1089,95 @@ Returns (and also writes to '<sourceDirectory>/_import_report.txt') a per-item r
         return summaryText;
     });
 
+    private enum DiskState { Unchanged, Changed, Deleted }
+
+    // Compares an item's files on disk with what read_source_tree last wrote for it. A writable
+    // file of the item that the read didn't produce (e.g. a .s7res added by hand) counts as a change.
+    private static DiskState CompareWithDisk(string root, SourceTreeItem entry)
+    {
+        var expected = entry.WritableFiles.ToList();
+        var present = expected.Where(f => File.Exists(Path.Combine(root, f.Key))).ToList();
+        if (expected.Count > 0 && present.Count == 0) return DiskState.Deleted;
+        if (present.Count < expected.Count) return DiskState.Changed;
+        if (present.Any(f => SourceTreeManifest.Hash(File.ReadAllText(Path.Combine(root, f.Key))) != f.Value)) return DiskState.Changed;
+
+        var dir = ItemDir(entry.Device, entry.Kind, entry.GroupPath);
+        var stem = Sanitize(ItemStem(entry.Kind, entry.Name));
+        return SourceExtensions.Select(ext => $"{dir}/{stem}{ext}")
+            .Any(path => File.Exists(Path.Combine(root, path)) && !entry.Files.Keys.Contains(path, StringComparer.OrdinalIgnoreCase))
+            ? DiskState.Changed
+            : DiskState.Unchanged;
+    }
+
+    private static readonly string[] SourceExtensions = { ".s7dcl", ".s7res", ".graph.il", ".awl", ".csv" };
+
+    // Source files in the tree that no read put there: new items to create. Kind and group path
+    // follow from the folder (see ItemDir), the name from the file name.
+    private static List<ImportListItem> NewItemsInTree(string root, SourceTreeManifest manifest)
+    {
+        var found = new List<ImportListItem>();
+        foreach (var deviceDir in Directory.GetDirectories(root))
+        {
+            var dirName = Path.GetFileName(deviceDir);
+            var device = manifest.Items.Select(i => i.Device).FirstOrDefault(d => Sanitize(d) == dirName) ?? dirName;
+
+            void Scan(string section, string kind, params string[] extensions)
+            {
+                var sectionDir = Path.Combine(deviceDir, section);
+                if (!Directory.Exists(sectionDir)) return;
+                foreach (var file in Directory.GetFiles(sectionDir, "*", SearchOption.AllDirectories))
+                {
+                    var fileName = Path.GetFileName(file);
+                    var ext = extensions.FirstOrDefault(e => fileName.EndsWith(e, StringComparison.OrdinalIgnoreCase));
+                    if (ext == null || SourceTreeManifest.IsReadOnlyCompanion(fileName)) continue;
+
+                    var name = fileName.Substring(0, fileName.Length - ext.Length);
+                    var relDir = Path.GetDirectoryName(file)!.Substring(sectionDir.Length).Trim(Path.DirectorySeparatorChar).Replace(Path.DirectorySeparatorChar, '/');
+                    if (manifest.Find(device, kind, name) == null && !found.Any(i => i.Is(device, kind, name)))
+                        found.Add(new ImportListItem(device, kind, relDir, name, true));
+                }
+            }
+
+            Scan("Program blocks", "block", ".s7dcl", ".graph.il", ".awl");
+            Scan("PLC data types", "udt", ".s7dcl");
+            Scan("PLC tags", "tag table", ".csv");
+            Scan("HMI tags", "HMI tag table", ".csv");
+            foreach (var kind in HmiAlarmKinds.Where(k => File.Exists(Path.Combine(deviceDir, "HMI alarms", ItemStem(k, "") + ".csv"))))
+            {
+                if (manifest.Find(device, kind, "") == null) found.Add(new ImportListItem(device, kind, "", "", true));
+            }
+        }
+        return found;
+    }
+
+    // Items to write that were changed in TIA Portal since read_source_tree - their export now
+    // differs from what the manifest recorded - or that are new in the tree but already exist in
+    // the project. Writing them would discard what was done in TIA Portal.
+    private async Task<List<(ImportListItem Item, string Reason)>> FindConflicts(SourceTreeManifest manifest, List<ImportListItem> items)
+    {
+        var (current, _) = await ExportItems((device, kind, _, name) => items.Any(i => i.Is(device, kind, name)), null);
+        var conflicts = new List<(ImportListItem, string)>();
+        foreach (var exported in current.Where(e => e.Ok))
+        {
+            var item = items.First(i => i.Is(exported.Device, exported.Kind, exported.Name));
+            var entry = manifest.Find(exported.Device, exported.Kind, exported.Name);
+            if (entry == null)
+            {
+                conflicts.Add((item, "already exists in the project, but was never read into this tree. Read it (read_source_tree with items; this overwrites the file, so keep a copy), merge, and write again - or pass force=true to overwrite the project's version."));
+                continue;
+            }
+
+            var now = exported.Files.Where(f => !SourceTreeManifest.IsReadOnlyCompanion(f.Path))
+                .ToDictionary(f => f.Path, f => SourceTreeManifest.Hash(f.Content), StringComparer.OrdinalIgnoreCase);
+            var then = entry.WritableFiles.ToList();
+            if (now.Count != then.Count || then.Any(f => !now.TryGetValue(f.Key, out var hash) || hash != f.Value))
+                conflicts.Add((item, "changed in TIA Portal since read_source_tree. Read it again (read_source_tree with items; this overwrites the file, so keep a copy of your edit), merge, and write again - or pass force=true to overwrite the project's version."));
+        }
+        return conflicts;
+    }
+
     private async Task<(List<string> Created, List<string> Updated, List<string> Skipped, List<string> Failed)> ImportBlocks(
-        string plcName, string plcDir, List<ImportListItem> items, bool createMissing, bool overwriteExisting, bool dryRun)
+        string plcName, string plcDir, List<ImportListItem> items, bool createMissing, bool overwriteExisting, bool dryRun, List<ImportListItem> written)
     {
         var created = new List<string>();
         var updated = new List<string>();
@@ -1066,7 +1208,7 @@ Returns (and also writes to '<sourceDirectory>/_import_report.txt') a per-item r
                 if (dryRun) { updated.Add($"block '{label}' (dry run)"); continue; }
 
                 var name = item.ItemName;
-                writes.Add(new PendingWrite(name, $"block '{label}'", docs, false, () => _session.WriteBlockAsync(plcName, name, docs)));
+                writes.Add(new PendingWrite(item, $"block '{label}'", docs, false, () => _session.WriteBlockAsync(plcName, name, docs)));
                 continue;
             }
 
@@ -1088,7 +1230,7 @@ Returns (and also writes to '<sourceDirectory>/_import_report.txt') a per-item r
                 if (dryRun) { created.Add($"block '{label}' (dry run, GRAPH via template '{graphTemplateName}')"); continue; }
 
                 var (graphGroup, graphName, template) = (item.GroupPath, item.ItemName, graphTemplateName);
-                writes.Add(new PendingWrite(graphName, $"block '{label}' (GRAPH, template '{template}')", docs, true,
+                writes.Add(new PendingWrite(item, $"block '{label}' (GRAPH, template '{template}')", docs, true,
                     () => _session.CreateGraphBlockAsync(plcName, graphGroup, graphName, template, docs[0].Content)));
                 continue;
             }
@@ -1097,15 +1239,19 @@ Returns (and also writes to '<sourceDirectory>/_import_report.txt') a per-item r
 
             await EnsureBlockGroupPath(plcName, item.GroupPath, ensuredGroups);
             var (groupPath, blockName) = (item.GroupPath, item.ItemName);
-            writes.Add(new PendingWrite(blockName, $"block '{label}'", docs, true, () => _session.CreateBlockAsync(plcName, groupPath, blockName, docs, checkExisting: false)));
+            // Whole-block STL can't go through ImportFromDocuments - see create_plc_block's stlBlock.
+            var isStl = docs.Count == 1 && docs[0].FileName.EndsWith(".awl", StringComparison.OrdinalIgnoreCase);
+            writes.Add(new PendingWrite(item, $"block '{label}'", docs, true, isStl
+                ? () => _session.CreateStlBlockAsync(plcName, groupPath, blockName, docs)
+                : () => _session.CreateBlockAsync(plcName, groupPath, blockName, docs, checkExisting: false)));
         }
 
-        await WriteInDependencyOrder(plcName, writes, created, updated, failed, compileBetweenLayers: false);
+        await WriteInDependencyOrder(plcName, writes, created, updated, failed, written, compileBetweenLayers: false);
         return (created, updated, skipped, failed);
     }
 
     private async Task<(List<string> Created, List<string> Updated, List<string> Skipped, List<string> Failed)> ImportTypes(
-        string plcName, string plcDir, List<ImportListItem> items, bool createMissing, bool overwriteExisting, bool dryRun)
+        string plcName, string plcDir, List<ImportListItem> items, bool createMissing, bool overwriteExisting, bool dryRun, List<ImportListItem> written)
     {
         var created = new List<string>();
         var updated = new List<string>();
@@ -1134,7 +1280,7 @@ Returns (and also writes to '<sourceDirectory>/_import_report.txt') a per-item r
                 if (dryRun) { updated.Add($"udt '{label}' (dry run)"); continue; }
 
                 var name = item.ItemName;
-                writes.Add(new PendingWrite(name, $"udt '{label}'", docs, false, () => _session.WriteUdtAsync(plcName, name, docs)));
+                writes.Add(new PendingWrite(item, $"udt '{label}'", docs, false, () => _session.WriteUdtAsync(plcName, name, docs)));
             }
             else
             {
@@ -1143,11 +1289,11 @@ Returns (and also writes to '<sourceDirectory>/_import_report.txt') a per-item r
 
                 await EnsureTypeGroupPath(plcName, item.GroupPath, ensuredGroups);
                 var (groupPath, typeName) = (item.GroupPath, item.ItemName);
-                writes.Add(new PendingWrite(typeName, $"udt '{label}'", docs, true, () => _session.CreateUdtAsync(plcName, groupPath, typeName, docs)));
+                writes.Add(new PendingWrite(item, $"udt '{label}'", docs, true, () => _session.CreateUdtAsync(plcName, groupPath, typeName, docs)));
             }
         }
 
-        await WriteInDependencyOrder(plcName, writes, created, updated, failed, compileBetweenLayers: true);
+        await WriteInDependencyOrder(plcName, writes, created, updated, failed, written, compileBetweenLayers: true);
         return (created, updated, skipped, failed);
     }
 
@@ -1155,11 +1301,12 @@ Returns (and also writes to '<sourceDirectory>/_import_report.txt') a per-item r
     // class rather than a record - see ImportListItem.
     private sealed class PendingWrite
     {
-        public PendingWrite(string name, string label, List<BlockDocument> docs, bool isCreate, Func<Task<ImportResult>> write)
+        public PendingWrite(ImportListItem item, string label, List<BlockDocument> docs, bool isCreate, Func<Task<ImportResult>> write)
         {
-            Name = name; Label = label; Docs = docs; IsCreate = isCreate; Write = write;
+            Item = item; Label = label; Docs = docs; IsCreate = isCreate; Write = write;
         }
-        public string Name { get; }
+        public ImportListItem Item { get; }
+        public string Name => Item.ItemName;
         public string Label { get; }
         public List<BlockDocument> Docs { get; }
         public bool IsCreate { get; }
@@ -1174,7 +1321,7 @@ Returns (and also writes to '<sourceDirectory>/_import_report.txt') a per-item r
     // order, and blocks as global DBs/FBs before the FBs that call them and the instance DBs on
     // them. References are read from the source text (see DependencyLayers), so a create that
     // still fails is retried after a compile, as long as a pass creates something.
-    private async Task WriteInDependencyOrder(string plcName, List<PendingWrite> writes, List<string> created, List<string> updated, List<string> failed, bool compileBetweenLayers)
+    private async Task WriteInDependencyOrder(string plcName, List<PendingWrite> writes, List<string> created, List<string> updated, List<string> failed, List<ImportListItem> written, bool compileBetweenLayers)
     {
         var lastError = new Dictionary<PendingWrite, string>();
         var retry = new List<PendingWrite>();
@@ -1185,7 +1332,7 @@ Returns (and also writes to '<sourceDirectory>/_import_report.txt') a per-item r
             foreach (var write in layers[i])
             {
                 var result = await write.Write();
-                if (result.Success) (write.IsCreate ? created : updated).Add(write.Label);
+                if (result.Success) { (write.IsCreate ? created : updated).Add(write.Label); written.Add(write.Item); }
                 else if (write.IsCreate) { retry.Add(write); lastError[write] = string.Join(" | ", result.Messages); }
                 else failed.Add($"{write.Label}: {string.Join(" | ", result.Messages)}");
             }
@@ -1198,7 +1345,7 @@ Returns (and also writes to '<sourceDirectory>/_import_report.txt') a per-item r
             foreach (var write in retry)
             {
                 var result = await write.Write();
-                if (result.Success) created.Add(write.Label);
+                if (result.Success) { created.Add(write.Label); written.Add(write.Item); }
                 else { stillFailing.Add(write); lastError[write] = string.Join(" | ", result.Messages); }
             }
             if (stillFailing.Count == retry.Count) break;
@@ -1239,7 +1386,7 @@ Returns (and also writes to '<sourceDirectory>/_import_report.txt') a per-item r
     }
 
     private async Task<(List<string> Created, List<string> Updated, List<string> Skipped, List<string> Failed)> ImportTagTables(
-        string plcName, string plcDir, List<ImportListItem> items, bool createMissing, bool overwriteExisting, bool dryRun)
+        string plcName, string plcDir, List<ImportListItem> items, bool createMissing, bool overwriteExisting, bool dryRun, List<ImportListItem> written)
     {
         var created = new List<string>();
         var updated = new List<string>();
@@ -1267,7 +1414,7 @@ Returns (and also writes to '<sourceDirectory>/_import_report.txt') a per-item r
                 if (dryRun) { updated.Add($"tag table '{label}' (dry run, {tags.Length} tag(s))"); continue; }
 
                 var result = await _session.WriteTagTableAsync(plcName, item.ItemName, tags);
-                if (result.Success) updated.Add($"tag table '{label}' ({tags.Length} tag(s))");
+                if (result.Success) { updated.Add($"tag table '{label}' ({tags.Length} tag(s))"); written.Add(item); }
                 else failed.Add($"tag table '{label}': {string.Join(" | ", result.Messages)}");
             }
             else
@@ -1280,7 +1427,7 @@ Returns (and also writes to '<sourceDirectory>/_import_report.txt') a per-item r
                 if (!createResult.Success) { failed.Add($"tag table '{label}': {createResult.Error}"); continue; }
 
                 var writeResult = await _session.WriteTagTableAsync(plcName, item.ItemName, tags);
-                if (writeResult.Success) created.Add($"tag table '{label}' ({tags.Length} tag(s))");
+                if (writeResult.Success) { created.Add($"tag table '{label}' ({tags.Length} tag(s))"); written.Add(item); }
                 else failed.Add($"tag table '{label}': created empty, but writing tags failed: {string.Join(" | ", writeResult.Messages)}");
             }
         }
@@ -1289,7 +1436,7 @@ Returns (and also writes to '<sourceDirectory>/_import_report.txt') a per-item r
     }
 
     private async Task<(List<string> Created, List<string> Updated, List<string> Skipped, List<string> Failed)> ImportHmiTagTables(
-        string hmiName, string hmiDir, List<ImportListItem> items, bool createMissing, bool overwriteExisting, bool dryRun)
+        string hmiName, string hmiDir, List<ImportListItem> items, bool createMissing, bool overwriteExisting, bool dryRun, List<ImportListItem> written)
     {
         var created = new List<string>();
         var updated = new List<string>();
@@ -1317,7 +1464,7 @@ Returns (and also writes to '<sourceDirectory>/_import_report.txt') a per-item r
                 if (dryRun) { updated.Add($"HMI tag table '{label}' (dry run, {tags.Length} tag(s))"); continue; }
 
                 var result = await _session.WriteHmiTagTableAsync(hmiName, item.ItemName, tags);
-                if (result.Success) updated.Add($"HMI tag table '{label}' ({tags.Length} tag(s))");
+                if (result.Success) { updated.Add($"HMI tag table '{label}' ({tags.Length} tag(s))"); written.Add(item); }
                 else failed.Add($"HMI tag table '{label}': {string.Join(" | ", result.Messages)}");
             }
             else
@@ -1330,7 +1477,7 @@ Returns (and also writes to '<sourceDirectory>/_import_report.txt') a per-item r
                 if (!createResult.Success) { failed.Add($"HMI tag table '{label}': {createResult.Error}"); continue; }
 
                 var writeResult = await _session.WriteHmiTagTableAsync(hmiName, item.ItemName, tags);
-                if (writeResult.Success) created.Add($"HMI tag table '{label}' ({tags.Length} tag(s))");
+                if (writeResult.Success) { created.Add($"HMI tag table '{label}' ({tags.Length} tag(s))"); written.Add(item); }
                 else failed.Add($"HMI tag table '{label}': created empty, but writing tags failed: {string.Join(" | ", writeResult.Messages)}");
             }
         }
@@ -1342,7 +1489,7 @@ Returns (and also writes to '<sourceDirectory>/_import_report.txt') a per-item r
     // so createMissing/overwriteExisting are applied per-row here rather than per-CSV-file, unlike
     // every other section where one list item is one write call.
     private async Task<(List<string> Created, List<string> Updated, List<string> Skipped, List<string> Failed)> ImportHmiAlarms(
-        string hmiName, string hmiDir, List<ImportListItem> items, bool createMissing, bool overwriteExisting, bool dryRun)
+        string hmiName, string hmiDir, List<ImportListItem> items, bool createMissing, bool overwriteExisting, bool dryRun, List<ImportListItem> written)
     {
         var created = new List<string>();
         var updated = new List<string>();
@@ -1352,6 +1499,8 @@ Returns (and also writes to '<sourceDirectory>/_import_report.txt') a per-item r
 
         foreach (var item in items)
         {
+            // A file counts as written only if every row was - see write_source_tree's refresh.
+            var failedBefore = failed.Count;
             var itemName = item.Kind.Substring("HMI ".Length); // "DiscreteAlarms" / "AnalogAlarms" / "AlarmClasses"
             var file = Path.Combine(dir, itemName + ".csv");
             if (!File.Exists(file)) { failed.Add($"HMI {itemName}: no .csv file found at {file}"); continue; }
@@ -1373,6 +1522,7 @@ Returns (and also writes to '<sourceDirectory>/_import_report.txt') a per-item r
                     if (result.Success) (exists ? updated : created).Add($"HMI alarm class '{name}'");
                     else failed.Add($"HMI alarm class '{name}': {result.Error}");
                 }
+                if (!dryRun && failed.Count == failedBefore) written.Add(item);
                 continue;
             }
 
@@ -1399,6 +1549,7 @@ Returns (and also writes to '<sourceDirectory>/_import_report.txt') a per-item r
                 if (result.Success) (exists ? updated : created).Add($"HMI alarm '{name}'");
                 else failed.Add($"HMI alarm '{name}': {result.Error}");
             }
+            if (!dryRun && failed.Count == failedBefore) written.Add(item);
         }
 
         return (created, updated, skipped, failed);
