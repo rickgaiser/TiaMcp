@@ -194,7 +194,7 @@ New GRAPH blocks are created via `create_plc_block`'s `graphTemplateBlockName` (
   _export_summary.txt
 ```
 
-The source tree is LLM friendly and allows for many fast local queries or modifications on the codebase. `write_source_tree` can then be used to write the changes back to the TIA portal project.
+The source tree is LLM friendly and allows for many fast local queries or modifications on the codebase. `write_source_tree` can then be used to write the changes back to the TIA portal project. It writes UDTs, tag tables and blocks in dependency order, so a whole tree can also be restored into an empty PLC.
 
 ## License
 

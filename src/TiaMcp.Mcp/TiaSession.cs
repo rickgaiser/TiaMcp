@@ -170,9 +170,9 @@ public sealed class TiaSession
         return _sta.InvokeAsync(() => _connection.RenameTagTable(plcName, tableName, newName));
     }
 
-    public Task<ImportResult> CreateBlockAsync(string plcName, string groupPath, string blockName, IReadOnlyList<BlockDocument> documents)
+    public Task<ImportResult> CreateBlockAsync(string plcName, string groupPath, string blockName, IReadOnlyList<BlockDocument> documents, bool checkExisting = true)
     {
-        return _sta.InvokeAsync(() => _connection.CreateBlock(plcName, groupPath, blockName, documents));
+        return _sta.InvokeAsync(() => _connection.CreateBlock(plcName, groupPath, blockName, documents, checkExisting));
     }
 
     public Task<SimpleResult> CreateInstanceDbAsync(string plcName, string groupPath, string dbName, string instanceOfFbName)

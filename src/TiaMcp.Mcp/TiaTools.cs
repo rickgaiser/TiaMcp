@@ -937,7 +937,9 @@ The input is validated first (duplicate names, missing Name/DataType); on a vali
 
 _export_summary.txt doubles as the list of what to write back - no separate list format exists. Passing nothing re-imports the whole tree from '<sourceDirectory>/_export_summary.txt' (its 'OK' lines only - 'FAILED'/'STALE' lines have no valid export on disk and are skipped). To write back only a subset, make a copy of that file, delete the device sections/lines you don't want, and pass its path as itemList - or, since this list format is just plain text, pass a trimmed excerpt directly as itemList's string value instead of a file path (whichever is an existing file path is read as a file; anything else is parsed as literal list text). Lines/sections you don't recognize or that don't parse are silently ignored, so the file's header/footer lines (timestamp, 'Project:', 'Target:', 'Done: ...') don't need to be stripped out.
 
-For each item: if it already exists in the project, overwriteExisting controls whether it's updated in place or skipped; if it doesn't exist yet, createMissing controls whether it's created or skipped. Missing groups (folders) - for blocks, UDTs, tag tables, and HMI tag tables alike - are created automatically as needed, so restoring a full tree into an empty/new PLC or HMI doesn't require pre-creating any folders. A brand-new GRAPH block needs an existing GRAPH block in the same PLC to clone as a structural template (see create_plc_block) - this tool picks one automatically; if the PLC has no GRAPH block at all yet, new GRAPH blocks are skipped with a message to create one manually first. Does not auto-compile - call compile_plc afterward.
+For each item: if it already exists in the project, overwriteExisting controls whether it's updated in place or skipped; if it doesn't exist yet, createMissing controls whether it's created or skipped. Missing groups (folders) - for blocks, UDTs, tag tables, and HMI tag tables alike - are created automatically as needed, so restoring a full tree into an empty/new PLC or HMI doesn't require pre-creating any folders. A brand-new GRAPH block needs an existing GRAPH block in the same PLC to clone as a structural template (see create_plc_block) - this tool picks one automatically; if the PLC has no GRAPH block at all yet, new GRAPH blocks are skipped with a message to create one manually first.
+
+Writes in dependency order: UDTs, then tag tables, then blocks, with UDTs and blocks each split into layers by what their source references (nested UDTs first; global DBs and called FBs before their callers and instance DBs), compiling the PLC between UDT layers - imports can fail, or a UDT can silently lose nested start values, when what they reference isn't there yet. Not compiled at the end - call compile_plc afterward.
 
 Set dryRun to preview exactly what would be created/updated/skipped without writing anything - recommended before a real bulk write against a live project.
 
@@ -1000,14 +1002,16 @@ Returns (and also writes to '<sourceDirectory>/_import_report.txt') a per-item r
 
             var logs = new List<(List<string> Created, List<string> Updated, List<string> Skipped, List<string> Failed)>();
 
-            var blockItems = deviceItems.Where(i => i.Kind == "block").ToList();
-            if (blockItems.Count > 0) logs.Add(await ImportBlocks(deviceName, deviceDir, blockItems, createMissing, overwriteExisting, dryRun));
-
+            // Dependency order: tags can be UDT-typed, and blocks reference both UDTs and tags -
+            // a block imported before what it references fails to import.
             var udtItems = deviceItems.Where(i => i.Kind == "udt").ToList();
             if (udtItems.Count > 0) logs.Add(await ImportTypes(deviceName, deviceDir, udtItems, createMissing, overwriteExisting, dryRun));
 
             var tagTableItems = deviceItems.Where(i => i.Kind == "tag table").ToList();
             if (tagTableItems.Count > 0) logs.Add(await ImportTagTables(deviceName, deviceDir, tagTableItems, createMissing, overwriteExisting, dryRun));
+
+            var blockItems = deviceItems.Where(i => i.Kind == "block").ToList();
+            if (blockItems.Count > 0) logs.Add(await ImportBlocks(deviceName, deviceDir, blockItems, createMissing, overwriteExisting, dryRun));
 
             var hmiTagTableItems = deviceItems.Where(i => i.Kind == "HMI tag table").ToList();
             if (hmiTagTableItems.Count > 0) logs.Add(await ImportHmiTagTables(deviceName, deviceDir, hmiTagTableItems, createMissing, overwriteExisting, dryRun));
@@ -1051,6 +1055,8 @@ Returns (and also writes to '<sourceDirectory>/_import_report.txt') a per-item r
         var failed = new List<string>();
 
         var existingBlocks = (await _session.ListBlocksAsync(plcName)).Select(b => b.Name).ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var ensuredGroups = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var writes = new List<PendingWrite>();
         string? graphTemplateName = null;
         var graphTemplateSearched = false;
 
@@ -1071,9 +1077,8 @@ Returns (and also writes to '<sourceDirectory>/_import_report.txt') a per-item r
                 if (!overwriteExisting) { skipped.Add($"block '{label}' - already exists, overwriteExisting=false"); continue; }
                 if (dryRun) { updated.Add($"block '{label}' (dry run)"); continue; }
 
-                var result = await _session.WriteBlockAsync(plcName, item.ItemName, docs);
-                if (result.Success) updated.Add($"block '{label}'");
-                else failed.Add($"block '{label}': {string.Join(" | ", result.Messages)}");
+                var name = item.ItemName;
+                writes.Add(new PendingWrite(name, $"block '{label}'", docs, false, () => _session.WriteBlockAsync(plcName, name, docs)));
                 continue;
             }
 
@@ -1094,20 +1099,20 @@ Returns (and also writes to '<sourceDirectory>/_import_report.txt') a per-item r
                 }
                 if (dryRun) { created.Add($"block '{label}' (dry run, GRAPH via template '{graphTemplateName}')"); continue; }
 
-                var graphResult = await _session.CreateGraphBlockAsync(plcName, item.GroupPath, item.ItemName, graphTemplateName, docs[0].Content);
-                if (graphResult.Success) created.Add($"block '{label}' (GRAPH, template '{graphTemplateName}')");
-                else failed.Add($"block '{label}': {string.Join(" | ", graphResult.Messages)}");
+                var (graphGroup, graphName, template) = (item.GroupPath, item.ItemName, graphTemplateName);
+                writes.Add(new PendingWrite(graphName, $"block '{label}' (GRAPH, template '{template}')", docs, true,
+                    () => _session.CreateGraphBlockAsync(plcName, graphGroup, graphName, template, docs[0].Content)));
                 continue;
             }
 
             if (dryRun) { created.Add($"block '{label}' (dry run)"); continue; }
 
-            await EnsureBlockGroupPath(plcName, item.GroupPath);
-            var createResult = await _session.CreateBlockAsync(plcName, item.GroupPath, item.ItemName, docs);
-            if (createResult.Success) created.Add($"block '{label}'");
-            else failed.Add($"block '{label}': {string.Join(" | ", createResult.Messages)}");
+            await EnsureBlockGroupPath(plcName, item.GroupPath, ensuredGroups);
+            var (groupPath, blockName) = (item.GroupPath, item.ItemName);
+            writes.Add(new PendingWrite(blockName, $"block '{label}'", docs, true, () => _session.CreateBlockAsync(plcName, groupPath, blockName, docs, checkExisting: false)));
         }
 
+        await WriteInDependencyOrder(plcName, writes, created, updated, failed, compileBetweenLayers: false);
         return (created, updated, skipped, failed);
     }
 
@@ -1120,6 +1125,8 @@ Returns (and also writes to '<sourceDirectory>/_import_report.txt') a per-item r
         var failed = new List<string>();
 
         var existingTypes = (await _session.ListPlcTypesAsync(plcName)).Select(t => t.Name).ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var ensuredGroups = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var writes = new List<PendingWrite>();
 
         foreach (var item in items)
         {
@@ -1130,30 +1137,117 @@ Returns (and also writes to '<sourceDirectory>/_import_report.txt') a per-item r
             if (!File.Exists(file)) file = Path.Combine(dir, sanitizedName + ".txt");
             if (!File.Exists(file)) { failed.Add($"udt '{label}': no source file found in {dir}"); continue; }
 
-            var docs = new List<BlockDocument> { new($"{item.ItemName}.s7dcl", File.ReadAllText(file)) };
+            var resFile = Path.Combine(dir, sanitizedName + ".s7res");
+            var docs = UdtDocuments(item.ItemName, File.ReadAllText(file), File.Exists(resFile) ? File.ReadAllText(resFile) : null);
             var exists = existingTypes.Contains(item.ItemName);
             if (exists)
             {
                 if (!overwriteExisting) { skipped.Add($"udt '{label}' - already exists, overwriteExisting=false"); continue; }
                 if (dryRun) { updated.Add($"udt '{label}' (dry run)"); continue; }
 
-                var result = await _session.WriteUdtAsync(plcName, item.ItemName, docs);
-                if (result.Success) updated.Add($"udt '{label}'");
-                else failed.Add($"udt '{label}': {string.Join(" | ", result.Messages)}");
+                var name = item.ItemName;
+                writes.Add(new PendingWrite(name, $"udt '{label}'", docs, false, () => _session.WriteUdtAsync(plcName, name, docs)));
             }
             else
             {
                 if (!createMissing) { skipped.Add($"udt '{label}' - does not exist, createMissing=false"); continue; }
                 if (dryRun) { created.Add($"udt '{label}' (dry run)"); continue; }
 
-                await EnsureTypeGroupPath(plcName, item.GroupPath);
-                var result = await _session.CreateUdtAsync(plcName, item.GroupPath, item.ItemName, docs);
-                if (result.Success) created.Add($"udt '{label}'");
-                else failed.Add($"udt '{label}': {string.Join(" | ", result.Messages)}");
+                await EnsureTypeGroupPath(plcName, item.GroupPath, ensuredGroups);
+                var (groupPath, typeName) = (item.GroupPath, item.ItemName);
+                writes.Add(new PendingWrite(typeName, $"udt '{label}'", docs, true, () => _session.CreateUdtAsync(plcName, groupPath, typeName, docs)));
             }
         }
 
+        await WriteInDependencyOrder(plcName, writes, created, updated, failed, compileBetweenLayers: true);
         return (created, updated, skipped, failed);
+    }
+
+    // One UDT or block write (update or create) decided by ImportTypes/ImportBlocks. A plain
+    // class rather than a record - see ImportListItem.
+    private sealed class PendingWrite
+    {
+        public PendingWrite(string name, string label, List<BlockDocument> docs, bool isCreate, Func<Task<ImportResult>> write)
+        {
+            Name = name; Label = label; Docs = docs; IsCreate = isCreate; Write = write;
+        }
+        public string Name { get; }
+        public string Label { get; }
+        public List<BlockDocument> Docs { get; }
+        public bool IsCreate { get; }
+        public Func<Task<ImportResult>> Write { get; }
+    }
+
+    // Writes UDTs/blocks after what they reference: an import that references something not
+    // imported yet fails ("Dependent object ... not found") or, for a UDT nesting another UDT,
+    // succeeds but silently drops the nested start values unless the nested UDT is also compiled
+    // - hence compileBetweenLayers for UDTs. Blocks only need the order (a full round trip of a
+    // ~500-block PLC came back identical without compiles between block layers). That gives UDTs in nesting
+    // order, and blocks as global DBs/FBs before the FBs that call them and the instance DBs on
+    // them. References are read from the source text (see DependencyLayers), so a create that
+    // still fails is retried after a compile, as long as a pass creates something.
+    private async Task WriteInDependencyOrder(string plcName, List<PendingWrite> writes, List<string> created, List<string> updated, List<string> failed, bool compileBetweenLayers)
+    {
+        var lastError = new Dictionary<PendingWrite, string>();
+        var retry = new List<PendingWrite>();
+        var layers = DependencyLayers(writes);
+        for (var i = 0; i < layers.Count; i++)
+        {
+            if (i > 0 && compileBetweenLayers) await _session.CompileAsync(plcName);
+            foreach (var write in layers[i])
+            {
+                var result = await write.Write();
+                if (result.Success) (write.IsCreate ? created : updated).Add(write.Label);
+                else if (write.IsCreate) { retry.Add(write); lastError[write] = string.Join(" | ", result.Messages); }
+                else failed.Add($"{write.Label}: {string.Join(" | ", result.Messages)}");
+            }
+        }
+
+        while (retry.Count > 0)
+        {
+            await _session.CompileAsync(plcName);
+            var stillFailing = new List<PendingWrite>();
+            foreach (var write in retry)
+            {
+                var result = await write.Write();
+                if (result.Success) created.Add(write.Label);
+                else { stillFailing.Add(write); lastError[write] = string.Join(" | ", result.Messages); }
+            }
+            if (stillFailing.Count == retry.Count) break;
+            retry = stillFailing;
+        }
+        foreach (var write in retry) failed.Add($"{write.Label}: {lastError[write]}");
+    }
+
+    private static readonly Regex IdentifierToken = new("\"([^\"]+)\"|[A-Za-z_][A-Za-z0-9_]*", RegexOptions.Compiled);
+
+    // Groups writes into layers where each item only references items of earlier layers. A
+    // reference is any identifier in the item's source (not its .s7res texts) that names another
+    // item in the same set - e.g. "DATA_BLOCK "x" : FB_y", "member : _.UDT_z". A cycle, or a name
+    // that happens to match a variable, ends up in the last layer, where the retry in
+    // WriteInDependencyOrder still covers it.
+    private static List<List<PendingWrite>> DependencyLayers(List<PendingWrite> writes)
+    {
+        var names = new HashSet<string>(writes.Select(w => w.Name), StringComparer.OrdinalIgnoreCase);
+        var dependencies = writes.ToDictionary(w => w, w => IdentifierToken
+            .Matches(string.Join("\n", w.Docs.Where(d => !d.FileName.EndsWith(".s7res", StringComparison.OrdinalIgnoreCase)).Select(d => d.Content)))
+            .Cast<Match>()
+            .Select(m => m.Groups[1].Success ? m.Groups[1].Value : m.Value)
+            .Where(t => names.Contains(t) && !string.Equals(t, w.Name, StringComparison.OrdinalIgnoreCase))
+            .ToHashSet(StringComparer.OrdinalIgnoreCase));
+
+        var layers = new List<List<PendingWrite>>();
+        var placed = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var remaining = writes;
+        while (remaining.Count > 0)
+        {
+            var layer = remaining.Where(w => dependencies[w].All(placed.Contains)).ToList();
+            if (layer.Count == 0) layer = remaining;
+            layers.Add(layer);
+            foreach (var w in layer) placed.Add(w.Name);
+            remaining = remaining.Except(layer).ToList();
+        }
+        return layers;
     }
 
     private async Task<(List<string> Created, List<string> Updated, List<string> Skipped, List<string> Failed)> ImportTagTables(
@@ -1165,6 +1259,7 @@ Returns (and also writes to '<sourceDirectory>/_import_report.txt') a per-item r
         var failed = new List<string>();
 
         var existingTables = (await _session.ListTagTablesAsync(plcName)).Select(t => t.Name).ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var ensuredGroups = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
         foreach (var item in items)
         {
@@ -1192,7 +1287,7 @@ Returns (and also writes to '<sourceDirectory>/_import_report.txt') a per-item r
                 if (!createMissing) { skipped.Add($"tag table '{label}' - does not exist, createMissing=false"); continue; }
                 if (dryRun) { created.Add($"tag table '{label}' (dry run, {tags.Length} tag(s))"); continue; }
 
-                await EnsureTagTableGroupPath(plcName, item.GroupPath);
+                await EnsureTagTableGroupPath(plcName, item.GroupPath, ensuredGroups);
                 var createResult = await _session.CreateTagTableAsync(plcName, item.GroupPath, item.ItemName);
                 if (!createResult.Success) { failed.Add($"tag table '{label}': {createResult.Error}"); continue; }
 
@@ -1214,6 +1309,7 @@ Returns (and also writes to '<sourceDirectory>/_import_report.txt') a per-item r
         var failed = new List<string>();
 
         var existingTables = (await _session.ListHmiTagTablesAsync(hmiName)).Select(t => t.Name).ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var ensuredGroups = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
         foreach (var item in items)
         {
@@ -1241,7 +1337,7 @@ Returns (and also writes to '<sourceDirectory>/_import_report.txt') a per-item r
                 if (!createMissing) { skipped.Add($"HMI tag table '{label}' - does not exist, createMissing=false"); continue; }
                 if (dryRun) { created.Add($"HMI tag table '{label}' (dry run, {tags.Length} tag(s))"); continue; }
 
-                await EnsureHmiTagTableGroupPath(hmiName, item.GroupPath);
+                await EnsureHmiTagTableGroupPath(hmiName, item.GroupPath, ensuredGroups);
                 var createResult = await _session.CreateHmiTagTableAsync(hmiName, item.GroupPath, item.ItemName);
                 if (!createResult.Success) { failed.Add($"HMI tag table '{label}': {createResult.Error}"); continue; }
 
@@ -1357,28 +1453,31 @@ Returns (and also writes to '<sourceDirectory>/_import_report.txt') a per-item r
     // create_hmi_tag_table's "group must already exist" requirement doesn't block restoring a full
     // tree into an empty/new PLC or HMI. Failures (including "already exists") are ignored here - a
     // genuine problem still surfaces from the subsequent create call itself right after this runs.
-    private static async Task EnsureGroupPath(string groupPath, Func<string, string, Task> createGroup)
+    // ensured: group paths already handled in this import, so each folder is created (or found to
+    // exist - a create that throws, which is slow over Openness) once rather than once per item.
+    private static async Task EnsureGroupPath(string groupPath, Func<string, string, Task> createGroup, ISet<string> ensured)
     {
         if (string.IsNullOrEmpty(groupPath)) return;
         var current = "";
         foreach (var segment in groupPath.Split('/'))
         {
-            await createGroup(current, segment);
-            current = string.IsNullOrEmpty(current) ? segment : $"{current}/{segment}";
+            var path = string.IsNullOrEmpty(current) ? segment : $"{current}/{segment}";
+            if (ensured.Add(path)) await createGroup(current, segment);
+            current = path;
         }
     }
 
-    private Task EnsureBlockGroupPath(string plcName, string groupPath) =>
-        EnsureGroupPath(groupPath, (parent, segment) => _session.CreateBlockGroupAsync(plcName, parent, segment));
+    private Task EnsureBlockGroupPath(string plcName, string groupPath, ISet<string> ensured) =>
+        EnsureGroupPath(groupPath, (parent, segment) => _session.CreateBlockGroupAsync(plcName, parent, segment), ensured);
 
-    private Task EnsureTypeGroupPath(string plcName, string groupPath) =>
-        EnsureGroupPath(groupPath, (parent, segment) => _session.CreateTypeGroupAsync(plcName, parent, segment));
+    private Task EnsureTypeGroupPath(string plcName, string groupPath, ISet<string> ensured) =>
+        EnsureGroupPath(groupPath, (parent, segment) => _session.CreateTypeGroupAsync(plcName, parent, segment), ensured);
 
-    private Task EnsureTagTableGroupPath(string plcName, string groupPath) =>
-        EnsureGroupPath(groupPath, (parent, segment) => _session.CreateTagTableGroupAsync(plcName, parent, segment));
+    private Task EnsureTagTableGroupPath(string plcName, string groupPath, ISet<string> ensured) =>
+        EnsureGroupPath(groupPath, (parent, segment) => _session.CreateTagTableGroupAsync(plcName, parent, segment), ensured);
 
-    private Task EnsureHmiTagTableGroupPath(string hmiName, string groupPath) =>
-        EnsureGroupPath(groupPath, (parent, segment) => _session.CreateHmiTagTableGroupAsync(hmiName, parent, segment));
+    private Task EnsureHmiTagTableGroupPath(string hmiName, string groupPath, ISet<string> ensured) =>
+        EnsureGroupPath(groupPath, (parent, segment) => _session.CreateHmiTagTableGroupAsync(hmiName, parent, segment), ensured);
 
     // Parses read_source_tree's _export_summary.txt format (or a hand-trimmed copy/inline excerpt of
     // it) back into importable items - see write_source_tree. Unrecognized lines (headers, blank

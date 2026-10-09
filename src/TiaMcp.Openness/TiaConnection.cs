@@ -1520,13 +1520,14 @@ public sealed class TiaConnection : IDisposable
         return WriteStlBlock(software, blockName, documents, targetGroup);
     }
 
-    public ImportResult CreateBlock(string plcName, string groupPath, string blockName, IReadOnlyList<BlockDocument> documents)
+    // checkExisting: false when the caller already knows the name is free (write_source_tree
+    // lists the blocks once) - the lookup walks the whole block tree, per created block.
+    public ImportResult CreateBlock(string plcName, string groupPath, string blockName, IReadOnlyList<BlockDocument> documents, bool checkExisting = true)
     {
         EnsureConnected();
         var software = GetSoftware(plcName);
 
-        var existing = FindBlockByName(software.BlockGroup.Blocks, software.BlockGroup.Groups, blockName);
-        if (existing != null)
+        if (checkExisting && FindBlockByName(software.BlockGroup.Blocks, software.BlockGroup.Groups, blockName) != null)
         {
             return new ImportResult(false, new[] { $"A block named '{blockName}' already exists in PLC '{plcName}' (block names are unique per-PLC, not per-group). Use write_block to edit it, or pick a different name." });
         }
@@ -2250,12 +2251,15 @@ public sealed class TiaConnection : IDisposable
             return new WriteTagsResult(false, errors);
         }
 
+        // Indexed once: looking each tag up by walking table.Tags costs a round trip to TIA per tag
+        // walked, which made writing a table quadratic (~0.2 s per tag at a few hundred tags).
+        var byName = IndexByName(table.Tags.OfType<PlcTag>(), t => t.Name);
         var messages = new List<string>();
         foreach (var spec in tags)
         {
             try
             {
-                var existing = table.Tags.OfType<PlcTag>().FirstOrDefault(t => string.Equals(t.Name, spec.Name, StringComparison.OrdinalIgnoreCase));
+                byName.TryGetValue(spec.Name, out var existing);
                 var tag = existing;
                 if (tag != null)
                 {
@@ -2265,6 +2269,7 @@ public sealed class TiaConnection : IDisposable
                 else
                 {
                     tag = table.Tags.Create(spec.Name, spec.DataType, spec.LogicalAddress ?? "");
+                    byName[tag.Name] = tag;
                 }
                 if (spec.Comment != null) SetComment(tag.Comment, spec.Comment);
                 SetExternalFlags(tag, spec);
@@ -2342,6 +2347,14 @@ public sealed class TiaConnection : IDisposable
         }
 
         return null;
+    }
+
+    // Case-insensitive name index for the write loops; reads each item's Name once.
+    private static Dictionary<string, T> IndexByName<T>(IEnumerable<T> items, Func<T, string> name)
+    {
+        var index = new Dictionary<string, T>(StringComparer.OrdinalIgnoreCase);
+        foreach (var item in items) index[name(item)] = item;
+        return index;
     }
 
     // Visible/Writable depend on Accessible: enable Accessible before them, disable it after them.
@@ -2663,13 +2676,17 @@ public sealed class TiaConnection : IDisposable
             return new WriteTagsResult(false, errors);
         }
 
+        // Indexed once: looking each tag up by walking table.Tags costs a round trip to TIA per tag
+        // walked, which made writing a table quadratic (~0.2 s per tag at a few hundred tags).
+        var byName = IndexByName(table.Tags.OfType<HmiTag>(), t => t.Name);
         var messages = new List<string>();
         foreach (var spec in tags)
         {
             try
             {
-                var existing = table.Tags.OfType<HmiTag>().FirstOrDefault(t => string.Equals(t.Name, spec.Name, StringComparison.OrdinalIgnoreCase));
+                byName.TryGetValue(spec.Name, out var existing);
                 var tag = existing ?? table.Tags.Create(spec.Name);
+                if (existing == null) byName[tag.Name] = tag;
                 // Bound either by this spec or already in the project - a row that only updates,
                 // say, the comment of a bound tag carries no Connection/PlcTag of its own.
                 bool isPlcBound = (!string.IsNullOrEmpty(spec.Connection) && !string.IsNullOrEmpty(spec.PlcTag))
