@@ -7,8 +7,9 @@ namespace TiaMcp.Openness;
 /// Detects the duplicate multilingual-text-ID defect found in Phase 0: TIA Portal's own
 /// ExportAsDocuments can generate an .s7res file where two different comment/title texts
 /// share the same generated "MLC_xxx" ID. Re-importing such a file fails with "The
-/// resource file contains corrupted data". This only detects the problem - see
-/// TiaConnection.WriteBlock for why automatic repair is deliberately not attempted.
+/// resource file contains corrupted data". This only detects the problem - network
+/// titles/comments are repaired on the read side (TiaConnection.PatchMissingNetworkTitles),
+/// where the block's XML export says which text belongs to which network.
 /// </summary>
 public static class ResourceFileGuard
 {

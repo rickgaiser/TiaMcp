@@ -509,7 +509,16 @@ public sealed class TiaConnection : IDisposable
             if (allNetworkInfos.All(n => n.Title.Count == 0 && n.Comment.Count == 0)) return;
 
             var resIndex = docs.FindIndex(d => d.FileName.EndsWith(".s7res", StringComparison.OrdinalIgnoreCase));
-            var (newDcl, newRes) = RebuildDclWithNetworkTitles(docs[dclIndex].Content, resIndex >= 0 ? docs[resIndex].Content : null, allNetworkInfos);
+            var res = resIndex >= 0 ? docs[resIndex].Content : null;
+
+            // ExportAsDocuments can also give two networks' titles/comments the same text id (see
+            // ResourceFileGuard), which makes the block refuse to import. The XML has each network's
+            // own text, so treat those references as missing: the rebuild below re-adds them from
+            // the XML under unique ids, after which the duplicated entries can go.
+            var duplicateIds = new HashSet<string>(res == null ? Array.Empty<string>() : ResourceFileGuard.FindDuplicateIds(res));
+            var (newDcl, newRes) = RebuildDclWithNetworkTitles(docs[dclIndex].Content, res, allNetworkInfos, duplicateIds);
+            foreach (var id in duplicateIds.Where(id => !newDcl.Contains($"\"{id}\"")))
+                newRes = Regex.Replace(newRes, $@"(?m)^[ \t]*-[ \t]*id:[ \t]*{Regex.Escape(id)}[ \t]*\r?\n(?:(?![ \t]*-[ \t]*id:).*(?:\r?\n|$))*", "");
 
             docs[dclIndex] = docs[dclIndex] with { Content = newDcl };
             if (resIndex >= 0) docs[resIndex] = docs[resIndex] with { Content = newRes };
@@ -963,7 +972,9 @@ public sealed class TiaConnection : IDisposable
     // and returns the .s7dcl/.s7res unchanged rather than risk mangling them; every network's
     // title/comment then simply stays available only in '<name>.stl-networks.xml' (STL networks) or
     // wherever the relay left it (surviving networks), same as before this method existed.
-    private static (string Dcl, string Res) RebuildDclWithNetworkTitles(string dcl, string? res, List<StlNetworkInfo> allNetworkInfos)
+    // duplicateIds: text ids whose S7_NetworkTitle/S7_NetworkComment references are dropped and
+    // re-added like missing ones - see PatchMissingNetworkTitles.
+    private static (string Dcl, string Res) RebuildDclWithNetworkTitles(string dcl, string? res, List<StlNetworkInfo> allNetworkInfos, ISet<string>? duplicateIds = null)
     {
         var starts = NetworkStartRegex.Matches(dcl).Cast<Match>().ToList();
         var blockEndMatch = BlockEndRegex.Match(dcl);
@@ -996,11 +1007,14 @@ public sealed class TiaConnection : IDisposable
         {
             merged.Append(info.IsStl
                 ? RenderStlPlaceholderNetwork(info, indent, resSb)
-                : PatchChunkNetworkTitle(chunks[chunkIdx++], info, resSb));
+                : PatchChunkNetworkTitle(chunks[chunkIdx++], info, resSb, duplicateIds));
         }
         merged.Append(tail);
 
-        return (merged.ToString(), resSb.ToString());
+        // The patching above writes '\n'; keep the files' own line endings so they aren't mixed.
+        string Endings(string text, string? like) =>
+            like != null && like.Contains("\r\n") ? text.Replace("\r\n", "\n").Replace("\n", "\r\n") : text;
+        return (Endings(merged.ToString(), dcl), Endings(resSb.ToString(), res ?? dcl));
     }
 
     private static string RenderStlPlaceholderNetwork(StlNetworkInfo info, string indent, StringBuilder resSb)
@@ -1036,23 +1050,23 @@ public sealed class TiaConnection : IDisposable
     // S7_NetworkTitle/S7_NetworkComment when the relay reimport dropped it - this happens even for
     // networks the relay never touched beyond carrying them through Import()/ExportAsDocuments
     // again. Only adds what's actually missing: a chunk that already carries its own
-    // S7_NetworkTitle or S7_NetworkComment keeps it untouched, this only fills the gap.
-    private static string PatchChunkNetworkTitle(string chunk, StlNetworkInfo info, StringBuilder resSb)
+    // S7_NetworkTitle or S7_NetworkComment keeps it untouched, this only fills the gap - except a
+    // reference to one of duplicateIds, which is dropped and re-added from info.
+    private static string PatchChunkNetworkTitle(string chunk, StlNetworkInfo info, StringBuilder resSb, ISet<string>? duplicateIds = null)
     {
-        if (info.Title.Count == 0 && info.Comment.Count == 0) return chunk;
-
         var match = NetworkStartRegex.Match(chunk);
         if (!match.Success || match.Index != 0) return chunk;
 
-        var attrsText = match.Groups["attrs"].Value;
-        var hasTitle = attrsText.Contains("S7_NetworkTitle");
-        var hasComment = attrsText.Contains("S7_NetworkComment");
+        var indent = match.Groups["indent"].Value;
+        var attrs = match.Groups["attrs"].Value.Split(';').Select(a => a.Trim()).Where(a => a.Length > 0).ToList();
+        var dropped = duplicateIds == null || duplicateIds.Count == 0 ? 0 : attrs.RemoveAll(a =>
+            (a.StartsWith("S7_NetworkTitle") || a.StartsWith("S7_NetworkComment")) && duplicateIds.Any(id => a.Contains($"\"{id}\"")));
+
+        var hasTitle = attrs.Any(a => a.StartsWith("S7_NetworkTitle"));
+        var hasComment = attrs.Any(a => a.StartsWith("S7_NetworkComment"));
         var needsTitle = !hasTitle && info.Title.Count > 0;
         var needsComment = !hasComment && info.Comment.Count > 0;
-        if (!needsTitle && !needsComment) return chunk;
-
-        var indent = match.Groups["indent"].Value;
-        var attrs = attrsText.Split(';').Select(a => a.Trim()).Where(a => a.Length > 0).ToList();
+        if (!needsTitle && !needsComment && dropped == 0) return chunk;
 
         if (needsComment)
         {
@@ -1081,7 +1095,27 @@ public sealed class TiaConnection : IDisposable
         resSb.Append("  - id: ").Append(id).Append('\n');
         foreach (var (culture, text) in texts)
         {
-            resSb.Append("    ").Append(culture).Append(": '").Append(text.Replace("'", "''")).Append("'\n");
+            var normalized = text.Replace("\r\n", "\n");
+            if (normalized.IndexOf('\n') < 0)
+            {
+                resSb.Append("    ").Append(culture).Append(": '").Append(normalized.Replace("'", "''")).Append("'\n");
+                continue;
+            }
+
+            // Multi-line text as a YAML block scalar, like TIA's own export: inside a quoted
+            // scalar YAML folds each line break into a space, so the import would lose them.
+            // '+' keeps a trailing line break, '-' means there is none; an explicit indent (2)
+            // is only needed when the first line itself starts with whitespace.
+            var keepTrailing = normalized.EndsWith("\n");
+            var lines = (keepTrailing ? normalized.Substring(0, normalized.Length - 1) : normalized).Split('\n');
+            resSb.Append("    ").Append(culture).Append(": |")
+                .Append(lines[0].StartsWith(" ") || lines[0].StartsWith("\t") ? "2" : "")
+                .Append(keepTrailing ? '+' : '-').Append('\n');
+            foreach (var line in lines)
+            {
+                if (line.Length > 0) resSb.Append("      ").Append(line);
+                resSb.Append('\n');
+            }
         }
     }
 
@@ -1635,8 +1669,8 @@ public sealed class TiaConnection : IDisposable
                 {
                     $"Refusing to import: the .s7res resource file has {dupes.Count} duplicate multilingual-text ID(s) ({string.Join(", ", dupes)}). " +
                     "This is a known TIA Portal export defect (see Phase 0 findings) where different comment/title texts collide onto the same generated ID. " +
-                    "Automatic repair isn't implemented yet because it would require assuming the Nth duplicate reference in the .s7dcl lines up with the Nth matching entry in the .s7res - an unverified heuristic that could silently attach the wrong comment to the wrong network. " +
-                    "Edit this block manually in the TIA Portal GUI for now.",
+                    "read_plc_block/read_source_tree repair duplicated network titles/comments from the block's XML export, so re-read the block and retry. " +
+                    "If it still has duplicates, edit this block manually in the TIA Portal GUI - guessing which entry belongs to which reference could attach the wrong text.",
                 });
             }
         }
