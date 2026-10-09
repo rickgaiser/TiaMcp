@@ -554,7 +554,7 @@ public static class GraphConverter
             ApplyBranchesAndConnections(seq, seqEdit, removedStepNumbers, removedTransNumbers, ilStepNumbers, ilTransNumbers, seqIdx);
         }
 
-        // A block name change is honored (create_block/write_block both rename via the caller's
+        // A block name change is honored (creating and writing a block both rename via the caller's
         // target blockName, matching the existing .s7dcl-route convention) - everything else about
         // AttributeList (Number, etc.) is left untouched so this is a true in-place edit.
         return doc.ToString();

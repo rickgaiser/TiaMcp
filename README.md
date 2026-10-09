@@ -18,14 +18,15 @@ Special features that make TiaMcp fast for LLM's and human-readable friendly:
 | LAD | `.s7dcl` / `.s7res` | Yes | Yes |
 | Global DB (`DATA_BLOCK`) | `.s7dcl` / `.s7res` | Yes | Yes |
 | GRAPH (S7-GRAPH/SFC) | `.graph.il` | Yes | Partial |
-| Instance-DB | full member list (no file export) | Yes | Create-only |
+| Instance-DB | `.s7dcl` + read-only `.interface.txt` (resolved member list) | Yes | Create-only |
 | STL (whole-block) | `.awl` | Yes | Yes |
 | STL (embedded in mixed FBD/LAD/SCL block) | `.stl-networks.awl` (or `.stl-networks.xml` fallback) + `.s7dcl`/`.s7res` | Yes | No |
 | UDT (PLC data type) | `.s7dcl` / `.s7res` | Yes | Yes |
 | PLC tag table | `.csv`, Excel-compatible (synthesized) | Yes | Yes |
 | HMI tag table (WinCC Unified) | `.csv`, Excel-compatible (synthesized) | Yes | Yes |
 | HMI alarms (WinCC Unified) | `.csv`, Excel-compatible (synthesized) | Yes | Yes |
-| Source tree export/import (whole project) | native extension per item (`.txt` appended only when an item has none) | Yes | Yes |
+
+All source is read and written as files in a [source tree](#source-tree) on disk, so an LLM reads only what it needs and edits with small diffs instead of passing whole blocks through its context.
 
 ## Prerequisites
 
@@ -68,29 +69,22 @@ All MCP tools exposed by the server, grouped by area.
 | `project_status` | Report unsaved-changes state, author, last-saved info |
 | `save_project` / `save_project_as` | Save in place, or save a copy to a new folder |
 | `close_project` | Close the connected project |
+| `list_project` | List PLC and HMI software with their blocks (language, consistency), UDTs, tag tables and empty groups — names only, fast; filter by text or software |
 
 ### PLC blocks
 
 | Tool | Purpose |
 |---|---|
-| `list_plc_devices` | List PLC devices in the project |
-| `list_plc_blocks` | List program blocks with group path, language, consistency |
-| `read_plc_block` | Read a block's source — `.s7dcl`/`.s7res` for SCL/FBD/LAD, `.graph.il` for GRAPH, full member list for instance-DBs |
-| `write_plc_block` | Overwrite an existing block's source in place; doesn't auto-compile |
-| `create_plc_block` | Create a new block (any language) in a group, from source text — `graphTemplateBlockName` for GRAPH, `stlBlock` for whole-block STL |
-| `create_plc_instance_db` | Create an instance-DB bound to an FB type |
+| `create_plc_instance_db` | Create an instance-DB bound to an FB type, without writing its source |
 | `delete_plc_block` | Delete a single block by name (any language, including GRAPH and instance-DBs) — recovery path for a block stuck INCONSISTENT |
 | `rename_plc_block` | Rename an existing block (any language, including instance-DBs) in place — safe even with real dependents |
 | `create_plc_group` / `delete_plc_group` / `rename_plc_group` | Manage block group folders |
 | `compile_plc` | Compile a PLC's software, report structured errors/warnings |
-| `search_plc` | Substring search over block, tag-table, and UDT names |
 
 ### PLC tag tables
 
 | Tool | Purpose |
 |---|---|
-| `list_plc_tag_tables` / `read_plc_tag_table` | List/read PLC tag tables |
-| `write_plc_tag_table` | Create or update tags by name/data type/logical address |
 | `rename_plc_tag` | Rename a single tag, keeping references in blocks intact |
 | `create_plc_tag_table` | Create a new, empty PLC tag table in a group (or the root) |
 | `delete_plc_tag_table` / `rename_plc_tag_table` | Delete or rename a PLC tag table by name |
@@ -100,9 +94,6 @@ All MCP tools exposed by the server, grouped by area.
 
 | Tool | Purpose |
 |---|---|
-| `list_plc_data_types` / `read_plc_udt` | List/read UDTs (PLC data types) |
-| `write_plc_udt` | Overwrite an existing UDT's field list in place |
-| `create_plc_udt` | Create a new UDT in an existing group (or the root) |
 | `delete_plc_udt` / `rename_plc_udt` | Delete (fails if still used as a member type elsewhere), or rename, a UDT |
 | `create_plc_udt_group` / `delete_plc_udt_group` / `rename_plc_udt_group` | Manage UDT group folders |
 
@@ -110,9 +101,6 @@ All MCP tools exposed by the server, grouped by area.
 
 | Tool | Purpose |
 |---|---|
-| `list_hmi_devices` | List WinCC Unified HMI devices in the project |
-| `list_hmi_tag_tables` / `read_hmi_tag_table` | List/read WinCC Unified HMI tag tables |
-| `write_hmi_tag_table` | Create or update HMI tags by name/data type/address/PLC binding |
 | `rename_hmi_tag` | Rename a single HMI tag, keeping references in alarms intact |
 | `create_hmi_tag_table` | Create a new, empty HMI tag table in a group (or the root) |
 | `delete_hmi_tag_table` / `rename_hmi_tag_table` | Delete or rename a WinCC Unified HMI tag table by name |
@@ -122,18 +110,15 @@ All MCP tools exposed by the server, grouped by area.
 
 | Tool | Purpose |
 |---|---|
-| `list_hmi_alarm_classes` / `write_hmi_alarm_class` | List, or create/update, WinCC Unified HMI alarm classes |
 | `delete_hmi_alarm_class` | Delete a WinCC Unified HMI alarm class by name (fails if an alarm still references it) |
-| `list_hmi_alarms` / `read_hmi_alarm` | List (discrete + analog, unified) or read one WinCC Unified HMI alarm |
-| `write_hmi_alarm` | Create or update a discrete or analog HMI alarm |
 | `delete_hmi_alarm` | Delete a discrete or analog HMI alarm by name |
 
-### Source tree (whole-project export/import)
+### Source tree (reading and writing all source)
 
 | Tool | Purpose |
 |---|---|
-| `read_source_tree` | Export the whole project's readable source to disk (each file keeping its native extension; tag tables as `.csv`), folder structure mirroring the TIA Portal project tree |
-| `write_source_tree` | Write a `read_source_tree` export back into the project — the whole tree, or a trimmed subset of `_export_summary.txt` — with independent control over creating missing items and overwriting existing ones, plus a dry-run preview |
+| `read_source_tree` | Export source to disk, folder structure mirroring the TIA Portal project tree — the whole project, or only the items or groups you name |
+| `write_source_tree` | Write what was edited or added in the tree back into the project, refusing items changed in TIA Portal since they were read; dry-run preview |
 
 Full argument descriptions are on each tool via MCP `[Description]` attributes — see `src\TiaMcp.Mcp\TiaTools.cs`.
 
@@ -162,13 +147,13 @@ END_SEQUENCE
 END_GRAPH_BLOCK
 ```
 
-Only step/transition attributes, actions, and matched-by-number conditions are writable. Interface, `PREOPERATIONS`, `BRANCHES`, and `CONNECTIONS` (topology) are read-only in this version. GRAPH blocks must also be consistent (compiled) before `read_plc_block`/`write_plc_block` will work at all — that's a Siemens API requirement, not a TiaMcp restriction.
+Only step/transition attributes, actions, and matched-by-number conditions are writable. Interface, `PREOPERATIONS`, `BRANCHES`, and `CONNECTIONS` (topology) are read-only in this version. GRAPH blocks must also be consistent (compiled) before they can be read or written at all — that's a Siemens API requirement, not a TiaMcp restriction.
 
-New GRAPH blocks are created via `create_plc_block`'s `graphTemplateBlockName` (clones an existing GRAPH block and reshapes it — Openness has no from-scratch GRAPH creation API).
+A new `.graph.il` file in the source tree is created by cloning an existing GRAPH block of the PLC and reshaping it — Openness has no from-scratch GRAPH creation API.
 
-## Source tree export
+## Source tree
 
-`read_source_tree` dumps every PLC block/tag table/UDT and every WinCC Unified HMI tag table/alarm the server can read to disk, one call for the whole project, in folders mirroring the TIA Portal project tree:
+`read_source_tree` exports PLC blocks, tag tables and UDTs and WinCC Unified HMI tag tables and alarms to disk, in folders mirroring the TIA Portal project tree — the whole project, or only the items or groups you name:
 
 ```
 <targetDirectory>/
@@ -192,9 +177,12 @@ New GRAPH blocks are created via `create_plc_block`'s `graphTemplateBlockName` (
       AnalogAlarms.csv
       AlarmClasses.csv
   _export_summary.txt
+  _manifest.json
 ```
 
-The source tree is LLM friendly and allows for many fast local queries or modifications on the codebase. `write_source_tree` can then be used to write the changes back to the TIA portal project. It writes UDTs, tag tables and blocks in dependency order, so a whole tree can also be restored into an empty PLC.
+Read and edit the files with your own file tools, then call `write_source_tree`. It writes back only what changed since the read — edited files, plus new files as new blocks, UDTs or tag tables — in dependency order, and then reads the written items back so the files show what TIA Portal made of them. Removing a row from a tag table CSV deletes that tag; deleting a file does not delete the item (use the `delete_*` tools).
+
+`_manifest.json` records what each item looked like when it was read. An item that was changed in TIA Portal since then is refused rather than overwritten (`force` overrides this). A tree read from one project can also be written in full into another, e.g. to restore it into an empty PLC.
 
 ## License
 

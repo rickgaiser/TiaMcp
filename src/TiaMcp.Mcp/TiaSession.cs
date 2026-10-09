@@ -75,11 +75,6 @@ public sealed class TiaSession
         return _sta.InvokeAsync(() => _connection.ListBlocks(plcName));
     }
 
-    public Task<ExportResult> ReadBlockAsync(string plcName, string blockName)
-    {
-        return _sta.InvokeAsync(() => _connection.ReadBlock(plcName, blockName));
-    }
-
     public Task<IReadOnlyList<(BlockSummary Block, ExportResult Result)>> ReadAllBlocksAsync(string plcName, Func<string, string, bool>? include = null)
     {
         return _sta.InvokeAsync(() => _connection.ReadAllBlocks(plcName, include));
@@ -98,11 +93,6 @@ public sealed class TiaSession
     public Task<IReadOnlyList<TypeSummary>> ListPlcTypesAsync(string plcName)
     {
         return _sta.InvokeAsync(() => _connection.ListPlcTypes(plcName));
-    }
-
-    public Task<ExportResult> ReadUdtAsync(string plcName, string typeName)
-    {
-        return _sta.InvokeAsync(() => _connection.ReadUdt(plcName, typeName));
     }
 
     public Task<ImportResult> WriteUdtAsync(string plcName, string typeName, IReadOnlyList<BlockDocument> documents)
@@ -133,11 +123,6 @@ public sealed class TiaSession
     public Task<IReadOnlyList<string>> ListTagTableGroupsAsync(string plcName)
     {
         return _sta.InvokeAsync(() => _connection.ListTagTableGroups(plcName));
-    }
-
-    public Task<TagTableResult> ReadTagTableAsync(string plcName, string tableName)
-    {
-        return _sta.InvokeAsync(() => _connection.ReadTagTable(plcName, tableName));
     }
 
     public Task<ImportResult> WriteBlockAsync(string plcName, string blockName, IReadOnlyList<BlockDocument> documents)
@@ -330,11 +315,6 @@ public sealed class TiaSession
         return _sta.InvokeAsync(() => _connection.ListHmiAlarms(hmiName, type));
     }
 
-    public Task<HmiAlarmInfo?> ReadHmiAlarmAsync(string hmiName, string type, string alarmName)
-    {
-        return _sta.InvokeAsync(() => _connection.ReadHmiAlarm(hmiName, type, alarmName));
-    }
-
     public Task<SimpleResult> WriteHmiAlarmAsync(string hmiName, HmiAlarmSpec spec)
     {
         return _sta.InvokeAsync(() => _connection.WriteHmiAlarm(hmiName, spec));
@@ -343,17 +323,6 @@ public sealed class TiaSession
     public Task<SimpleResult> DeleteHmiAlarmAsync(string hmiName, string type, string alarmName)
     {
         return _sta.InvokeAsync(() => _connection.DeleteHmiAlarm(hmiName, type, alarmName));
-    }
-
-    public async Task<(IReadOnlyList<BlockSummary> Blocks, IReadOnlyList<TagTableSummary> TagTables, IReadOnlyList<TypeSummary> Types)> SearchAsync(string plcName, string text)
-    {
-        var blocks = await ListBlocksAsync(plcName);
-        var tables = await ListTagTablesAsync(plcName);
-        var types = await ListPlcTypesAsync(plcName);
-        return (
-            blocks.Where(b => b.Name.IndexOf(text, System.StringComparison.OrdinalIgnoreCase) >= 0).ToList(),
-            tables.Where(t => t.Name.IndexOf(text, System.StringComparison.OrdinalIgnoreCase) >= 0).ToList(),
-            types.Where(t => t.Name.IndexOf(text, System.StringComparison.OrdinalIgnoreCase) >= 0).ToList());
     }
 
     public string? ProjectName { get; private set; }

@@ -108,228 +108,6 @@ public sealed class TiaTools
                $"Version: {s.Version}";
     });
 
-    [McpServerTool(Name = "list_plc_devices")]
-    [Description("List PLC devices in the connected project.")]
-    public Task<string> ListDevices() => Safe(async () =>
-    {
-        if (!_session.IsConnected) return "Not connected. Call tia_connect first.";
-        var devices = (await _session.ListDevicesAsync())
-            .Where(d => d.PlcSoftwareName != null)
-            .Select(d => $"- {d.DeviceName} / {d.ItemName} -> PLC software '{d.PlcSoftwareName}'");
-        return string.Join("\n", devices);
-    });
-
-    [McpServerTool(Name = "list_plc_blocks")]
-    [Description("List all program blocks (with group path, language, and consistency) for a given PLC software name.")]
-    public Task<string> ListBlocks([Description("PLC software name, from list_plc_devices")] string plcName) => Safe(async () =>
-    {
-        var blocks = await _session.ListBlocksAsync(plcName);
-        return string.Join("\n", blocks.Select(b =>
-            $"{(string.IsNullOrEmpty(b.GroupPath) ? "" : b.GroupPath + "/")}{b.Name}  [{b.Language}]{(b.Consistent ? "" : "  (INCONSISTENT)")}"));
-    });
-
-    [McpServerTool(Name = "read_plc_block")]
-    [Description(@"Read a block's source as text. SCL blocks return SCL source. LAD/FBD blocks return the .s7dcl network notation plus a .s7res multilingual text file. GRAPH (S7-GRAPH/SFC) blocks return a synthesized '<name>.graph.il' DSL - GRAPH_BLOCK/INTERFACE/SEQUENCE/STEP/TRANSITION/CONNECTIONS keywords, with step actions shown near-verbatim and interlock/supervision/transition conditions rendered as SCL-style boolean text (AND/OR/NOT of tag references; uncommon FBD elements like comparisons or timers fall back to a generic 'PartName(args)' rendering, flagged as such rather than guessed). GRAPH also requires the block to be consistent first - if not, this returns an actionable error telling you to call compile_plc. For an instance-DB, also includes a '<name>.interface.txt' listing its full resolved parameter list (name : datatype, dot-qualified for nested FBs), read directly from the instance's live interface - this works even when the underlying FB type itself can't be exported (e.g. it's STL, per below).
-
-STL support: a block whose entire declared language is STL returns real AWL mnemonic text as '<name>.awl' - TIA Portal's own ""Generate source"" output, the same plain-text format the GUI itself produces. A block whose primary language is FBD/LAD/SCL but that contains one or more embedded STL networks (common - TIA Portal's own export refuses the whole block if even one network inside is STL) still returns normal .s7dcl/.s7res for the non-STL content, with the STL network(s) appended separately as real AWL text, '<name>.stl-networks.awl'; if that rendering isn't producible, it falls back to '<name>.stl-networks.xml' (raw XML filtered to just those networks) instead, so the read never loses data.
-
-Reconstructing GUI network order from the two sidecars: every network in the block - STL or not - is numbered 1-based by its position among ALL of the block's networks (matching the TIA Portal GUI's own numbering). Each STL network in '<name>.stl-networks.awl' is preceded by a '// Network N[: Title]' comment with that number; each STL network's placeholder slot in .s7dcl carries the same number implicitly by its position among the file's own NETWORK blocks in document order (a placeholder is any NETWORK whose leading attribute block has 'S7_Language := ""STL""' - it's otherwise empty, with a 'S7_NetworkTitle' pointing at a '.s7res' id you can resolve for the same title text as a cross-check). To read the block in GUI order: walk .s7dcl's NETWORK blocks in order, counting every one (STL placeholder or real) to get each one's N; whenever N matches an 'S7_Language := ""STL""' placeholder, that network's actual logic is network N in the AWL sidecar (or, if that sidecar wasn't produced, the correspondingly-labeled '<!-- Network N: ... -->' comment in '<name>.stl-networks.xml'). write_plc_block can write whole-block STL back (pass the '<name>.awl' text back as dclContent); embedded STL networks within a mixed FBD/LAD/SCL block are still read-only regardless of which sidecar format came back.
-
-Do not call this tool multiple times concurrently for the same connection - calls share one underlying TIA Portal session and must run one at a time (call sequentially, not in a parallel batch).")]
-    public Task<string> ReadBlock(
-        [Description("PLC software name, from list_plc_devices")] string plcName,
-        [Description("Block name, from list_plc_blocks")] string blockName) => Safe(async () =>
-    {
-        var result = await _session.ReadBlockAsync(plcName, blockName);
-        if (!result.Success)
-        {
-            return $"Read failed: {result.Error}";
-        }
-
-        return string.Join("\n\n", result.Documents.Select(d => $"--- {d.FileName} ---\n{d.Content}"));
-    });
-
-    [McpServerTool(Name = "write_plc_block")]
-    [Description(@"Overwrite an existing block's source in place (does not create new blocks). For SCL/FBD/LAD, pass back the .s7dcl content from read_plc_block, edited; pass resContent too if read_plc_block returned a .s7res file for this block. Does not auto-compile - call compile_plc afterward. Refuses (safely, no changes made) if the .s7res has the known duplicate multilingual-text-ID export defect - in that case, edit the block manually in the TIA Portal GUI instead.
-
-For GRAPH blocks, pass back the '<name>.graph.il' text from read_plc_block as dclContent (resContent is unused for GRAPH - leave it out). This path auto-recompiles after writing and reports errors in the result. Editing an existing STEP/TRANSITION's attributes/actions/conditions is fully supported. Adding a brand-new STEP or TRANSITION number (one not already in the original) creates it, including the required Interface-section bookkeeping member TIA Portal's own GUI also creates alongside it. Removing a STEP or TRANSITION entirely is also supported (its element, and any CONNECTIONS line referencing it, are deleted - if a SEQUENCE's CONNECTIONS block was left out of the text you send back, dangling references left behind by a removed step/transition are cleaned up automatically; if it was included, every reference in it is validated and the write is refused if one points at a step/transition that no longer exists). BRANCHES/CONNECTIONS topology is otherwise fully rewritten from what you send back when that SEQUENCE's block is present in the text. The INTERFACE section itself is still read-only (aside from the automatic per-step/transition bookkeeping member just mentioned). A SUPERVISION/INTERLOCK/TRANSITION condition is only rewritten if its text actually changed from what read_plc_block would show now; if the new text still contains a construct read_plc_block had to fall back to generic 'PartName(args)' rendering for (comparisons, timers, etc.), the whole write is refused with no changes made rather than guessing - edit that specific condition in the TIA Portal GUI instead.
-
-For a block whose entire declared language is STL, pass back the '<name>.awl' text read_plc_block returned as dclContent, edited (resContent is unused for STL - leave it out); this goes through TIA Portal's own ""Generate blocks from source"" mechanism, so it must stay valid AWL syntax and keep the same block name. Refuses outright (no changes made) for a block that instead contains one or more embedded STL networks within an otherwise FBD/LAD/SCL block, since a .s7dcl can't represent STL content at all - edit that case in the TIA Portal GUI instead until it's supported.")]
-    public Task<string> WriteBlock(
-        [Description("PLC software name, from list_plc_devices")] string plcName,
-        [Description("Block name, from list_plc_blocks")] string blockName,
-        [Description("The .s7dcl file content (SCL source, or LAD/FBD NETWORK/RUNG notation), or for GRAPH blocks the '<name>.graph.il' text from read_plc_block, or for whole-block-STL blocks the '<name>.awl' text from read_plc_block")] string dclContent,
-        [Description("The .s7res file content, if read_plc_block returned one for this block; omit otherwise (always omit for GRAPH and STL)")] string? resContent = null) => Safe(async () =>
-    {
-        var docs = new List<BlockDocument> { new($"{blockName}.s7dcl", dclContent) };
-        if (!string.IsNullOrEmpty(resContent))
-        {
-            docs.Add(new BlockDocument($"{blockName}.s7res", resContent!));
-        }
-
-        var result = await _session.WriteBlockAsync(plcName, blockName, docs);
-        return $"{(result.Success ? "Success" : "FAILED")}\n{string.Join("\n", result.Messages)}";
-    });
-
-    [McpServerTool(Name = "create_plc_block")]
-    [Description(@"Create a new FC, FB, global DB, or GRAPH (S7-GRAPH/SFC) block, targeting a name that doesn't exist yet. To instantiate a library FB as an instance-DB (e.g. a Typical from a library), use create_plc_instance_db instead - this tool cannot do that. Fails if a block with this name already exists anywhere in the PLC (names are unique per-PLC). Does not auto-compile - call compile_plc afterward: referencing a tag that doesn't exist yet is fine here and only surfaces as a compile error later, so PLC logic can be written before I/O tag tables are complete.
-
-For SCL, write dclContent by hand (see the required header shape below). For FBD/LAD, do NOT hand-write NETWORK/RUNG notation from scratch - read_plc_block an existing block of the same language first (ideally a similar one in this project) to get real, valid dclContent/resContent to model the new block on, then adapt it. Freehand graphical-language notation is easy to get subtly wrong in ways that only surface as an import error.
-
-The outer '{ S7_EditorMode := ""SCL"" }' attribute block immediately before FUNCTION/FUNCTION_BLOCK/DATA_BLOCK is REQUIRED for SCL blocks - omitting it fails with ""Please use either 'S7_PreferredLanguage' or 'S7_EditorMode' pragma to import the block."" Do not omit it even though it looks redundant with the '{ S7_Language := ""SCL"" }' pragma inside the body. FBD/LAD blocks carry their own equivalent pragma already, from whatever block you copied dclContent/resContent from - don't add the SCL one.
-
-SCL FC:
-{
-    S7_EditorMode := ""SCL""
-}
-FUNCTION ""Name"" : Void
-    { S7_Language := ""SCL"" }
-    NETWORK
-        ...
-    END_NETWORK
-END_FUNCTION
-
-SCL FB:
-{
-    S7_EditorMode := ""SCL""
-}
-FUNCTION_BLOCK ""Name""
-    VAR_INPUT
-        In1 : Bool;
-    END_VAR
-    { S7_Language := ""SCL"" }
-    NETWORK
-        ...
-    END_NETWORK
-END_FUNCTION_BLOCK
-
-SCL global DB (no BEGIN block, no inner language pragma - just the outer header plus VAR/END_VAR):
-{
-    S7_EditorMode := ""SCL""
-}
-DATA_BLOCK ""Name""
-    VAR
-        Tag1 : Bool;
-    END_VAR
-END_DATA_BLOCK
-
-GRAPH: set graphTemplateBlockName instead of writing dclContent from scratch. GRAPH has no document-import route through Openness at all (see read_plc_block's description), and TIA's own block-creation API rejects every language but ProDiag when creating a block outright - so a brand-new GRAPH block can only be made by cloning an existing one, then reshaping the clone. Passing graphTemplateBlockName does exactly that: it clones the named existing GRAPH block (any GRAPH block in this PLC works as the template - its own step/transition count is irrelevant, since the clone is immediately reshaped) via TIA's library MasterCopy mechanism, renames the clone to blockName, compiles it, then applies dclContent to it as '<name>.graph.il' text through the same reshaping pipeline write_plc_block uses for GRAPH blocks (see write_plc_block's description for that DSL, and GraphConverter's format reference in README.md) - so dclContent here must be GRAPH IL text, not SCL/FBD/LAD, and resContent must be omitted. Write dclContent by reading an existing GRAPH block with read_plc_block first and adapting its '.graph.il' text (same guidance as FBD/LAD - don't hand-write this DSL from scratch). If cloning/compiling the template succeeds but reshaping to dclContent fails, the block is left in place as an exact copy of the template (under blockName) rather than rolled back - fix dclContent and call write_plc_block to retry the reshape.
-
-Whole-block STL: set stlBlock to true instead of using the SCL header shapes above. dclContent must then be real AWL mnemonic text (the '<name>.awl' format read_plc_block returns for an existing STL block - read one first and adapt it, don't hand-write AWL from scratch) whose FUNCTION/FUNCTION_BLOCK/DATA_BLOCK header name matches blockName exactly; resContent must be omitted. This goes through TIA Portal's own ""Generate blocks from source"" mechanism (PlcExternalSource.GenerateBlocksFromSource), not ImportFromDocuments - which rejects AWL syntax outright (a plain create with AWL content fails cleanly with a .s7dcl syntax error at the TITLE line). groupPath places the new block in that group; empty string for the root, matching every other language here.")]
-    public Task<string> CreateBlock(
-        [Description("PLC software name, from list_plc_devices")] string plcName,
-        [Description("Group path to create the block in, e.g. 'Group1/Subgroup'; empty string for the root")] string groupPath,
-        [Description("New block name")] string blockName,
-        [Description("For SCL/FBD/LAD: the .s7dcl file content. For GRAPH (graphTemplateBlockName set): the '<name>.graph.il' text describing the desired step/transition/branch/connection layout - same DSL read_plc_block/write_plc_block use for GRAPH blocks. For whole-block STL (stlBlock set): the '<name>.awl' AWL mnemonic text from read_plc_block")] string dclContent,
-        [Description("The .s7res file content, if modeling this block on one that read_plc_block returned a .s7res for; omit for SCL and always omit for GRAPH/STL")] string? resContent = null,
-        [Description("Name of an existing GRAPH block in this PLC to clone as the structural starting point, from list_plc_blocks - set this to create a GRAPH block instead of SCL/FBD/LAD; omit for every other language")] string? graphTemplateBlockName = null,
-        [Description("Set true to create a whole-block-STL block from AWL text (dclContent) instead of SCL/FBD/LAD/GRAPH; omit/false for every other language")] bool stlBlock = false) => Safe(async () =>
-    {
-        if (!string.IsNullOrEmpty(graphTemplateBlockName))
-        {
-            if (!string.IsNullOrEmpty(resContent))
-            {
-                return "resContent must be omitted when creating a GRAPH block (graphTemplateBlockName set) - GRAPH blocks carry no separate .s7res file.";
-            }
-
-            var graphResult = await _session.CreateGraphBlockAsync(plcName, groupPath, blockName, graphTemplateBlockName!, dclContent);
-            return $"{(graphResult.Success ? "Success" : "FAILED")}\n{string.Join("\n", graphResult.Messages)}";
-        }
-
-        if (stlBlock)
-        {
-            if (!string.IsNullOrEmpty(resContent))
-            {
-                return "resContent must be omitted when creating a whole-block-STL block (stlBlock set) - STL blocks carry no separate .s7res file.";
-            }
-
-            var stlDocs = new List<BlockDocument> { new($"{blockName}.awl", dclContent) };
-            var stlResult = await _session.CreateStlBlockAsync(plcName, groupPath, blockName, stlDocs);
-            return $"{(stlResult.Success ? "Success" : "FAILED")}\n{string.Join("\n", stlResult.Messages)}";
-        }
-
-        var docs = new List<BlockDocument> { new($"{blockName}.s7dcl", dclContent) };
-        if (!string.IsNullOrEmpty(resContent))
-        {
-            docs.Add(new BlockDocument($"{blockName}.s7res", resContent!));
-        }
-
-        var result = await _session.CreateBlockAsync(plcName, groupPath, blockName, docs);
-        return $"{(result.Success ? "Success" : "FAILED")}\n{string.Join("\n", result.Messages)}";
-    });
-
-    [McpServerTool(Name = "list_plc_data_types")]
-    [Description("List all PLC data types (UDTs), with group path, for a given PLC software name.")]
-    public Task<string> ListPlcDataTypes([Description("PLC software name, from list_plc_devices")] string plcName) => Safe(async () =>
-    {
-        var types = await _session.ListPlcTypesAsync(plcName);
-        return string.Join("\n", types.Select(t =>
-            $"{(string.IsNullOrEmpty(t.GroupPath) ? "" : t.GroupPath + "/")}{t.Name}"));
-    });
-
-    [McpServerTool(Name = "read_plc_udt")]
-    [Description("Read a UDT's (PLC data type's) definition as plain text: 'TYPE Name : STRUCT ... END_STRUCT; END_TYPE', plus a .s7res file when members have comments (pass that back as resContent to write_plc_udt/create_plc_udt). A field typed as another UDT is shown as '_.OtherTypeName' (the leading '_.' is TIA Portal's own real export syntax for a UDT reference, not a rendering choice by this server) - read that UDT separately if you need its fields too, same as how a block's own interface shows a UDT-typed member by name only.")]
-    public Task<string> ReadUdt(
-        [Description("PLC software name, from list_plc_devices")] string plcName,
-        [Description("UDT name, from list_plc_data_types")] string typeName) => Safe(async () =>
-    {
-        var result = await _session.ReadUdtAsync(plcName, typeName);
-        if (!result.Success)
-        {
-            return $"Read failed: {result.Error}";
-        }
-
-        return string.Join("\n\n", result.Documents.Select(d => $"--- {d.FileName} ---\n{d.Content}"));
-    });
-
-    [McpServerTool(Name = "write_plc_udt")]
-    [Description(@"Overwrite an existing UDT's definition in place (does not create new UDTs). Pass back the text from read_plc_udt, edited. Does not auto-compile - call compile_plc afterward; a UDT change can affect every block that references it, so check compile results carefully.
-
-Member comments go through an { S7_MLC := ""MLC_x"" } attribute plus the matching entry in resContent; '//' comments in the source are dropped by TIA Portal.
-
-TYPE
-    Name : STRUCT
-        Field1 : Bool;
-        Field2 : Int;
-        Nested : _.SomeOtherUdt;
-    END_STRUCT;
-END_TYPE")]
-    public Task<string> WriteUdt(
-        [Description("PLC software name, from list_plc_devices")] string plcName,
-        [Description("UDT name, from list_plc_data_types")] string typeName,
-        [Description("The full 'TYPE ... END_TYPE' text, edited")] string content,
-        [Description("The .s7res file content, if read_plc_udt returned one for this UDT; omit otherwise")] string? resContent = null) => Safe(async () =>
-    {
-        var docs = UdtDocuments(typeName, content, resContent);
-        var result = await _session.WriteUdtAsync(plcName, typeName, docs);
-        return $"{(result.Success ? "Success" : "FAILED")}\n{string.Join("\n", result.Messages)}";
-    });
-
-    [McpServerTool(Name = "create_plc_udt")]
-    [Description(@"Create a new UDT (PLC data type). Fails if a UDT with this name already exists anywhere in the PLC (names are unique per-PLC). The target group must already exist - use create_plc_udt_group first, or pass an empty groupPath for the root. Does not auto-compile - call compile_plc afterward.
-
-The type name inside the content must match typeName exactly - that's where TIA Portal actually reads the name from (the parameter is just which file to import).
-
-Member comments go through an { S7_MLC := ""MLC_x"" } attribute plus the matching entry in resContent; '//' comments in the source are dropped by TIA Portal.
-
-TYPE
-    Name : STRUCT
-        Field1 : Bool;
-        Field2 : Int;
-    END_STRUCT;
-END_TYPE")]
-    public Task<string> CreateUdt(
-        [Description("PLC software name, from list_plc_devices")] string plcName,
-        [Description("Group path to create the UDT in, e.g. 'Types/Subgroup'; empty string for the root")] string groupPath,
-        [Description("New UDT name")] string typeName,
-        [Description("The full 'TYPE ... END_TYPE' text")] string content,
-        [Description("The .s7res file content, if modeling this UDT on one that read_plc_udt returned a .s7res for; omit otherwise")] string? resContent = null) => Safe(async () =>
-    {
-        var docs = UdtDocuments(typeName, content, resContent);
-        var result = await _session.CreateUdtAsync(plcName, groupPath, typeName, docs);
-        return $"{(result.Success ? "Success" : "FAILED")}\n{string.Join("\n", result.Messages)}";
-    });
-
     private static List<BlockDocument> UdtDocuments(string typeName, string content, string? resContent)
     {
         var docs = new List<BlockDocument> { new($"{typeName}.s7dcl", content) };
@@ -340,8 +118,8 @@ END_TYPE")]
     [McpServerTool(Name = "delete_plc_udt")]
     [Description("Delete a UDT (PLC data type) by name. Fails with TIA Portal's own error if the UDT is still used as a member type by another UDT or block interface. This is destructive - confirm with the user before calling.")]
     public Task<string> DeleteUdt(
-        [Description("PLC software name, from list_plc_devices")] string plcName,
-        [Description("UDT name to delete, from list_plc_data_types")] string typeName) => Safe(async () =>
+        [Description("PLC software name, from list_project")] string plcName,
+        [Description("UDT name to delete, from list_project")] string typeName) => Safe(async () =>
     {
         var result = await _session.DeleteUdtAsync(plcName, typeName);
         return result.Success ? "Success" : $"FAILED: {result.Error}";
@@ -350,8 +128,8 @@ END_TYPE")]
     [McpServerTool(Name = "rename_plc_udt")]
     [Description("Rename an existing UDT (PLC data type) in place. Fails if a UDT with the new name already exists (names are unique per-PLC). Does not auto-compile - call compile_plc afterward, since a UDT rename can affect every block that references it.")]
     public Task<string> RenameUdt(
-        [Description("PLC software name, from list_plc_devices")] string plcName,
-        [Description("UDT name to rename, from list_plc_data_types")] string typeName,
+        [Description("PLC software name, from list_project")] string plcName,
+        [Description("UDT name to rename, from list_project")] string typeName,
         [Description("New UDT name")] string newName) => Safe(async () =>
     {
         var result = await _session.RenameUdtAsync(plcName, typeName, newName);
@@ -361,7 +139,7 @@ END_TYPE")]
     [McpServerTool(Name = "create_plc_udt_group")]
     [Description("Create a new UDT (PLC data type) group (folder) under a given parent group path.")]
     public Task<string> CreateUdtGroup(
-        [Description("PLC software name, from list_plc_devices")] string plcName,
+        [Description("PLC software name, from list_project")] string plcName,
         [Description("Parent group path, e.g. 'Types'; empty string for the root")] string parentGroupPath,
         [Description("Name of the new group")] string groupName) => Safe(async () =>
     {
@@ -372,7 +150,7 @@ END_TYPE")]
     [McpServerTool(Name = "delete_plc_udt_group")]
     [Description("Delete a UDT (PLC data type) group (folder) and everything in it, including nested UDTs and subgroups. This is destructive - confirm with the user before calling.")]
     public Task<string> DeleteUdtGroup(
-        [Description("PLC software name, from list_plc_devices")] string plcName,
+        [Description("PLC software name, from list_project")] string plcName,
         [Description("Full group path to delete, e.g. 'Types/Subgroup'")] string groupPath) => Safe(async () =>
     {
         var result = await _session.DeleteTypeGroupAsync(plcName, groupPath);
@@ -382,7 +160,7 @@ END_TYPE")]
     [McpServerTool(Name = "rename_plc_udt_group")]
     [Description("Rename an existing UDT (PLC data type) group (folder) in place, without moving it to a different parent.")]
     public Task<string> RenameUdtGroup(
-        [Description("PLC software name, from list_plc_devices")] string plcName,
+        [Description("PLC software name, from list_project")] string plcName,
         [Description("Full group path to rename, e.g. 'Types/Subgroup'")] string groupPath,
         [Description("New group name")] string newName) => Safe(async () =>
     {
@@ -391,12 +169,12 @@ END_TYPE")]
     });
 
     [McpServerTool(Name = "create_plc_instance_db")]
-    [Description("Create an instance-DB bound to a specific FB type (e.g. instantiate a Typical FB from a library for one piece of equipment). This is the correct way to do this - instance-DB source text isn't accepted by create_plc_block's SCL-import route (TIA Portal's importer rejects it with a syntax error on the interface/BEGIN section; instance-DBs must be created via this dedicated Openness API instead). Does not auto-compile - call compile_plc afterward.")]
+    [Description("Create an instance-DB bound to a specific FB type (e.g. instantiate a Typical FB from a library for one piece of equipment). Unlike adding its .s7dcl to the source tree, this needs no source text. Does not auto-compile - call compile_plc afterward.")]
     public Task<string> CreateInstanceDb(
-        [Description("PLC software name, from list_plc_devices")] string plcName,
+        [Description("PLC software name, from list_project")] string plcName,
         [Description("Group path to create the DB in, e.g. 'Instances'; empty string for the root")] string groupPath,
         [Description("New instance-DB name")] string dbName,
-        [Description("Name of the FB type to instantiate (must already exist in this PLC, e.g. a library FB from list_plc_blocks)")] string instanceOfFbName) => Safe(async () =>
+        [Description("Name of the FB type to instantiate (must already exist in this PLC, e.g. a library FB from list_project)")] string instanceOfFbName) => Safe(async () =>
     {
         var result = await _session.CreateInstanceDbAsync(plcName, groupPath, dbName, instanceOfFbName);
         return result.Success ? "Success" : $"FAILED: {result.Error}";
@@ -405,7 +183,7 @@ END_TYPE")]
     [McpServerTool(Name = "create_plc_group")]
     [Description("Create a new block group (folder) under a given parent group path.")]
     public Task<string> CreateGroup(
-        [Description("PLC software name, from list_plc_devices")] string plcName,
+        [Description("PLC software name, from list_project")] string plcName,
         [Description("Parent group path, e.g. 'Group1'; empty string for the root")] string parentGroupPath,
         [Description("Name of the new group")] string groupName) => Safe(async () =>
     {
@@ -416,7 +194,7 @@ END_TYPE")]
     [McpServerTool(Name = "delete_plc_group")]
     [Description("Delete a block group (folder) and everything in it, including nested blocks and subgroups. This is destructive - confirm with the user before calling.")]
     public Task<string> DeleteGroup(
-        [Description("PLC software name, from list_plc_devices")] string plcName,
+        [Description("PLC software name, from list_project")] string plcName,
         [Description("Full group path to delete, e.g. 'Group1/Subgroup'")] string groupPath) => Safe(async () =>
     {
         var result = await _session.DeleteBlockGroupAsync(plcName, groupPath);
@@ -426,7 +204,7 @@ END_TYPE")]
     [McpServerTool(Name = "rename_plc_group")]
     [Description("Rename an existing block group (folder) in place, without moving it to a different parent.")]
     public Task<string> RenamePlcGroup(
-        [Description("PLC software name, from list_plc_devices")] string plcName,
+        [Description("PLC software name, from list_project")] string plcName,
         [Description("Full group path to rename, e.g. 'Group1/Subgroup'")] string groupPath,
         [Description("New group name")] string newName) => Safe(async () =>
     {
@@ -435,10 +213,10 @@ END_TYPE")]
     });
 
     [McpServerTool(Name = "delete_plc_block")]
-    [Description("Delete a single block (any language, including a GRAPH block or an instance-DB) by name, without touching its containing group or sibling blocks. Use this to recover a block that write_plc_block refuses to touch (e.g. a GRAPH block stuck INCONSISTENT - see write_plc_block/create_plc_block's GRAPH notes) by deleting it and recreating it with create_plc_block/create_plc_instance_db. To rename a block instead, use rename_plc_block. An instance-DB still bound to an FB/FC must be deleted before the FB/FC itself - deleting the type block first fails with TIA's own error naming the dependency. This is destructive - confirm with the user before calling.")]
+    [Description("Delete a single block (any language, including a GRAPH block or an instance-DB) by name, without touching its containing group or sibling blocks. Use this to recover a block that write_source_tree can't write (e.g. a GRAPH block stuck INCONSISTENT) by deleting it and writing it again from the source tree. To rename a block instead, use rename_plc_block. An instance-DB still bound to an FB/FC must be deleted before the FB/FC itself - deleting the type block first fails with TIA's own error naming the dependency. This is destructive - confirm with the user before calling.")]
     public Task<string> DeleteBlock(
-        [Description("PLC software name, from list_plc_devices")] string plcName,
-        [Description("Block name to delete, from list_plc_blocks")] string blockName) => Safe(async () =>
+        [Description("PLC software name, from list_project")] string plcName,
+        [Description("Block name to delete, from list_project")] string blockName) => Safe(async () =>
     {
         var result = await _session.DeleteBlockAsync(plcName, blockName);
         return result.Success ? "Success" : $"FAILED: {result.Error}";
@@ -447,72 +225,18 @@ END_TYPE")]
     [McpServerTool(Name = "rename_plc_block")]
     [Description("Rename an existing block (any language, including a GRAPH block or an instance-DB) in place. Fails if a block with the new name already exists (names are unique per-PLC). Safe even on a block with real dependents (callers, a bound instance-DB): TIA resolves block/DB references by internal object identity, not by name text, so callers automatically follow the rename. The block and its dependents go temporarily INCONSISTENT, same as any block edit - call compile_plc afterward to resolve that.")]
     public Task<string> RenamePlcBlock(
-        [Description("PLC software name, from list_plc_devices")] string plcName,
-        [Description("Block name to rename, from list_plc_blocks")] string blockName,
+        [Description("PLC software name, from list_project")] string plcName,
+        [Description("Block name to rename, from list_project")] string blockName,
         [Description("New block name")] string newName) => Safe(async () =>
     {
         var result = await _session.RenamePlcBlockAsync(plcName, blockName, newName);
         return result.Success ? "Success" : $"FAILED: {result.Error}";
     });
 
-    [McpServerTool(Name = "list_plc_tag_tables")]
-    [Description("List all PLC tag tables (with group path) for a given PLC software name. Groups that contain no tag table anywhere below them are listed as their path with a trailing '/', e.g. 'IO/Spare/'.")]
-    public Task<string> ListTagTables([Description("PLC software name, from list_plc_devices")] string plcName) => Safe(async () =>
-    {
-        var tables = await _session.ListTagTablesAsync(plcName);
-        var groups = await _session.ListTagTableGroupsAsync(plcName);
-        return FormatTableList(tables.Select(t => (t.GroupPath, t.Name)).ToList(), groups);
-    });
-
-    // One line per table as 'group/path/name', plus 'group/path/' for every group with no table
-    // anywhere below it - otherwise empty groups would be invisible.
-    private static string FormatTableList(IReadOnlyList<(string GroupPath, string Name)> tables, IReadOnlyList<string> groups)
-    {
-        var lines = tables.Select(t => $"{(string.IsNullOrEmpty(t.GroupPath) ? "" : t.GroupPath + "/")}{t.Name}").ToList();
-        lines.AddRange(groups
-            .Where(g => !tables.Any(t => t.GroupPath == g || t.GroupPath.StartsWith(g + "/")))
-            .Select(g => g + "/"));
-        return string.Join("\n", lines);
-    }
-
-    [McpServerTool(Name = "read_plc_tag_table")]
-    [Description("Read all tags in a PLC tag table, as Excel-compatible CSV text (comma-separated, quoted fields where needed, CRLF line endings, header row). Columns: Name, DataType, LogicalAddress, Comment, ExternalAccessible, ExternalVisible, ExternalWritable (the last three are the 'Accessible/Visible/Writable from HMI/OPC UA/Web API' flags, True/False). The output can be edited and passed back to write_plc_tag_table.")]
-    public Task<string> ReadTagTable(
-        [Description("PLC software name, from list_plc_devices")] string plcName,
-        [Description("Tag table name, from list_plc_tag_tables")] string tableName) => Safe(async () =>
-    {
-        var result = await _session.ReadTagTableAsync(plcName, tableName);
-        if (!result.Success)
-        {
-            return $"Read failed: {result.Error}";
-        }
-
-        return FormatTagTable(result.Tags);
-    });
-
-    [McpServerTool(Name = "write_plc_tag_table")]
-    [Description(@"Create, update and optionally delete tags in an existing PLC tag table from CSV text, in the same format read_plc_tag_table returns (header row required; columns Name, DataType, LogicalAddress, Comment, ExternalAccessible, ExternalVisible, ExternalWritable - only Name and DataType are required, the rest may be omitted).
-Rows matching an existing tag name are updated in place; other rows are created as new tags. An empty or missing LogicalAddress/Comment/flag cell leaves that value unchanged (Comment is written in the project editing language). Flags accept True/False/1/0; ExternalVisible/ExternalWritable require ExternalAccessible=True.
-By default tags not in the CSV are left alone. With deleteMissing=true they are DELETED, so the table ends up exactly matching the CSV - this is destructive, confirm with the user before calling. Changing a tag's name in the CSV is a delete + create, which breaks references to it in blocks - use rename_plc_tag instead.
-The input is validated first (duplicate names, bad booleans, missing Name/DataType); on a validation error nothing is written.")]
-    public Task<string> WriteTagTable(
-        [Description("PLC software name, from list_plc_devices")] string plcName,
-        [Description("Tag table name, from list_plc_tag_tables")] string tableName,
-        [Description("CSV text with a header row, as returned by read_plc_tag_table")] string csv,
-        [Description("Delete tags that are in the table but not in the CSV (default false)")] bool deleteMissing = false) => Safe(async () =>
-    {
-        TagSpec[] tags;
-        try { tags = ParseTagCsv(csv); }
-        catch (FormatException ex) { return $"FAILED: {ex.Message}\nNothing was written."; }
-
-        var result = await _session.WriteTagTableAsync(plcName, tableName, tags, deleteMissing);
-        return $"{(result.Success ? "Success" : "Completed with failures")}\n{string.Join("\n", result.Messages)}";
-    });
-
     [McpServerTool(Name = "rename_plc_tag")]
-    [Description("Rename a single PLC tag in place, in whichever tag table it lives. Unlike changing the name in a write_plc_tag_table CSV (a delete + create), this keeps references to the tag in blocks intact; read_plc_block shows the new name in those blocks only after compile_plc. Fails if a tag with the new name already exists (names are unique per-PLC).")]
+    [Description("Rename a single PLC tag in place, in whichever tag table it lives. Unlike changing the name in a tag table CSV in the source tree (which makes a new tag), this keeps references to the tag in blocks intact; blocks show the new name only after compile_plc. Fails if a tag with the new name already exists (names are unique per-PLC).")]
     public Task<string> RenameTag(
-        [Description("PLC software name, from list_plc_devices")] string plcName,
+        [Description("PLC software name, from list_project")] string plcName,
         [Description("Current tag name")] string tagName,
         [Description("New tag name")] string newName) => Safe(async () =>
     {
@@ -521,9 +245,9 @@ The input is validated first (duplicate names, bad booleans, missing Name/DataTy
     });
 
     [McpServerTool(Name = "create_plc_tag_table")]
-    [Description("Create a new, empty PLC tag table. Fails if a tag table with this name already exists anywhere in the PLC (names are unique per-PLC, not per-group). Use write_plc_tag_table afterward to add tags to it.")]
+    [Description("Create a new, empty PLC tag table. Fails if a tag table with this name already exists anywhere in the PLC (names are unique per-PLC, not per-group). Add tags by writing its CSV through the source tree.")]
     public Task<string> CreateTagTable(
-        [Description("PLC software name, from list_plc_devices")] string plcName,
+        [Description("PLC software name, from list_project")] string plcName,
         [Description("Group path to create the table under, e.g. 'IO/Group1'; empty string for the root")] string groupPath,
         [Description("Name of the new tag table")] string tableName) => Safe(async () =>
     {
@@ -534,8 +258,8 @@ The input is validated first (duplicate names, bad booleans, missing Name/DataTy
     [McpServerTool(Name = "delete_plc_tag_table")]
     [Description("Delete a PLC tag table (and all its tags) by name. This is destructive - confirm with the user before calling.")]
     public Task<string> DeleteTagTable(
-        [Description("PLC software name, from list_plc_devices")] string plcName,
-        [Description("Tag table name to delete, from list_plc_tag_tables")] string tableName) => Safe(async () =>
+        [Description("PLC software name, from list_project")] string plcName,
+        [Description("Tag table name to delete, from list_project")] string tableName) => Safe(async () =>
     {
         var result = await _session.DeleteTagTableAsync(plcName, tableName);
         return result.Success ? "Success" : $"FAILED: {result.Error}";
@@ -544,8 +268,8 @@ The input is validated first (duplicate names, bad booleans, missing Name/DataTy
     [McpServerTool(Name = "rename_plc_tag_table")]
     [Description("Rename an existing PLC tag table in place. Fails if a tag table with the new name already exists (names are unique per-PLC).")]
     public Task<string> RenameTagTable(
-        [Description("PLC software name, from list_plc_devices")] string plcName,
-        [Description("Tag table name to rename, from list_plc_tag_tables")] string tableName,
+        [Description("PLC software name, from list_project")] string plcName,
+        [Description("Tag table name to rename, from list_project")] string tableName,
         [Description("New tag table name")] string newName) => Safe(async () =>
     {
         var result = await _session.RenameTagTableAsync(plcName, tableName, newName);
@@ -555,7 +279,7 @@ The input is validated first (duplicate names, bad booleans, missing Name/DataTy
     [McpServerTool(Name = "create_plc_tag_table_group")]
     [Description("Create a new PLC tag table group (folder) under a given parent group path.")]
     public Task<string> CreateTagTableGroup(
-        [Description("PLC software name, from list_plc_devices")] string plcName,
+        [Description("PLC software name, from list_project")] string plcName,
         [Description("Parent group path, e.g. 'IO'; empty string for the root")] string parentGroupPath,
         [Description("Name of the new group")] string groupName) => Safe(async () =>
     {
@@ -566,7 +290,7 @@ The input is validated first (duplicate names, bad booleans, missing Name/DataTy
     [McpServerTool(Name = "delete_plc_tag_table_group")]
     [Description("Delete a PLC tag table group (folder) and everything in it, including nested tag tables and subgroups. This is destructive - confirm with the user before calling.")]
     public Task<string> DeleteTagTableGroup(
-        [Description("PLC software name, from list_plc_devices")] string plcName,
+        [Description("PLC software name, from list_project")] string plcName,
         [Description("Full group path to delete, e.g. 'IO/Group1'")] string groupPath) => Safe(async () =>
     {
         var result = await _session.DeleteTagTableGroupAsync(plcName, groupPath);
@@ -576,7 +300,7 @@ The input is validated first (duplicate names, bad booleans, missing Name/DataTy
     [McpServerTool(Name = "rename_plc_tag_table_group")]
     [Description("Rename an existing PLC tag table group (folder) in place, without moving it to a different parent.")]
     public Task<string> RenameTagTableGroup(
-        [Description("PLC software name, from list_plc_devices")] string plcName,
+        [Description("PLC software name, from list_project")] string plcName,
         [Description("Full group path to rename, e.g. 'IO/Group1'")] string groupPath,
         [Description("New group name")] string newName) => Safe(async () =>
     {
@@ -584,64 +308,10 @@ The input is validated first (duplicate names, bad booleans, missing Name/DataTy
         return result.Success ? "Success" : $"FAILED: {result.Error}";
     });
 
-    [McpServerTool(Name = "list_hmi_devices")]
-    [Description("List WinCC Unified HMI devices in the connected project. Classic WinCC (Comfort/Advanced/RT) panels are not supported - Openness exposes no typed tag/alarm object model for them (tags are name-only with generic attribute access, and there are no alarm objects at all), so only WinCC Unified devices appear here.")]
-    public Task<string> ListHmiDevices() => Safe(async () =>
-    {
-        if (!_session.IsConnected) return "Not connected. Call tia_connect first.";
-        var devices = (await _session.ListHmiDevicesAsync())
-            .Select(d => $"- {d.DeviceName} / {d.ItemName} -> HMI software '{d.HmiSoftwareName}'");
-        return string.Join("\n", devices);
-    });
-
-    [McpServerTool(Name = "list_hmi_tag_tables")]
-    [Description("List all WinCC Unified HMI tag tables (with group path) for a given HMI software name. Groups that contain no tag table anywhere below them are listed as their path with a trailing '/', e.g. 'Plant/Spare/'.")]
-    public Task<string> ListHmiTagTables([Description("HMI software name, from list_hmi_devices")] string hmiName) => Safe(async () =>
-    {
-        var tables = await _session.ListHmiTagTablesAsync(hmiName);
-        var groups = await _session.ListHmiTagTableGroupsAsync(hmiName);
-        return FormatTableList(tables.Select(t => (t.GroupPath, t.Name)).ToList(), groups);
-    });
-
-    [McpServerTool(Name = "read_hmi_tag_table")]
-    [Description("Read all tags in a WinCC Unified HMI tag table, as Excel-compatible CSV text. Columns: Name, DataType, Address, Connection, PlcName, PlcTag, Comment, AcquisitionCycle. The output can be edited and passed back to write_hmi_tag_table.")]
-    public Task<string> ReadHmiTagTable(
-        [Description("HMI software name, from list_hmi_devices")] string hmiName,
-        [Description("HMI tag table name, from list_hmi_tag_tables")] string tableName) => Safe(async () =>
-    {
-        var result = await _session.ReadHmiTagTableAsync(hmiName, tableName);
-        if (!result.Success)
-        {
-            return $"Read failed: {result.Error}";
-        }
-
-        return FormatHmiTagTable(result.Tags);
-    });
-
-    [McpServerTool(Name = "write_hmi_tag_table")]
-    [Description(@"Create, update and optionally delete tags in an existing WinCC Unified HMI tag table from CSV text, in the same format read_hmi_tag_table returns (header row required; columns Name, DataType, Address, Connection, PlcName, PlcTag, Comment, AcquisitionCycle - only Name and DataType are required, the rest may be omitted).
-Rows matching an existing tag name are updated in place; other rows are created as new tags. An empty or missing Address/Connection/PlcTag/Comment/AcquisitionCycle cell leaves that value unchanged (Comment is written in the project editing language). AcquisitionCycle takes the cycle name as read_hmi_tag_table shows it (e.g. T500ms, T1s, T2s) and can only be changed on PLC-bound tags; internal tags are fixed at T1s.
-PLC binding: set Connection (an existing HMI connection name, e.g. from another tag via read_hmi_tag_table) and PlcTag (the PLC tag's name, dot-qualified for a nested DB member). PlcName is derived by TIA Portal from the connection and is ignored on write. When both Connection and PlcTag are set, DataType is IGNORED and TIA Portal derives the type from the PLC binding (as the GUI does) - this is also what makes struct/UDT-typed PLC tags bindable as a single HMI tag, so any placeholder DataType will do. DataType is only used for internal tags (no Connection/PlcTag).
-By default tags not in the CSV are left alone. With deleteMissing=true they are DELETED, so the table ends up exactly matching the CSV - this is destructive, confirm with the user before calling. Changing a tag's name in the CSV is a delete + create - use rename_hmi_tag instead.
-The input is validated first (duplicate names, missing Name/DataType); on a validation error nothing is written.")]
-    public Task<string> WriteHmiTagTable(
-        [Description("HMI software name, from list_hmi_devices")] string hmiName,
-        [Description("HMI tag table name, from list_hmi_tag_tables")] string tableName,
-        [Description("CSV text with a header row, as returned by read_hmi_tag_table")] string csv,
-        [Description("Delete tags that are in the table but not in the CSV (default false)")] bool deleteMissing = false) => Safe(async () =>
-    {
-        HmiTagSpec[] tags;
-        try { tags = ParseHmiTagCsv(csv); }
-        catch (FormatException ex) { return $"FAILED: {ex.Message}\nNothing was written."; }
-
-        var result = await _session.WriteHmiTagTableAsync(hmiName, tableName, tags, deleteMissing);
-        return $"{(result.Success ? "Success" : "Completed with failures")}\n{string.Join("\n", result.Messages)}";
-    });
-
     [McpServerTool(Name = "rename_hmi_tag")]
-    [Description("Rename a single WinCC Unified HMI tag in place, in whichever tag table it lives. Unlike changing the name in a write_hmi_tag_table CSV (a delete + create), this renames the existing tag object. Fails if a tag with the new name already exists (names are unique per-HMI).")]
+    [Description("Rename a single WinCC Unified HMI tag in place, in whichever tag table it lives. Unlike changing the name in an HMI tag table CSV in the source tree (which makes a new tag), this renames the existing tag object. Fails if a tag with the new name already exists (names are unique per-HMI).")]
     public Task<string> RenameHmiTag(
-        [Description("HMI software name, from list_hmi_devices")] string hmiName,
+        [Description("HMI software name, from list_project")] string hmiName,
         [Description("Current tag name")] string tagName,
         [Description("New tag name")] string newName) => Safe(async () =>
     {
@@ -650,9 +320,9 @@ The input is validated first (duplicate names, missing Name/DataType); on a vali
     });
 
     [McpServerTool(Name = "create_hmi_tag_table")]
-    [Description("Create a new, empty WinCC Unified HMI tag table. Fails if a tag table with this name already exists anywhere in the HMI (names are unique per-HMI, not per-group). Use write_hmi_tag_table afterward to add tags to it.")]
+    [Description("Create a new, empty WinCC Unified HMI tag table. Fails if a tag table with this name already exists anywhere in the HMI (names are unique per-HMI, not per-group). Add tags by writing its CSV through the source tree.")]
     public Task<string> CreateHmiTagTable(
-        [Description("HMI software name, from list_hmi_devices")] string hmiName,
+        [Description("HMI software name, from list_project")] string hmiName,
         [Description("Group path to create the table under; empty string for the root")] string groupPath,
         [Description("Name of the new HMI tag table")] string tableName) => Safe(async () =>
     {
@@ -663,8 +333,8 @@ The input is validated first (duplicate names, missing Name/DataType); on a vali
     [McpServerTool(Name = "delete_hmi_tag_table")]
     [Description("Delete a WinCC Unified HMI tag table (and all its tags) by name. This is destructive - confirm with the user before calling.")]
     public Task<string> DeleteHmiTagTable(
-        [Description("HMI software name, from list_hmi_devices")] string hmiName,
-        [Description("HMI tag table name to delete, from list_hmi_tag_tables")] string tableName) => Safe(async () =>
+        [Description("HMI software name, from list_project")] string hmiName,
+        [Description("HMI tag table name to delete, from list_project")] string tableName) => Safe(async () =>
     {
         var result = await _session.DeleteHmiTagTableAsync(hmiName, tableName);
         return result.Success ? "Success" : $"FAILED: {result.Error}";
@@ -673,8 +343,8 @@ The input is validated first (duplicate names, missing Name/DataType); on a vali
     [McpServerTool(Name = "rename_hmi_tag_table")]
     [Description("Rename an existing WinCC Unified HMI tag table in place. Fails if a tag table with the new name already exists (names are unique per-HMI).")]
     public Task<string> RenameHmiTagTable(
-        [Description("HMI software name, from list_hmi_devices")] string hmiName,
-        [Description("HMI tag table name to rename, from list_hmi_tag_tables")] string tableName,
+        [Description("HMI software name, from list_project")] string hmiName,
+        [Description("HMI tag table name to rename, from list_project")] string tableName,
         [Description("New HMI tag table name")] string newName) => Safe(async () =>
     {
         var result = await _session.RenameHmiTagTableAsync(hmiName, tableName, newName);
@@ -684,7 +354,7 @@ The input is validated first (duplicate names, missing Name/DataType); on a vali
     [McpServerTool(Name = "create_hmi_tag_table_group")]
     [Description("Create a new WinCC Unified HMI tag table group (folder) under a given parent group path.")]
     public Task<string> CreateHmiTagTableGroup(
-        [Description("HMI software name, from list_hmi_devices")] string hmiName,
+        [Description("HMI software name, from list_project")] string hmiName,
         [Description("Parent group path; empty string for the root")] string parentGroupPath,
         [Description("Name of the new group")] string groupName) => Safe(async () =>
     {
@@ -695,7 +365,7 @@ The input is validated first (duplicate names, missing Name/DataType); on a vali
     [McpServerTool(Name = "delete_hmi_tag_table_group")]
     [Description("Delete a WinCC Unified HMI tag table group (folder) and everything in it, including nested tag tables and subgroups. This is destructive - confirm with the user before calling.")]
     public Task<string> DeleteHmiTagTableGroup(
-        [Description("HMI software name, from list_hmi_devices")] string hmiName,
+        [Description("HMI software name, from list_project")] string hmiName,
         [Description("Full group path to delete")] string groupPath) => Safe(async () =>
     {
         var result = await _session.DeleteHmiTagTableGroupAsync(hmiName, groupPath);
@@ -705,7 +375,7 @@ The input is validated first (duplicate names, missing Name/DataType); on a vali
     [McpServerTool(Name = "rename_hmi_tag_table_group")]
     [Description("Rename an existing WinCC Unified HMI tag table group (folder) in place, without moving it to a different parent.")]
     public Task<string> RenameHmiTagTableGroup(
-        [Description("HMI software name, from list_hmi_devices")] string hmiName,
+        [Description("HMI software name, from list_project")] string hmiName,
         [Description("Full group path to rename")] string groupPath,
         [Description("New group name")] string newName) => Safe(async () =>
     {
@@ -713,105 +383,22 @@ The input is validated first (duplicate names, missing Name/DataType); on a vali
         return result.Success ? "Success" : $"FAILED: {result.Error}";
     });
 
-    [McpServerTool(Name = "list_hmi_alarm_classes")]
-    [Description("List WinCC Unified HMI alarm classes (name, priority, log, id, whether it's a built-in system class) for a given HMI software name. Alarm classes have no folder/group concept in Openness, even if TIA Portal's GUI shows them organized into folders.")]
-    public Task<string> ListHmiAlarmClasses([Description("HMI software name, from list_hmi_devices")] string hmiName) => Safe(async () =>
-    {
-        var classes = await _session.ListHmiAlarmClassesAsync(hmiName);
-        return FormatCsv(
-            new[] { "Name", "Priority", "Log", "Id", "IsSystem" },
-            classes.Select(c => new[] { c.Name, c.Priority.ToString(), c.Log ?? "", c.Id.ToString(), c.IsSystem.ToString() }));
-    });
-
-    [McpServerTool(Name = "write_hmi_alarm_class")]
-    [Description("Create or update a WinCC Unified HMI alarm class by name, priority, and log. Updates in place if the name already exists, creates it otherwise.")]
-    public Task<string> WriteHmiAlarmClass(
-        [Description("HMI software name, from list_hmi_devices")] string hmiName,
-        [Description("Alarm class name")] string name,
-        [Description("Priority (0-255); omit to leave unchanged on an existing class")] int? priority = null,
-        [Description("Log name; omit to leave unchanged on an existing class")] string? log = null) => Safe(async () =>
-    {
-        var result = await _session.WriteHmiAlarmClassAsync(hmiName, new HmiAlarmClassSpec(name, priority, log));
-        return result.Success ? "Success" : $"FAILED: {result.Error}";
-    });
-
     [McpServerTool(Name = "delete_hmi_alarm_class")]
     [Description("Delete a WinCC Unified HMI alarm class by name. Fails with TIA Portal's own error if any alarm still references this class. This is destructive - confirm with the user before calling.")]
     public Task<string> DeleteHmiAlarmClass(
-        [Description("HMI software name, from list_hmi_devices")] string hmiName,
-        [Description("Alarm class name to delete, from list_hmi_alarm_classes")] string name) => Safe(async () =>
+        [Description("HMI software name, from list_project")] string hmiName,
+        [Description("Alarm class name to delete, from the source tree's AlarmClasses.csv")] string name) => Safe(async () =>
     {
         var result = await _session.DeleteHmiAlarmClassAsync(hmiName, name);
-        return result.Success ? "Success" : $"FAILED: {result.Error}";
-    });
-
-    [McpServerTool(Name = "list_hmi_alarms")]
-    [Description("List WinCC Unified HMI alarms (discrete and analog, unified into one CSV with a Type column) for a given HMI software name, as Excel-compatible CSV text. Analog-only fields (Condition, ConditionValue) are blank for discrete alarms and vice versa. Only EventText/InfoText are exposed (WinCC Unified's EventText1-9 alternate-text slots are not).")]
-    public Task<string> ListHmiAlarms(
-        [Description("HMI software name, from list_hmi_devices")] string hmiName,
-        [Description("Optional filter: 'Discrete' or 'Analog'; omit for both")] string? type = null) => Safe(async () =>
-    {
-        var alarms = await _session.ListHmiAlarmsAsync(hmiName, type);
-        return FormatCsv(
-            new[] { "Type", "Name", "AlarmClass", "EventText", "InfoText", "TriggerAddress", "Condition", "ConditionValue", "RaisedStateTag", "AuditClass", "Area", "Origin" },
-            alarms.Select(a => new[]
-            {
-                a.Type, a.Name, a.AlarmClass ?? "", a.EventText ?? "", a.InfoText ?? "", a.TriggerAddress ?? "",
-                a.Condition ?? "", a.ConditionValue ?? "", a.RaisedStateTag ?? "", a.AuditClass ?? "", a.Area ?? "", a.Origin ?? ""
-            }));
-    });
-
-    [McpServerTool(Name = "read_hmi_alarm")]
-    [Description("Read one WinCC Unified HMI alarm's full detail (discrete or analog) as key:value lines.")]
-    public Task<string> ReadHmiAlarm(
-        [Description("HMI software name, from list_hmi_devices")] string hmiName,
-        [Description("'Discrete' or 'Analog'")] string type,
-        [Description("Alarm name, from list_hmi_alarms")] string alarmName) => Safe(async () =>
-    {
-        var a = await _session.ReadHmiAlarmAsync(hmiName, type, alarmName);
-        if (a == null) return $"Alarm '{alarmName}' (type '{type}') not found in HMI '{hmiName}'.";
-        return $"Type: {a.Type}\n" +
-               $"Name: {a.Name}\n" +
-               $"AlarmClass: {a.AlarmClass}\n" +
-               $"EventText: {a.EventText}\n" +
-               $"InfoText: {a.InfoText}\n" +
-               $"TriggerAddress: {a.TriggerAddress}\n" +
-               $"Condition: {a.Condition}\n" +
-               $"ConditionValue: {a.ConditionValue}\n" +
-               $"RaisedStateTag: {a.RaisedStateTag}\n" +
-               $"AuditClass: {a.AuditClass}\n" +
-               $"Area: {a.Area}\n" +
-               $"Origin: {a.Origin}";
-    });
-
-    [McpServerTool(Name = "write_hmi_alarm")]
-    [Description("Create or update a WinCC Unified HMI alarm (discrete or analog). Updates in place if the name already exists (within its type), creates it otherwise. Only fields you pass are changed; omit a field to leave it unchanged on an existing alarm. Analog alarms additionally use Condition (one of: 'LowerLimit', 'UpperLimit', 'Equal', 'NotEqual', 'LowerLimitOrEqual', 'UpperLimitOrEqual' - the real WinCC Unified HmiAlarmCondition enum member names) and ConditionValue (a plain number, e.g. '80' or '80.5' - parsed as a double; a non-numeric value fails that field). Each field is set independently - a failure on one field is reported without aborting the rest. EventText/InfoText are passed as plain text; internally they're stored as a small HTML fragment ('<body><p>...</p></body>') which this tool handles transparently. raisedStateTag IS how you bind an alarm's trigger via Openness, despite the GUI showing the trigger as three separate fields (Trigger tag / Trigger bit / Connection of trigger tag): setting it to an existing tag name makes the read-only TriggerAddress auto-compute to the correct bit address. Only verified for the common case (a dedicated bool tag at bit 0, already referenced by some existing alarm) - not verified for a PLC signal with no existing HMI-alarm binding yet, or for a non-zero trigger bit/explicit connection. triggerAddress itself (the raw combined string, e.g. 'Foo.Bar.x0') remains a read-only computed field and cannot be set directly via Openness - passing it returns a clear failure message for that field only, the rest of the write still applies - use raisedStateTag instead.")]
-    public Task<string> WriteHmiAlarm(
-        [Description("HMI software name, from list_hmi_devices")] string hmiName,
-        [Description("'Discrete' or 'Analog'")] string type,
-        [Description("Alarm name")] string name,
-        [Description("Name of an existing alarm class, from list_hmi_alarm_classes")] string? alarmClass = null,
-        [Description("Alarm event text, plain text")] string? eventText = null,
-        [Description("Alarm info text, plain text")] string? infoText = null,
-        [Description("NOT SETTABLE via Openness - passing this returns a failure message for this field only (see tool description); kept so a full record can still be assembled from list_hmi_alarms output. Use raisedStateTag to actually bind the alarm's trigger.")] string? triggerAddress = null,
-        [Description("Analog only: 'LowerLimit', 'UpperLimit', 'Equal', 'NotEqual', 'LowerLimitOrEqual', or 'UpperLimitOrEqual'")] string? condition = null,
-        [Description("Analog only: the condition's comparison value, as a plain number (e.g. '80' or '80.5')")] string? conditionValue = null,
-        [Description("The tag whose state drives this alarm - this IS the alarm's trigger tag (setting it makes the read-only TriggerAddress auto-compute to match), not merely a status readback, despite the GUI showing the trigger as separate Trigger tag/bit/connection fields. Can be a dotted member-path into a structured (UDT-typed) HMI tag (e.g. 'Device1.Alarm.Fault', letting one whole-struct tag back several distinct alarms), but the base tag ('Device1' in the example) must already exist as an HMI tag first; if it doesn't, this tool detects the unresolved trigger after the write (TriggerAddress stays blank) and reports it as a failure rather than a false success.")] string? raisedStateTag = null,
-        [Description("Audit class")] string? auditClass = null,
-        [Description("Area")] string? area = null,
-        [Description("Origin")] string? origin = null) => Safe(async () =>
-    {
-        var spec = new HmiAlarmSpec(type, name, alarmClass, eventText, infoText, triggerAddress, condition, conditionValue, raisedStateTag, auditClass, area, origin);
-        var result = await _session.WriteHmiAlarmAsync(hmiName, spec);
         return result.Success ? "Success" : $"FAILED: {result.Error}";
     });
 
     [McpServerTool(Name = "delete_hmi_alarm")]
     [Description("Delete a WinCC Unified HMI alarm (discrete or analog) by name. This is destructive - confirm with the user before calling.")]
     public Task<string> DeleteHmiAlarm(
-        [Description("HMI software name, from list_hmi_devices")] string hmiName,
+        [Description("HMI software name, from list_project")] string hmiName,
         [Description("'Discrete' or 'Analog'")] string type,
-        [Description("Alarm name to delete, from list_hmi_alarms")] string alarmName) => Safe(async () =>
+        [Description("Alarm name to delete, from the source tree's alarm CSVs")] string alarmName) => Safe(async () =>
     {
         var result = await _session.DeleteHmiAlarmAsync(hmiName, type, alarmName);
         return result.Success ? "Success" : $"FAILED: {result.Error}";
@@ -819,26 +406,95 @@ The input is validated first (duplicate names, missing Name/DataType); on a vali
 
     [McpServerTool(Name = "compile_plc")]
     [Description("Compile a PLC's software and report errors/warnings.")]
-    public Task<string> Compile([Description("PLC software name, from list_plc_devices")] string plcName) => Safe(async () =>
+    public Task<string> Compile([Description("PLC software name, from list_project")] string plcName) => Safe(async () =>
     {
         var result = await _session.CompileAsync(plcName);
         var messages = string.Join("\n", result.Messages);
         return $"State: {result.State}  Errors: {result.ErrorCount}  Warnings: {result.WarningCount}\n{messages}";
     });
 
-    [McpServerTool(Name = "search_plc")]
-    [Description("Search block, tag-table, and UDT names (substring match) for a given PLC.")]
-    public Task<string> Search(
-        [Description("PLC software name, from list_plc_devices")] string plcName,
-        [Description("Text to search for in block, tag table, and UDT names")] string text) => Safe(async () =>
+    [McpServerTool(Name = "list_project")]
+    [Description(@"List what the connected project has, per PLC and HMI software ('=== name ===' - the plcName/hmiName other tools take): blocks with their language (INCONSISTENT: needs compile_plc, e.g. before a GRAPH or STL block can be read), UDTs, tag tables, empty tag table groups, and the HMI alarm files. Fast: names only, no source - read_source_tree reads the source. Item lines are in _export_summary.txt's format and can be passed to read_source_tree's items as they are.
+
+Without filter or deviceName, a project of more than 200 items only gets counts per software back; pass targetDirectory to write the full list to '<targetDirectory>/_project_list.txt'.")]
+    public Task<string> ListProject(
+        [Description("Optional: only items whose group path or name contains this text (case-insensitive)")] string? filter = null,
+        [Description("Optional: only this PLC or HMI software name")] string? deviceName = null,
+        [Description("Optional: directory (e.g. the source tree root) to write the full list to as _project_list.txt")] string? targetDirectory = null) => Safe(async () =>
     {
-        var (blocks, tables, types) = await _session.SearchAsync(plcName, text);
-        var lines = new List<string>();
-        lines.AddRange(blocks.Select(b => $"[block] {(string.IsNullOrEmpty(b.GroupPath) ? "" : b.GroupPath + "/")}{b.Name}"));
-        lines.AddRange(tables.Select(t => $"[tag table] {(string.IsNullOrEmpty(t.GroupPath) ? "" : t.GroupPath + "/")}{t.Name}"));
-        lines.AddRange(types.Select(t => $"[udt] {(string.IsNullOrEmpty(t.GroupPath) ? "" : t.GroupPath + "/")}{t.Name}"));
-        return lines.Count == 0 ? "No matches." : string.Join("\n", lines);
+        if (!_session.IsConnected) return "Not connected. Call tia_connect first.";
+
+        bool Matches(string groupPath, string name) => filter == null || Label(groupPath, name).IndexOf(filter, StringComparison.OrdinalIgnoreCase) >= 0;
+        bool IsSelectedDevice(string device) => deviceName == null || string.Equals(device, deviceName, StringComparison.OrdinalIgnoreCase);
+
+        var list = new StringBuilder();
+        var counts = new StringBuilder();
+        var total = 0;
+        var devices = 0;
+        foreach (var plc in (await _session.ListDevicesAsync()).Select(d => d.PlcSoftwareName).OfType<string>().Where(IsSelectedDevice))
+        {
+            devices++;
+            var blocks = (await _session.ListBlocksAsync(plc)).Where(b => Matches(b.GroupPath, b.Name)).ToList();
+            var allTables = await _session.ListTagTablesAsync(plc);
+            var tables = allTables.Where(t => Matches(t.GroupPath, t.Name)).ToList();
+            var emptyGroups = EmptyGroups(allTables.Select(t => t.GroupPath), await _session.ListTagTableGroupsAsync(plc)).Where(g => Matches(g, "")).ToList();
+            var types = (await _session.ListPlcTypesAsync(plc)).Where(t => Matches(t.GroupPath, t.Name)).ToList();
+
+            var found = blocks.Count + tables.Count + emptyGroups.Count + types.Count;
+            total += found;
+            counts.AppendLine($"{plc}: {blocks.Count} block(s) ({blocks.Count(b => !b.Consistent)} inconsistent), {types.Count} UDT(s), {tables.Count} tag table(s)");
+            if (found == 0 && filter != null) continue;
+
+            list.AppendLine($"=== {plc} ===");
+            foreach (var b in blocks) list.AppendLine($"  {Describe("block", b.GroupPath, b.Name)} [{b.Language}]{(b.Consistent ? "" : " INCONSISTENT")}");
+            foreach (var t in tables) list.AppendLine($"  {Describe("tag table", t.GroupPath, t.Name)}");
+            foreach (var g in emptyGroups) list.AppendLine($"  tag table group '{g}' (empty)");
+            foreach (var t in types) list.AppendLine($"  {Describe("udt", t.GroupPath, t.Name)}");
+            list.AppendLine();
+        }
+
+        foreach (var hmi in (await _session.ListHmiDevicesAsync()).Select(h => h.HmiSoftwareName).Where(IsSelectedDevice))
+        {
+            devices++;
+            var allTables = await _session.ListHmiTagTablesAsync(hmi);
+            var tables = allTables.Where(t => Matches(t.GroupPath, t.Name)).ToList();
+            var emptyGroups = EmptyGroups(allTables.Select(t => t.GroupPath), await _session.ListHmiTagTableGroupsAsync(hmi)).Where(g => Matches(g, "")).ToList();
+            var alarms = HmiAlarmKinds.Where(k => Matches("HMI alarms", ItemStem(k, ""))).ToList();
+
+            var found = tables.Count + emptyGroups.Count + alarms.Count;
+            total += found;
+            counts.AppendLine($"{hmi} (HMI): {tables.Count} tag table(s), alarms");
+            if (found == 0 && filter != null) continue;
+
+            list.AppendLine($"=== {hmi} (HMI) ===");
+            foreach (var t in tables) list.AppendLine($"  {Describe("HMI tag table", t.GroupPath, t.Name)}");
+            foreach (var g in emptyGroups) list.AppendLine($"  HMI tag table group '{g}' (empty)");
+            foreach (var kind in alarms) list.AppendLine($"  {kind}");
+            list.AppendLine();
+        }
+
+        if (devices == 0) return deviceName == null ? "No PLC or HMI software found." : $"No PLC or HMI software named '{deviceName}'.";
+
+        string? listPath = null;
+        if (!string.IsNullOrEmpty(targetDirectory))
+        {
+            Directory.CreateDirectory(targetDirectory);
+            listPath = Path.Combine(targetDirectory, "_project_list.txt");
+            File.WriteAllText(listPath, list.ToString());
+        }
+
+        if (filter != null || deviceName != null || total <= 200) return total == 0 ? "No matching items." : list.ToString();
+        return counts + (listPath != null
+            ? $"Full list: {listPath}"
+            : "Pass filter or deviceName to list items, or targetDirectory to write the full list to a file.");
     });
+
+    // Groups with no tag table anywhere below them - otherwise empty groups would be invisible.
+    private static IEnumerable<string> EmptyGroups(IEnumerable<string> tableGroupPaths, IReadOnlyList<string> groups)
+    {
+        var used = tableGroupPaths.ToList();
+        return groups.Where(g => !used.Any(p => p == g || p.StartsWith(g + "/")));
+    }
 
     [McpServerTool(Name = "read_source_tree")]
     [Description(@"Export project source to disk, into folders that mirror the TIA Portal project tree: <targetDirectory>/<PlcName>/Program blocks/<group path>/..., .../PLC tags/..., .../PLC data types/..., and <targetDirectory>/<HmiSoftwareName>/HMI tags/... and .../HMI alarms/ (DiscreteAlarms.csv, AnalogAlarms.csv, AlarmClasses.csv - fixed files, alarms have no groups in Openness). Read the files with your file tools; edit them and call write_source_tree to write the changes back.
@@ -850,7 +506,7 @@ Files per item: blocks and UDTs keep TIA Portal's own document format (.s7dcl, p
 An item that fails to export (e.g. an inconsistent block - GRAPH blocks must be compiled first) is reported, and files from an earlier read of it are renamed with a '.stale' suffix rather than left looking current. '_export_summary.txt' lists every item in the tree; '_manifest.json' is write_source_tree's bookkeeping - don't edit it. Returns counts, failures, and for a partial read each item's files.")]
     public Task<string> ReadSourceTree(
         [Description("Root directory of the source tree. Created if it doesn't exist; keep using the same one for the project.")] string targetDirectory,
-        [Description("Optional: read only these items - 'Name', 'group/path/Name', or 'group/path/' for everything below a group (case-insensitive; for HMI alarms 'DiscreteAlarms', 'AnalogAlarms', 'AlarmClasses' or 'HMI alarms/'). Omit to read everything.")] string[]? items = null,
+        [Description("Optional: read only these items - 'Name', 'group/path/Name', 'group/path/' for everything below a group, or item lines as list_project shows them (case-insensitive; for HMI alarms 'DiscreteAlarms', 'AnalogAlarms', 'AlarmClasses' or 'HMI alarms/'). Omit to read everything.")] string[]? items = null,
         [Description("Optional: read only this PLC or HMI software name")] string? deviceName = null) => Safe(async () =>
     {
         if (!_session.IsConnected) return "Not connected. Call tia_connect first.";
@@ -936,9 +592,9 @@ Writing rules per file type:
 - GRAPH ('.graph.il'): step/transition attributes, actions and conditions are writable, steps/transitions can be added or removed, and BRANCHES/CONNECTIONS of a SEQUENCE are rewritten when present; INTERFACE and PREOPERATIONS are read-only. A condition still containing a construct shown as generic 'PartName(args)' is refused. A new GRAPH block is made by cloning an existing GRAPH block of the PLC (picked automatically) and reshaping it. The write recompiles the block and reports errors.
 - Whole-block STL ('.awl'): AWL text as TIA Portal's 'Generate source' produces it, block name in the header unchanged. A block with embedded STL networks can't be written.
 - Instance DB: its .s7dcl ('DATA_BLOCK ""x"" ... : FB_y'); the FB must exist.
-- PLC tag table CSV: Name, DataType, LogicalAddress, Comment, ExternalAccessible, ExternalVisible, ExternalWritable (True/False). Rows update or add tags; an empty cell leaves that value unchanged; tags missing from the CSV are kept. Renaming a tag in the CSV makes a new tag - use rename_plc_tag.
-- HMI tag table CSV: Name, DataType, Address, Connection, PlcName, PlcTag, Comment, AcquisitionCycle. Bind to a PLC tag with Connection + PlcTag (dot-qualified for a DB member); DataType then follows from the PLC tag. PlcName is ignored on write. AcquisitionCycle (e.g. T1s) only on PLC-bound tags.
-- HMI alarms CSV: rows update or add alarms by name. RaisedStateTag binds the trigger (a tag or member path whose base HMI tag exists); TriggerAddress is computed and read-only. EventText/InfoText are plain text. AlarmClasses.csv: Name, Priority, Log; system classes accept no Priority change.
+- PLC tag table CSV: Name, DataType, LogicalAddress, Comment, ExternalAccessible, ExternalVisible, ExternalWritable (True/False). Rows update or add tags; an empty cell leaves that value unchanged; removing a row deletes that tag (not when writing a tree read from another project). Renaming a tag in the CSV deletes it and makes a new one, breaking references - use rename_plc_tag.
+- HMI tag table CSV: Name, DataType, Address, Connection, PlcName, PlcTag, Comment, AcquisitionCycle. Bind to a PLC tag with Connection + PlcTag (dot-qualified for a DB member); DataType then follows from the PLC tag. PlcName is ignored on write. AcquisitionCycle (e.g. T1s) only on PLC-bound tags. Rows and removed rows as for PLC tag tables; rename with rename_hmi_tag.
+- HMI alarms CSV: rows update or add alarms by name; a removed row is not deleted (use delete_hmi_alarm). RaisedStateTag binds the trigger (a tag or member path whose base HMI tag exists); TriggerAddress is computed and read-only. EventText/InfoText are plain text. AlarmClasses.csv: Name, Priority, Log; system classes accept no Priority change.
 
 Writes in dependency order: UDTs, then tag tables, then blocks, with UDTs and blocks each split into layers by what their source references (nested UDTs first; global DBs and called FBs before their callers and instance DBs), compiling the PLC between UDT layers - imports can fail, or a UDT can silently lose nested start values, when what they reference isn't there yet.
 
@@ -1038,13 +694,13 @@ Returns (and also writes to '<sourceDirectory>/_import_report.txt') one CREATED/
             if (udtItems.Count > 0) logs.Add(await ImportTypes(deviceName, deviceDir, udtItems, createMissing, overwriteExisting, dryRun, written));
 
             var tagTableItems = deviceItems.Where(i => i.Kind == "tag table").ToList();
-            if (tagTableItems.Count > 0) logs.Add(await ImportTagTables(deviceName, deviceDir, tagTableItems, createMissing, overwriteExisting, dryRun, written));
+            if (tagTableItems.Count > 0) logs.Add(await ImportTagTables(deviceName, deviceDir, tagTableItems, createMissing, overwriteExisting, dryRun, workingCopy, written));
 
             var blockItems = deviceItems.Where(i => i.Kind == "block").ToList();
             if (blockItems.Count > 0) logs.Add(await ImportBlocks(deviceName, deviceDir, blockItems, createMissing, overwriteExisting, dryRun, written));
 
             var hmiTagTableItems = deviceItems.Where(i => i.Kind == "HMI tag table").ToList();
-            if (hmiTagTableItems.Count > 0) logs.Add(await ImportHmiTagTables(deviceName, deviceDir, hmiTagTableItems, createMissing, overwriteExisting, dryRun, written));
+            if (hmiTagTableItems.Count > 0) logs.Add(await ImportHmiTagTables(deviceName, deviceDir, hmiTagTableItems, createMissing, overwriteExisting, dryRun, workingCopy, written));
 
             var hmiAlarmItems = deviceItems.Where(i => HmiAlarmKinds.Contains(i.Kind)).ToList();
             if (hmiAlarmItems.Count > 0) logs.Add(await ImportHmiAlarms(deviceName, deviceDir, hmiAlarmItems, createMissing, overwriteExisting, dryRun, written));
@@ -1239,7 +895,7 @@ Returns (and also writes to '<sourceDirectory>/_import_report.txt') one CREATED/
 
             await EnsureBlockGroupPath(plcName, item.GroupPath, ensuredGroups);
             var (groupPath, blockName) = (item.GroupPath, item.ItemName);
-            // Whole-block STL can't go through ImportFromDocuments - see create_plc_block's stlBlock.
+            // Whole-block STL can't go through ImportFromDocuments - it goes through 'Generate blocks from source' (CreateStlBlock).
             var isStl = docs.Count == 1 && docs[0].FileName.EndsWith(".awl", StringComparison.OrdinalIgnoreCase);
             writes.Add(new PendingWrite(item, $"block '{label}'", docs, true, isStl
                 ? () => _session.CreateStlBlockAsync(plcName, groupPath, blockName, docs)
@@ -1385,8 +1041,10 @@ Returns (and also writes to '<sourceDirectory>/_import_report.txt') one CREATED/
         return layers;
     }
 
+    // deleteMissing: delete tags of an existing table that its CSV no longer has - for a working copy,
+    // where the CSV is the whole table as read and a removed row means a deleted tag.
     private async Task<(List<string> Created, List<string> Updated, List<string> Skipped, List<string> Failed)> ImportTagTables(
-        string plcName, string plcDir, List<ImportListItem> items, bool createMissing, bool overwriteExisting, bool dryRun, List<ImportListItem> written)
+        string plcName, string plcDir, List<ImportListItem> items, bool createMissing, bool overwriteExisting, bool dryRun, bool deleteMissing, List<ImportListItem> written)
     {
         var created = new List<string>();
         var updated = new List<string>();
@@ -1413,8 +1071,8 @@ Returns (and also writes to '<sourceDirectory>/_import_report.txt') one CREATED/
                 if (!overwriteExisting) { skipped.Add($"tag table '{label}' - already exists, overwriteExisting=false"); continue; }
                 if (dryRun) { updated.Add($"tag table '{label}' (dry run, {tags.Length} tag(s))"); continue; }
 
-                var result = await _session.WriteTagTableAsync(plcName, item.ItemName, tags);
-                if (result.Success) { updated.Add($"tag table '{label}' ({tags.Length} tag(s))"); written.Add(item); }
+                var result = await _session.WriteTagTableAsync(plcName, item.ItemName, tags, deleteMissing);
+                if (result.Success) { updated.Add($"tag table '{label}' ({tags.Length} tag(s){DeletedTags(result)})"); written.Add(item); }
                 else failed.Add($"tag table '{label}': {string.Join(" | ", result.Messages)}");
             }
             else
@@ -1436,7 +1094,7 @@ Returns (and also writes to '<sourceDirectory>/_import_report.txt') one CREATED/
     }
 
     private async Task<(List<string> Created, List<string> Updated, List<string> Skipped, List<string> Failed)> ImportHmiTagTables(
-        string hmiName, string hmiDir, List<ImportListItem> items, bool createMissing, bool overwriteExisting, bool dryRun, List<ImportListItem> written)
+        string hmiName, string hmiDir, List<ImportListItem> items, bool createMissing, bool overwriteExisting, bool dryRun, bool deleteMissing, List<ImportListItem> written)
     {
         var created = new List<string>();
         var updated = new List<string>();
@@ -1463,8 +1121,8 @@ Returns (and also writes to '<sourceDirectory>/_import_report.txt') one CREATED/
                 if (!overwriteExisting) { skipped.Add($"HMI tag table '{label}' - already exists, overwriteExisting=false"); continue; }
                 if (dryRun) { updated.Add($"HMI tag table '{label}' (dry run, {tags.Length} tag(s))"); continue; }
 
-                var result = await _session.WriteHmiTagTableAsync(hmiName, item.ItemName, tags);
-                if (result.Success) { updated.Add($"HMI tag table '{label}' ({tags.Length} tag(s))"); written.Add(item); }
+                var result = await _session.WriteHmiTagTableAsync(hmiName, item.ItemName, tags, deleteMissing);
+                if (result.Success) { updated.Add($"HMI tag table '{label}' ({tags.Length} tag(s){DeletedTags(result)})"); written.Add(item); }
                 else failed.Add($"HMI tag table '{label}': {string.Join(" | ", result.Messages)}");
             }
             else
@@ -1485,7 +1143,13 @@ Returns (and also writes to '<sourceDirectory>/_import_report.txt') one CREATED/
         return (created, updated, skipped, failed);
     }
 
-    // Alarms/alarm classes are always upsert-by-name (see write_hmi_alarm/write_hmi_alarm_class),
+    private static string DeletedTags(WriteTagsResult result)
+    {
+        var deleted = result.Messages.Where(m => m.StartsWith("Deleted '")).Select(m => m.Substring("Deleted ".Length).TrimEnd('.')).ToList();
+        return deleted.Count == 0 ? "" : $", deleted {string.Join(", ", deleted)}";
+    }
+
+    // Alarms/alarm classes are always upsert-by-name (see TiaConnection.WriteHmiAlarm/WriteHmiAlarmClass),
     // so createMissing/overwriteExisting are applied per-row here rather than per-CSV-file, unlike
     // every other section where one list item is one write call.
     private async Task<(List<string> Created, List<string> Updated, List<string> Skipped, List<string> Failed)> ImportHmiAlarms(
@@ -1536,7 +1200,7 @@ Returns (and also writes to '<sourceDirectory>/_import_report.txt') one CREATED/
                 if (!exists && !createMissing) { skipped.Add($"HMI alarm '{name}' - does not exist, createMissing=false"); continue; }
                 if (dryRun) { (exists ? updated : created).Add($"HMI alarm '{name}' (dry run)"); continue; }
 
-                // TriggerAddress is a read-only computed field (see write_hmi_alarm) - it's
+                // TriggerAddress is a read-only computed field (see write_source_tree) - it's
                 // exported for readability but never written back; RaisedStateTag is what
                 // actually (re)binds the trigger and recomputes it.
                 var spec = new HmiAlarmSpec(
@@ -1556,10 +1220,10 @@ Returns (and also writes to '<sourceDirectory>/_import_report.txt') one CREATED/
     }
 
     // Locates the on-disk source file(s) read_source_tree wrote for one block and packages them as the
-    // BlockDocument(s) write_plc_block/create_plc_block expect - mirroring ExportBlocks' own
+    // BlockDocument(s) WriteBlock/CreateBlock expect - mirroring ExportBlocks' own
     // extension priority (GRAPH's '.graph.il', whole-block STL's '.awl', else the normal
     // '.s7dcl'[+'.s7res'] pair). '.interface.txt' and '.stl-networks.xml' are read-only companions
-    // (see read_plc_block) and are never picked up here.
+    // (see read_source_tree) and are never picked up here.
     private static (List<BlockDocument>? Docs, string? Error) ReadBlockDocuments(string dir, string blockName)
     {
         if (!Directory.Exists(dir)) return (null, $"directory not found: {dir}");
@@ -1588,8 +1252,8 @@ Returns (and also writes to '<sourceDirectory>/_import_report.txt') one CREATED/
         return (docs, null);
     }
 
-    // Best-effort recursive group creation so create_plc_block/create_plc_udt/create_plc_tag_table/
-    // create_hmi_tag_table's "group must already exist" requirement doesn't block restoring a full
+    // Best-effort recursive group creation so the create calls' "group must already
+    // exist" requirement doesn't block restoring a full
     // tree into an empty/new PLC or HMI. Failures (including "already exists") are ignored here - a
     // genuine problem still surfaces from the subsequent create call itself right after this runs.
     // ensured: group paths already handled in this import, so each folder is created (or found to
@@ -1939,14 +1603,24 @@ Returns (and also writes to '<sourceDirectory>/_import_report.txt') one CREATED/
 
     // read_source_tree's items: 'Name', 'group/path/Name', or 'group/path/' for everything below a
     // group, case-insensitive. HMI alarms are 'DiscreteAlarms', 'AnalogAlarms', 'AlarmClasses', or
-    // 'HMI alarms/' for all three.
+    // 'HMI alarms/' for all three. A line as list_project or _export_summary.txt shows an item
+    // ("block 'group/Name' [SCL]", "OK     udt 'Name'", "HMI DiscreteAlarms") selects that item.
     private static bool Selects(IReadOnlyList<string> selection, string kind, string groupPath, string name)
     {
+        foreach (var raw in selection)
+        {
+            var line = ListedItem.Match(raw.Trim());
+            if (line.Success && line.Groups["kind"].Value == kind
+                && (HmiAlarmKinds.Contains(kind) || string.Equals(line.Groups["label"].Value, Label(groupPath, name), StringComparison.OrdinalIgnoreCase)))
+                return true;
+        }
+
         if (HmiAlarmKinds.Contains(kind)) (groupPath, name) = ("HMI alarms", ItemStem(kind, name));
         var label = Label(groupPath, name);
         foreach (var raw in selection)
         {
             var entry = raw.Trim().Replace('\\', '/');
+            if (ListedItem.IsMatch(entry)) continue;
             if (entry.EndsWith("/"))
             {
                 var group = entry.TrimEnd('/');
@@ -1959,6 +1633,8 @@ Returns (and also writes to '<sourceDirectory>/_import_report.txt') one CREATED/
         }
         return false;
     }
+
+    private static readonly Regex ListedItem = new(@"^(?:(?:OK|FAILED|STALE)\s+)?(?:(?<kind>HMI (?:DiscreteAlarms|AnalogAlarms|AlarmClasses))\b|(?<kind>block|udt|tag table|HMI tag table) '(?<label>[^']*)')", RegexOptions.Compiled);
 
     private static string FormatHmiAlarms(IReadOnlyList<HmiAlarmInfo> alarms) =>
         FormatCsv(

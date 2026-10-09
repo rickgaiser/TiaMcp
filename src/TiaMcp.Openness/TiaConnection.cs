@@ -386,19 +386,6 @@ public sealed class TiaConnection : IDisposable
         }
     }
 
-    public ExportResult ReadBlock(string plcName, string blockName)
-    {
-        EnsureConnected();
-        var software = GetSoftware(plcName);
-        var found = FindBlockByName(software.BlockGroup.Blocks, software.BlockGroup.Groups, blockName);
-        if (found == null)
-        {
-            return new ExportResult(false, Array.Empty<BlockDocument>(), $"Block '{blockName}' not found in PLC '{plcName}'.");
-        }
-
-        return ReadBlock(software, found.Value.block);
-    }
-
     private ExportResult ReadBlock(PlcSoftware software, PlcBlock block)
     {
         if (block.ProgrammingLanguage == ProgrammingLanguage.GRAPH)
@@ -547,7 +534,7 @@ public sealed class TiaConnection : IDisposable
         if (!block.IsConsistent)
         {
             return new ExportResult(false, Array.Empty<BlockDocument>(),
-                $"Block '{block.Name}' is a GRAPH block and is not consistent. GRAPH export requires a consistent/compiled block - call compile first, then read_block again.");
+                $"Block '{block.Name}' is a GRAPH block and is not consistent. GRAPH export requires a consistent/compiled block - call compile_plc first, then read it again.");
         }
 
         var outDir = new DirectoryInfo(Path.Combine(Path.GetTempPath(), "TiaMcp", "export", Guid.NewGuid().ToString("N")));
@@ -607,7 +594,7 @@ public sealed class TiaConnection : IDisposable
         if (!block.IsConsistent)
         {
             return new ExportResult(false, Array.Empty<BlockDocument>(),
-                $"Block '{block.Name}' is not consistent. Reading an STL block requires a consistent/compiled block - call compile first, then read_block again.");
+                $"Block '{block.Name}' is not consistent. Reading an STL block requires a consistent/compiled block - call compile_plc first, then read it again.");
         }
 
         var outDir = new DirectoryInfo(Path.Combine(Path.GetTempPath(), "TiaMcp", "export-stl", Guid.NewGuid().ToString("N")));
@@ -1214,22 +1201,6 @@ public sealed class TiaConnection : IDisposable
         return sb.ToString();
     }
 
-    // UDTs (PlcType) export via the same ExportAsDocuments/.s7dcl route as SCL/FBD/LAD blocks,
-    // producing plain "TYPE Name : STRUCT ... END_STRUCT; END_TYPE" text, plus a .s7res when
-    // members carry comments - import then needs that .s7res next to the .s7dcl too.
-    public ExportResult ReadUdt(string plcName, string typeName)
-    {
-        EnsureConnected();
-        var software = GetSoftware(plcName);
-        var found = FindTypeByName(software.TypeGroup.Types, software.TypeGroup.Groups, typeName);
-        if (found == null)
-        {
-            return new ExportResult(false, Array.Empty<BlockDocument>(), $"UDT '{typeName}' not found in PLC '{plcName}'.");
-        }
-
-        return ReadUdt(found.Value.type);
-    }
-
     // Bulk ListPlcTypes + ReadUdt for read_source_tree - see ReadAllBlocks.
     public IReadOnlyList<(TypeSummary Type, ExportResult Result)> ReadAllUdts(string plcName, Func<string, string, bool>? include = null)
     {
@@ -1242,6 +1213,9 @@ public sealed class TiaConnection : IDisposable
             .Select(x => (x.Summary, ReadSafely(() => ReadUdt(x.Object)))).ToList();
     }
 
+    // UDTs (PlcType) export via the same ExportAsDocuments/.s7dcl route as SCL/FBD/LAD blocks,
+    // producing plain "TYPE Name : STRUCT ... END_STRUCT; END_TYPE" text, plus a .s7res when
+    // members carry comments - import then needs that .s7res next to the .s7dcl too.
     private static ExportResult ReadUdt(PlcType type)
     {
         var outDir = new DirectoryInfo(Path.Combine(Path.GetTempPath(), "TiaMcp", "export-udt", Guid.NewGuid().ToString("N")));
@@ -1288,7 +1262,7 @@ public sealed class TiaConnection : IDisposable
         var found = FindBlockByName(software.BlockGroup.Blocks, software.BlockGroup.Groups, blockName);
         if (found == null)
         {
-            return new ImportResult(false, new[] { $"Block '{blockName}' not found in PLC '{plcName}'. write_block only overwrites an existing block in place; use create_block to make a new one." });
+            return new ImportResult(false, new[] { $"Block '{blockName}' not found in PLC '{plcName}'. Only an existing block can be overwritten; add a new file to the source tree to create one." });
         }
 
         var (block, owner) = found.Value;
@@ -1306,7 +1280,7 @@ public sealed class TiaConnection : IDisposable
         }
 
         // Safety check: a .s7dcl that's missing a block's embedded STL network(s) - exactly what
-        // read_block now hands back for a mixed block, since it can't
+        // read_source_tree hands back for a mixed block, since it can't
         // represent STL content in .s7dcl - imports SUCCESSFULLY via ImportFromDocuments and
         // SILENTLY DELETES the STL network(s) from the real block. Whole-block STL is handled
         // above via WriteStlBlock; a mixed FBD/LAD/SCL block with one or more embedded STL
@@ -1316,7 +1290,7 @@ public sealed class TiaConnection : IDisposable
         {
             return new ImportResult(false, new[]
             {
-                $"Block '{block.Name}' contains one or more embedded STL networks - write_block doesn't support writing these back yet (read_block can read them, via '.stl-networks.xml'). " +
+                $"Block '{block.Name}' contains one or more embedded STL networks - these can't be written back yet (read_source_tree shows them in '<name>.stl-networks.awl' or '.xml'). " +
                 "Writing the .s7dcl content back here would silently delete the STL network(s), since .s7dcl can't represent STL content. Edit this block's STL logic in the TIA Portal GUI instead.",
             });
         }
@@ -1358,7 +1332,7 @@ public sealed class TiaConnection : IDisposable
 
         if (documents.Count == 0 || string.IsNullOrWhiteSpace(documents[0].Content))
         {
-            return new ImportResult(false, new[] { "No content provided - pass the edited '<name>.graph.il' text (from read_block) as dclContent." });
+            return new ImportResult(false, new[] { "No content provided - the '<name>.graph.il' file is empty." });
         }
 
         var ilContent = documents[0].Content;
@@ -1446,7 +1420,7 @@ public sealed class TiaConnection : IDisposable
     {
         if (documents.Count == 0 || string.IsNullOrWhiteSpace(documents[0].Content))
         {
-            return new ImportResult(false, new[] { "No content provided - pass AWL text (the '<name>.awl' format from read_plc_block) as dclContent." });
+            return new ImportResult(false, new[] { "No content provided - the '<name>.awl' file is empty." });
         }
 
         var outDir = new DirectoryInfo(Path.Combine(Path.GetTempPath(), "TiaMcp", "stl-write", Guid.NewGuid().ToString("N")));
@@ -1511,7 +1485,7 @@ public sealed class TiaConnection : IDisposable
         var existing = FindBlockByName(software.BlockGroup.Blocks, software.BlockGroup.Groups, blockName);
         if (existing != null)
         {
-            return new ImportResult(false, new[] { $"A block named '{blockName}' already exists in PLC '{plcName}' (block names are unique per-PLC, not per-group). Use write_plc_block to edit it, or pick a different name." });
+            return new ImportResult(false, new[] { $"A block named '{blockName}' already exists in PLC '{plcName}' (block names are unique per-PLC, not per-group). Pick a different name." });
         }
 
         PlcBlockUserGroup? targetGroup = null;
@@ -1536,7 +1510,7 @@ public sealed class TiaConnection : IDisposable
 
         if (checkExisting && FindBlockByName(software.BlockGroup.Blocks, software.BlockGroup.Groups, blockName) != null)
         {
-            return new ImportResult(false, new[] { $"A block named '{blockName}' already exists in PLC '{plcName}' (block names are unique per-PLC, not per-group). Use write_block to edit it, or pick a different name." });
+            return new ImportResult(false, new[] { $"A block named '{blockName}' already exists in PLC '{plcName}' (block names are unique per-PLC, not per-group). Pick a different name." });
         }
 
         var resolved = ResolveGroup(software, groupPath);
@@ -1570,7 +1544,7 @@ public sealed class TiaConnection : IDisposable
         var existing = FindBlockByName(software.BlockGroup.Blocks, software.BlockGroup.Groups, blockName);
         if (existing != null)
         {
-            return new ImportResult(false, new[] { $"A block named '{blockName}' already exists in PLC '{plcName}' (block names are unique per-PLC, not per-group). Use write_plc_block to edit it, or pick a different name." });
+            return new ImportResult(false, new[] { $"A block named '{blockName}' already exists in PLC '{plcName}' (block names are unique per-PLC, not per-group). Pick a different name." });
         }
 
         var resolved = ResolveGroup(software, groupPath);
@@ -1651,14 +1625,14 @@ public sealed class TiaConnection : IDisposable
 
         if (!newBlock.IsConsistent)
         {
-            messages.Add($"'{blockName}' is not consistent after cloning/compiling, so reshaping to ilContent was skipped. It currently exists as an exact copy of '{templateBlockName}' under its own name - resolve the compile error (see compile_plc), then call write_plc_block with ilContent to reshape it.");
+            messages.Add($"'{blockName}' is not consistent after cloning/compiling, so reshaping to ilContent was skipped. It currently exists as an exact copy of '{templateBlockName}' under its own name - resolve the compile error (see compile_plc), then write its '.graph.il' file again (write_source_tree) to reshape it.");
             return new ImportResult(true, messages);
         }
 
         var reshapeResult = WriteGraphBlock(software, newBlock, resolved.Value.Blocks, new[] { new BlockDocument($"{blockName}.graph.il", ilContent) });
         messages.Add(reshapeResult.Success
             ? "Reshaped to the requested layout."
-            : $"Reshape FAILED - '{blockName}' exists as an exact structural copy of '{templateBlockName}', not yet reshaped. Fix ilContent and call write_plc_block to retry.");
+            : $"Reshape FAILED - '{blockName}' exists as an exact structural copy of '{templateBlockName}', not yet reshaped. Fix its '.graph.il' file and write it again (write_source_tree) to retry.");
         messages.AddRange(reshapeResult.Messages);
 
         return new ImportResult(reshapeResult.Success, messages);
@@ -1676,7 +1650,7 @@ public sealed class TiaConnection : IDisposable
                 {
                     $"Refusing to import: the .s7res resource file has {dupes.Count} duplicate multilingual-text ID(s) ({string.Join(", ", dupes)}). " +
                     "This is a known TIA Portal export defect (see Phase 0 findings) where different comment/title texts collide onto the same generated ID. " +
-                    "read_plc_block/read_source_tree repair duplicated network titles/comments from the block's XML export, so re-read the block and retry. " +
+                    "read_source_tree repairs duplicated network titles/comments from the block's XML export, so re-read the block and retry. " +
                     "If it still has duplicates, edit this block manually in the TIA Portal GUI - guessing which entry belongs to which reference could attach the wrong text.",
                 });
             }
@@ -1712,7 +1686,7 @@ public sealed class TiaConnection : IDisposable
         var found = FindTypeByName(software.TypeGroup.Types, software.TypeGroup.Groups, typeName);
         if (found == null)
         {
-            return new ImportResult(false, new[] { $"UDT '{typeName}' not found in PLC '{plcName}'. write_udt only overwrites an existing UDT in place; use create_udt to make a new one." });
+            return new ImportResult(false, new[] { $"UDT '{typeName}' not found in PLC '{plcName}'. Only an existing UDT can be overwritten; add a new file to the source tree to create one." });
         }
 
         var (_, owner) = found.Value;
@@ -1727,7 +1701,7 @@ public sealed class TiaConnection : IDisposable
         var existing = FindTypeByName(software.TypeGroup.Types, software.TypeGroup.Groups, typeName);
         if (existing != null)
         {
-            return new ImportResult(false, new[] { $"A UDT named '{typeName}' already exists in PLC '{plcName}' (type names are unique per-PLC, not per-group). Use write_udt to edit it, or pick a different name." });
+            return new ImportResult(false, new[] { $"A UDT named '{typeName}' already exists in PLC '{plcName}' (type names are unique per-PLC, not per-group). Pick a different name." });
         }
 
         var resolved = ResolveTypeGroup(software, groupPath);
@@ -2144,19 +2118,6 @@ public sealed class TiaConnection : IDisposable
         }
     }
 
-    public TagTableResult ReadTagTable(string plcName, string tableName)
-    {
-        EnsureConnected();
-        var software = GetSoftware(plcName);
-        var table = FindTagTableByName(software.TagTableGroup.TagTables, software.TagTableGroup.Groups, tableName);
-        if (table == null)
-        {
-            return new TagTableResult(false, Array.Empty<TagInfo>(), $"Tag table '{tableName}' not found in PLC '{plcName}'.");
-        }
-
-        return ReadTagTable(table);
-    }
-
     // Bulk ListTagTables + ReadTagTable for read_source_tree - see ReadAllBlocks.
     public IReadOnlyList<(TagTableSummary Table, TagTableResult Result)> ReadAllTagTables(string plcName, Func<string, string, bool>? include = null)
     {
@@ -2311,7 +2272,7 @@ public sealed class TiaConnection : IDisposable
     }
 
     // Renames the tag object in place (same as renaming in the GUI), so blocks keep their
-    // reference to it - unlike a delete + create through write_plc_tag_table.
+    // reference to it - unlike a renamed row in a tag table CSV, which makes a new tag.
     public SimpleResult RenameTag(string plcName, string tagName, string newName)
     {
         EnsureConnected();
@@ -3027,27 +2988,10 @@ public sealed class TiaConnection : IDisposable
         return result;
     }
 
-    public HmiAlarmInfo? ReadHmiAlarm(string hmiName, string type, string alarmName)
-    {
-        EnsureConnected();
-        var software = GetHmiSoftware(hmiName);
-        if (string.Equals(type, "Discrete", StringComparison.OrdinalIgnoreCase))
-        {
-            var alarm = software.DiscreteAlarms.Find(alarmName);
-            return alarm == null ? null : ToHmiAlarmInfo(alarm);
-        }
-        if (string.Equals(type, "Analog", StringComparison.OrdinalIgnoreCase))
-        {
-            var alarm = software.AnalogAlarms.Find(alarmName);
-            return alarm == null ? null : ToHmiAlarmInfo(alarm);
-        }
-        throw new ArgumentException($"Unknown alarm type '{type}'. Use 'Discrete' or 'Analog'.");
-    }
-
     // Several AlarmBase properties throw "PropertyDoesNotExists" rather than returning null when
     // the underlying feature isn't enabled/configured for a given alarm (e.g. AuditClass, on an
     // alarm in a project without audit trail set up) - every property read here must tolerate
-    // that, or list_hmi_alarms crashes outright on any real project with alarms that predate this
+    // that, or reading the alarms crashes outright on any real project with alarms that predate this
     // server.
     private static string? TryGet(Func<string?> getter)
     {
