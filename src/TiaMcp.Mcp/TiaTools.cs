@@ -515,6 +515,15 @@ An item that fails to export (e.g. an inconsistent block - GRAPH blocks must be 
         var partial = selection != null || deviceName != null;
         Directory.CreateDirectory(targetDirectory);
         var previous = SourceTreeManifest.Load(targetDirectory);
+        // A tree without a manifest is written as-is by write_source_tree (e.g. one a generator
+        // script writes). A manifest would turn it into a working copy, whose written items are read
+        // back into it - replacing generated files with TIA Portal's rendering of them.
+        if (previous == null && File.Exists(Path.Combine(targetDirectory, "_export_summary.txt")))
+        {
+            return $"'{targetDirectory}' holds a source tree without {SourceTreeManifest.FileName} - a generated tree, or one read by an older version. " +
+                   "Reading into it would make it a working copy of the project, and write_source_tree would then read written items back into it, replacing its files with TIA Portal's rendering. " +
+                   "Read into another directory - or, for an old read tree, delete its _export_summary.txt first.";
+        }
         if (partial && previous?.Project != null && previous.Project != _session.ProjectName)
         {
             return $"'{targetDirectory}' holds the source tree of project '{previous.Project}', not of the connected project '{_session.ProjectName}'. " +
@@ -584,7 +593,7 @@ An item that fails to export (e.g. an inconsistent block - GRAPH blocks must be 
     [McpServerTool(Name = "write_source_tree")]
     [Description(@"Write a source tree from read_source_tree back into the connected project: every item whose files were edited since the last read, and every new file - a new block, UDT or tag table is created by adding its file in the right folder (the folder gives the group, the file name the item's name; for a new block or UDT start from an existing file of the same kind). Written items are read back into the tree afterward, so their files show what TIA Portal made of them. Not compiled - call compile_plc afterward, and after an FB interface change read the instance DBs again. Deleting a file does not delete the item in the project (use the delete_* tools).
 
-Refuses (FAILED, nothing written for that item) to overwrite an item that was changed in TIA Portal since it was read, or that exists in the project but was never read into the tree; force=true overwrites anyway. A tree read from another project (e.g. to restore it into an emptied copy) is written in full, without these checks.
+Refuses (FAILED, nothing written for that item) to overwrite an item that was changed in TIA Portal since it was read, or that exists in the project but was never read into the tree; force=true overwrites anyway. A tree read from another project (e.g. to restore it into an emptied copy) is written in full, without these checks. So is a tree without _manifest.json, such as one a generator script writes: everything its _export_summary.txt (or itemList) lists is written, and nothing is read back into it.
 
 Writing rules per file type:
 - SCL block: the '{ S7_EditorMode := ""SCL"" }' attribute block before FUNCTION/FUNCTION_BLOCK/DATA_BLOCK is required. FBD/LAD: never hand-write NETWORK/RUNG notation from scratch - copy a similar existing block's .s7dcl/.s7res and adapt it.
@@ -598,12 +607,12 @@ Writing rules per file type:
 
 Writes in dependency order: UDTs, then tag tables, then blocks, with UDTs and blocks each split into layers by what their source references (nested UDTs first; global DBs and called FBs before their callers and instance DBs), compiling the PLC between UDT layers - imports can fail, or a UDT can silently lose nested start values, when what they reference isn't there yet.
 
-itemList limits what is considered, in _export_summary.txt's format (a trimmed copy's path, or the lines inline); all=true writes those items even if unchanged. Set dryRun to preview what would be created/updated/skipped/refused.
+itemList limits what is considered, as lines from list_project or _export_summary.txt (a file path, or the lines inline; the OK status column is optional); all=true writes those items even if unchanged. Set dryRun to preview what would be created/updated/skipped/refused.
 
-Returns (and also writes to '<sourceDirectory>/_import_report.txt') one CREATED/UPDATED/SKIPPED/FAILED line per item, grouped by device, with a final counts line.")]
+Writes '<sourceDirectory>/_import_report.txt' with one CREATED/UPDATED/SKIPPED/FAILED line per item (per row for alarms). Returns that report for a small write; for a larger one, the counts per software plus every SKIPPED/FAILED line.")]
     public Task<string> WriteSourceTree(
         [Description("Root directory of the source tree, as passed to read_source_tree.")] string sourceDirectory,
-        [Description("Optional: consider only these items - a path to a (trimmed) copy of _export_summary.txt, or that list text inline. Omit to consider the whole tree, including new files.")] string? itemList = null,
+        [Description("Optional: consider only these items - lines from list_project or _export_summary.txt, as a file path or inline. Omit to consider the whole tree, including new files.")] string? itemList = null,
         [Description("Write every item considered, not only those changed or added since read_source_tree. Default false.")] bool all = false,
         [Description("Create items that don't yet exist in the connected project. Default true.")] bool createMissing = true,
         [Description("Overwrite items that already exist in the connected project. Default true.")] bool overwriteExisting = true,
@@ -627,7 +636,7 @@ Returns (and also writes to '<sourceDirectory>/_import_report.txt') one CREATED/
                 return $"No itemList given and no source tree found at '{sourceDirectory}'. Run read_source_tree first, or pass itemList.";
 
             var allItems = ParseSourceTreeList(File.Exists(listPath) ? File.ReadAllText(listPath) : itemList!);
-            if (allItems.Count == 0) return "No items recognized in the given list.";
+            if (allItems.Count == 0) return $"No items recognized in the given list. {ItemListExample}";
             invalidCount = allItems.Count(i => !i.Ok);
             items = allItems.Where(i => i.Ok).ToList();
         }
@@ -640,7 +649,7 @@ Returns (and also writes to '<sourceDirectory>/_import_report.txt') one CREATED/
         }
 
         if (manifest == null)
-            notes.Add("No _manifest.json in the tree (read before this version): every listed item is written, without change or conflict checks.");
+            notes.Add("No _manifest.json in the tree (generated, or read by an older version): every listed item is written, without change or conflict checks, and nothing is read back into the tree.");
         else if (!workingCopy)
             notes.Add($"The tree was read from project '{manifest.Project}', not the connected '{_session.ProjectName}': every listed item is written, and nothing is compared with or refreshed from this project.");
 
@@ -674,6 +683,10 @@ Returns (and also writes to '<sourceDirectory>/_import_report.txt') one CREATED/
         summary.AppendLine($"Source: {sourceDirectory}");
         summary.AppendLine();
 
+        // The tool result: per software its counts plus every line that isn't a success. The full
+        // report, one line per item (per alarm row), goes to _import_report.txt only - it can be
+        // longer than a tool result may be.
+        var compact = new StringBuilder();
         var written = new List<ImportListItem>();
         int totalCreated = 0, totalUpdated = 0, totalSkipped = 0, totalFailed = 0;
         foreach (var deviceGroup in items.Concat(conflicts.Select(c => c.Item)).GroupBy(i => i.DeviceName, StringComparer.OrdinalIgnoreCase))
@@ -717,6 +730,11 @@ Returns (and also writes to '<sourceDirectory>/_import_report.txt') one CREATED/
                 totalFailed += log.Failed.Count;
             }
             summary.AppendLine();
+
+            compact.AppendLine($"{(isHmi ? $"=== {deviceName} (HMI) ===" : $"=== {deviceName} ===")} {logs.Sum(l => l.Created.Count)} created, " +
+                               $"{logs.Sum(l => l.Updated.Count)} updated, {logs.Sum(l => l.Skipped.Count)} skipped, {logs.Sum(l => l.Failed.Count)} failed");
+            foreach (var line in logs.SelectMany(l => l.Skipped)) compact.AppendLine($"  SKIPPED  {line}");
+            foreach (var line in logs.SelectMany(l => l.Failed)) compact.AppendLine($"  FAILED   {line}");
         }
 
         if (invalidCount > 0)
@@ -736,13 +754,16 @@ Returns (and also writes to '<sourceDirectory>/_import_report.txt') one CREATED/
             notes.Add($"Refreshed the {exported.Count(e => e.Ok)} written item(s) in the tree from the project.");
         }
 
-        foreach (var note in notes) summary.AppendLine(note);
-        if (totalCreated + totalUpdated + totalFailed + totalSkipped == 0 && !dryRun) summary.AppendLine("Nothing to write.");
-        summary.AppendLine($"Done: {totalCreated} created, {totalUpdated} updated, {totalSkipped} skipped, {totalFailed} failed. Finished {DateTime.Now:yyyy-MM-dd HH:mm:ss} (started {startedAt:HH:mm:ss}).");
+        var footer = new StringBuilder();
+        foreach (var note in notes) footer.AppendLine(note);
+        if (totalCreated + totalUpdated + totalFailed + totalSkipped == 0 && !dryRun) footer.AppendLine("Nothing to write.");
+        footer.AppendLine($"Done: {totalCreated} created, {totalUpdated} updated, {totalSkipped} skipped, {totalFailed} failed. Finished {DateTime.Now:yyyy-MM-dd HH:mm:ss} (started {startedAt:HH:mm:ss}).");
 
-        var summaryText = summary.ToString();
-        File.WriteAllText(Path.Combine(sourceDirectory, "_import_report.txt"), summaryText);
-        return summaryText;
+        var summaryText = summary.Append(footer).ToString();
+        var reportPath = Path.Combine(sourceDirectory, "_import_report.txt");
+        File.WriteAllText(reportPath, summaryText);
+        if (totalCreated + totalUpdated + totalSkipped + totalFailed <= 30) return summaryText;
+        return compact.Append(footer).AppendLine($"Full report, one line per item: {reportPath}").ToString();
     });
 
     private enum DiskState { Unchanged, Changed, Deleted }
@@ -1282,10 +1303,10 @@ Returns (and also writes to '<sourceDirectory>/_import_report.txt') one CREATED/
     private Task EnsureHmiTagTableGroupPath(string hmiName, string groupPath, ISet<string> ensured) =>
         EnsureGroupPath(groupPath, (parent, segment) => _session.CreateHmiTagTableGroupAsync(hmiName, parent, segment), ensured);
 
-    // Parses read_source_tree's _export_summary.txt format (or a hand-trimmed copy/inline excerpt of
-    // it) back into importable items - see write_source_tree. Unrecognized lines (headers, blank
-    // lines, the trailing 'Done: ...' line) are silently skipped rather than treated as errors, so
-    // callers don't need to strip them out first.
+    // Parses an item list - _export_summary.txt or list_project output, or a trimmed copy/excerpt of
+    // either - into importable items; see write_source_tree. The status column is optional (a line
+    // without one counts as OK). Unrecognized lines (headers, blank lines, the trailing 'Done: ...'
+    // line, empty groups) are silently skipped, so callers don't need to strip them out first.
     private static List<ImportListItem> ParseSourceTreeList(string text)
     {
         var items = new List<ImportListItem>();
@@ -1304,22 +1325,10 @@ Returns (and also writes to '<sourceDirectory>/_import_report.txt') one CREATED/
                 continue;
             }
 
-            var statusMatch = Regex.Match(trimmed, @"^(OK|FAILED|STALE)\s+(.*)$");
-            if (!statusMatch.Success || currentDevice == null) continue;
+            var itemMatch = ListedItem.Match(trimmed);
+            if (!itemMatch.Success || currentDevice == null) continue;
 
-            var ok = statusMatch.Groups[1].Value == "OK";
-            var rest = statusMatch.Groups[2].Value;
-
-            if (rest.StartsWith("HMI DiscreteAlarms") || rest.StartsWith("HMI AnalogAlarms") || rest.StartsWith("HMI AlarmClasses"))
-            {
-                var kind = rest.StartsWith("HMI DiscreteAlarms") ? "HMI DiscreteAlarms" : rest.StartsWith("HMI AnalogAlarms") ? "HMI AnalogAlarms" : "HMI AlarmClasses";
-                items.Add(new ImportListItem(currentDevice, kind, "", "", ok));
-                continue;
-            }
-
-            var itemMatch = Regex.Match(rest, @"^(?<kind>.+?)\s+'(?<label>[^']*)'");
-            if (!itemMatch.Success) continue;
-
+            var ok = itemMatch.Groups["status"].Value is "" or "OK";
             var label = itemMatch.Groups["label"].Value;
             var slash = label.LastIndexOf('/');
             var groupPath = slash >= 0 ? label[..slash] : "";
@@ -1330,6 +1339,10 @@ Returns (and also writes to '<sourceDirectory>/_import_report.txt') one CREATED/
 
         return items;
     }
+
+    private const string ItemListExample =
+        "Expected lines as list_project or _export_summary.txt show them, under their software's header, e.g.:\n" +
+        "=== PLC_1 ===\n  block 'Group/Main'\n  OK     udt 'Types/UDT_Motor'\n=== HMI_1 (HMI) ===\n  HMI tag table 'Tags'\n  HMI DiscreteAlarms";
 
     // Reverse of FormatCsv/CsvField: RFC 4180 quoting, CRLF or LF line endings, header row used as
     // each returned row's keys.
@@ -1634,7 +1647,7 @@ Returns (and also writes to '<sourceDirectory>/_import_report.txt') one CREATED/
         return false;
     }
 
-    private static readonly Regex ListedItem = new(@"^(?:(?:OK|FAILED|STALE)\s+)?(?:(?<kind>HMI (?:DiscreteAlarms|AnalogAlarms|AlarmClasses))\b|(?<kind>block|udt|tag table|HMI tag table) '(?<label>[^']*)')", RegexOptions.Compiled);
+    private static readonly Regex ListedItem = new(@"^(?:(?<status>OK|FAILED|STALE)\s+)?(?:(?<kind>HMI (?:DiscreteAlarms|AnalogAlarms|AlarmClasses))\b|(?<kind>block|udt|tag table|HMI tag table) '(?<label>[^']*)')", RegexOptions.Compiled);
 
     private static string FormatHmiAlarms(IReadOnlyList<HmiAlarmInfo> alarms) =>
         FormatCsv(
