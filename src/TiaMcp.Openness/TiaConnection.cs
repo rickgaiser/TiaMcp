@@ -339,15 +339,21 @@ public sealed class TiaConnection : IDisposable
     // walk already found: looking every block up by name again re-walks the tree from the top,
     // which made a full export quadratic in the block count (~0.3 s per lookup at ~500 blocks).
     // A block that throws is reported as a failed result instead of aborting the whole export.
-    public IReadOnlyList<(BlockSummary Block, ExportResult Result)> ReadAllBlocks(string plcName)
+    // include (group path, name), when given, selects which blocks are read; the walk itself is cheap.
+    public IReadOnlyList<(BlockSummary Block, ExportResult Result)> ReadAllBlocks(string plcName, Func<string, string, bool>? include = null)
     {
         EnsureConnected();
         var software = GetSoftware(plcName);
         var summaries = new List<BlockSummary>();
         var objects = new List<PlcBlock>();
         WalkBlocks(plcName, software.BlockGroup.Blocks, software.BlockGroup.Groups, "", summaries, objects);
-        return summaries.Select((s, i) => (s, ReadSafely(() => ReadBlock(software, objects[i])))).ToList();
+        return Selected(summaries, objects, include, s => (s.GroupPath, s.Name))
+            .Select(x => (x.Summary, ReadSafely(() => ReadBlock(software, x.Object)))).ToList();
     }
+
+    private static IEnumerable<(TSummary Summary, TObject Object)> Selected<TSummary, TObject>(
+        List<TSummary> summaries, List<TObject> objects, Func<string, string, bool>? include, Func<TSummary, (string GroupPath, string Name)> key) =>
+        summaries.Select((s, i) => (Summary: s, Object: objects[i])).Where(x => include == null || include(key(x.Summary).GroupPath, key(x.Summary).Name));
 
     private static ExportResult ReadSafely(Func<ExportResult> read)
     {
@@ -1225,14 +1231,15 @@ public sealed class TiaConnection : IDisposable
     }
 
     // Bulk ListPlcTypes + ReadUdt for read_source_tree - see ReadAllBlocks.
-    public IReadOnlyList<(TypeSummary Type, ExportResult Result)> ReadAllUdts(string plcName)
+    public IReadOnlyList<(TypeSummary Type, ExportResult Result)> ReadAllUdts(string plcName, Func<string, string, bool>? include = null)
     {
         EnsureConnected();
         var software = GetSoftware(plcName);
         var summaries = new List<TypeSummary>();
         var objects = new List<PlcType>();
         WalkTypes(plcName, software.TypeGroup.Types, software.TypeGroup.Groups, "", summaries, objects);
-        return summaries.Select((s, i) => (s, ReadSafely(() => ReadUdt(objects[i])))).ToList();
+        return Selected(summaries, objects, include, s => (s.GroupPath, s.Name))
+            .Select(x => (x.Summary, ReadSafely(() => ReadUdt(x.Object)))).ToList();
     }
 
     private static ExportResult ReadUdt(PlcType type)
@@ -2151,17 +2158,17 @@ public sealed class TiaConnection : IDisposable
     }
 
     // Bulk ListTagTables + ReadTagTable for read_source_tree - see ReadAllBlocks.
-    public IReadOnlyList<(TagTableSummary Table, TagTableResult Result)> ReadAllTagTables(string plcName)
+    public IReadOnlyList<(TagTableSummary Table, TagTableResult Result)> ReadAllTagTables(string plcName, Func<string, string, bool>? include = null)
     {
         EnsureConnected();
         var software = GetSoftware(plcName);
         var summaries = new List<TagTableSummary>();
         var objects = new List<PlcTagTable>();
         WalkTagTables(plcName, software.TagTableGroup.TagTables, software.TagTableGroup.Groups, "", summaries, objects);
-        return summaries.Select((s, i) =>
+        return Selected(summaries, objects, include, s => (s.GroupPath, s.Name)).Select(x =>
         {
-            try { return (s, ReadTagTable(objects[i])); }
-            catch (Exception ex) { return (s, new TagTableResult(false, Array.Empty<TagInfo>(), ex.Message)); }
+            try { return (x.Summary, ReadTagTable(x.Object)); }
+            catch (Exception ex) { return (x.Summary, new TagTableResult(false, Array.Empty<TagInfo>(), ex.Message)); }
         }).ToList();
     }
 

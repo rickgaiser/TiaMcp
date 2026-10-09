@@ -841,74 +841,62 @@ The input is validated first (duplicate names, missing Name/DataType); on a vali
     });
 
     [McpServerTool(Name = "read_source_tree")]
-    [Description("Export the entire connected project's readable source to disk, organized into folders that mirror the TIA Portal project tree: <targetDirectory>/<PlcName>/Program blocks/<group path>/..., .../PLC tags/<group path>/..., .../PLC data types/<group path>/..., plus <targetDirectory>/<HmiSoftwareName>/HMI tags/<group path>/... and .../HMI alarms/ (DiscreteAlarms.csv, AnalogAlarms.csv, AlarmClasses.csv - always these three fixed files, since alarms/alarm classes have no folder/group concept in Openness). Every program block, tag table, UDT, HMI tag table, and HMI alarm/alarm class is written out (block/UDT source content via the same routes as read_plc_block/read_plc_udt, each file keeping its native extension - .s7dcl/.s7res/.graph.il/.awl/.xml/etc - with '.txt' appended only for content that has no extension of its own; PLC and HMI tag tables as Excel-compatible '.csv' text via the same format as read_plc_tag_table/read_hmi_tag_table; HMI alarms/alarm classes as Excel-compatible '.csv' text via the same format as list_hmi_alarms/list_hmi_alarm_classes; all CSV written with a UTF-8 BOM so double-clicking the file opens correctly in Excel). Creates the target directory if needed; existing files at the same paths are overwritten. If an item fails to export (e.g. an inconsistent block) but a file from a previous successful export is still on disk at that path, that leftover file is renamed with a '.stale' suffix instead of being left in place looking current - it's restored (the suffix removed) automatically the next time that item exports successfully. Also writes a '_export_summary.txt' at the root of targetDirectory listing every exported item, any failures, any files marked stale, and the export timestamp. Returns that same summary as the tool result text.")]
+    [Description(@"Export project source to disk, into folders that mirror the TIA Portal project tree: <targetDirectory>/<PlcName>/Program blocks/<group path>/..., .../PLC tags/..., .../PLC data types/..., and <targetDirectory>/<HmiSoftwareName>/HMI tags/... and .../HMI alarms/ (DiscreteAlarms.csv, AnalogAlarms.csv, AlarmClasses.csv - fixed files, alarms have no groups in Openness). Read the files with your file tools; edit them and call write_source_tree to write the changes back.
+
+Pass items to read only part of the project (much faster than a full read): e.g. one block to look at or refresh, or a group. A read overwrites the selected items' files, including unsaved edits to them. An item that no longer exists in the project (deleted or renamed in TIA Portal) has its files deleted.
+
+Files per item: blocks and UDTs keep TIA Portal's own document format (.s7dcl, plus .s7res holding the comment/title texts its S7_MLC attributes refer to); a GRAPH block is '<name>.graph.il', a whole-block-STL block '<name>.awl' (TIA Portal's own 'Generate source' text). Read-only companions, never written back: '<name>.interface.txt' (an instance DB's resolved interface) and '<name>.stl-networks.awl'/'.xml' (the STL networks inside an otherwise FBD/LAD/SCL block; the .s7dcl keeps an empty placeholder NETWORK with S7_Language := ""STL"" at each one's position). Tag tables and alarms are Excel-compatible CSV with a UTF-8 BOM.
+
+An item that fails to export (e.g. an inconsistent block - GRAPH blocks must be compiled first) is reported, and files from an earlier read of it are renamed with a '.stale' suffix rather than left looking current. '_export_summary.txt' lists every item in the tree; '_manifest.json' is write_source_tree's bookkeeping - don't edit it. Returns counts, failures, and for a partial read each item's files.")]
     public Task<string> ReadSourceTree(
-        [Description("Target root directory to export the project source into. Created if it doesn't exist.")] string targetDirectory) => Safe(async () =>
+        [Description("Root directory of the source tree. Created if it doesn't exist; keep using the same one for the project.")] string targetDirectory,
+        [Description("Optional: read only these items - 'Name', 'group/path/Name', or 'group/path/' for everything below a group (case-insensitive; for HMI alarms 'DiscreteAlarms', 'AnalogAlarms', 'AlarmClasses' or 'HMI alarms/'). Omit to read everything.")] string[]? items = null,
+        [Description("Optional: read only this PLC or HMI software name")] string? deviceName = null) => Safe(async () =>
     {
         if (!_session.IsConnected) return "Not connected. Call tia_connect first.";
 
-        var devices = (await _session.ListDevicesAsync()).Where(d => d.PlcSoftwareName != null).ToList();
-        var hmiDevices = await _session.ListHmiDevicesAsync();
-        if (devices.Count == 0 && hmiDevices.Count == 0) return "No PLC or HMI devices found.";
-
+        var selection = items is { Length: > 0 } ? items : null;
+        var partial = selection != null || deviceName != null;
         Directory.CreateDirectory(targetDirectory);
+        var previous = SourceTreeManifest.Load(targetDirectory);
+        if (partial && previous?.Project != null && previous.Project != _session.ProjectName)
+        {
+            return $"'{targetDirectory}' holds the source tree of project '{previous.Project}', not of the connected project '{_session.ProjectName}'. " +
+                   "Read the whole project (no items/deviceName) to replace it, or use another directory.";
+        }
 
         var startedAt = DateTime.Now;
-        var summary = new StringBuilder();
-        summary.AppendLine($"Source tree export - {startedAt:yyyy-MM-dd HH:mm:ss}");
-        summary.AppendLine($"Project: {_session.ProjectName}");
-        summary.AppendLine($"Target: {targetDirectory}");
-        summary.AppendLine();
+        var (exported, devices) = await ExportItems(selection == null ? null : (_, kind, groupPath, name) => Selects(selection, kind, groupPath, name), deviceName);
+        if (devices.Count == 0) return deviceName == null ? "No PLC or HMI devices found." : $"No PLC or HMI software named '{deviceName}'.";
 
-        int totalOk = 0, totalFail = 0, totalStale = 0;
-        foreach (var device in devices)
+        var manifest = previous ?? new SourceTreeManifest();
+        WriteExport(targetDirectory, manifest, exported);
+
+        // Items in the part that was read which the project doesn't have (any more).
+        var gone = manifest.Items
+            .Where(i => (deviceName == null || string.Equals(i.Device, deviceName, StringComparison.OrdinalIgnoreCase))
+                        && (selection == null || Selects(selection, i.Kind, i.GroupPath, i.Name))
+                        && !exported.Any(e => i.Is(e.Device, e.Kind, e.Name)))
+            .ToList();
+        foreach (var item in gone) RemoveFromTree(targetDirectory, manifest, item);
+
+        manifest.Project = _session.ProjectName;
+        manifest.LastRead = startedAt;
+        manifest.Save(targetDirectory);
+        var summaryPath = Path.Combine(targetDirectory, "_export_summary.txt");
+        File.WriteAllText(summaryPath, FormatSummary(targetDirectory, manifest));
+
+        var result = new StringBuilder();
+        result.AppendLine($"Read {exported.Count} item(s) into {targetDirectory} in {(DateTime.Now - startedAt).TotalSeconds:0} s: " +
+                          $"{exported.Count(e => e.Ok)} ok, {exported.Count(e => !e.Ok)} failed, {gone.Count} removed.");
+        foreach (var item in exported)
         {
-            var plcName = device.PlcSoftwareName!;
-            var plcDir = Path.Combine(targetDirectory, Sanitize(plcName));
-
-            summary.AppendLine($"=== {plcName} ===");
-            var blockLog = await ExportBlocks(plcName, plcDir);
-            var tableLog = await ExportTagTables(plcName, plcDir);
-            var typeLog = await ExportTypes(plcName, plcDir);
-
-            foreach (var log in new[] { blockLog, tableLog, typeLog })
-            {
-                foreach (var line in log.Exported) summary.AppendLine($"  OK     {line}");
-                foreach (var line in log.Errors) summary.AppendLine($"  FAILED {line}");
-                foreach (var line in log.Stale) summary.AppendLine($"  STALE  {line} - previous export left on disk with a '.stale' suffix, does not reflect current block state");
-                totalOk += log.Exported.Count;
-                totalFail += log.Errors.Count;
-                totalStale += log.Stale.Count;
-            }
-            summary.AppendLine();
+            if (!item.Ok) result.AppendLine($"  FAILED  {Describe(item.Kind, item.GroupPath, item.Name)}: {item.Error}");
+            else if (partial) result.AppendLine($"  OK      {Describe(item.Kind, item.GroupPath, item.Name)}: {string.Join(", ", item.Files.Select(f => f.Path))}");
         }
-
-        foreach (var hmi in hmiDevices)
-        {
-            var hmiName = hmi.HmiSoftwareName;
-            var hmiDir = Path.Combine(targetDirectory, Sanitize(hmiName));
-
-            summary.AppendLine($"=== {hmiName} (HMI) ===");
-            var hmiTagLog = await ExportHmiTagTables(hmiName, hmiDir);
-            var hmiAlarmLog = await ExportHmiAlarms(hmiName, hmiDir);
-
-            foreach (var log in new[] { hmiTagLog, hmiAlarmLog })
-            {
-                foreach (var line in log.Exported) summary.AppendLine($"  OK     {line}");
-                foreach (var line in log.Errors) summary.AppendLine($"  FAILED {line}");
-                foreach (var line in log.Stale) summary.AppendLine($"  STALE  {line} - previous export left on disk with a '.stale' suffix, does not reflect current block state");
-                totalOk += log.Exported.Count;
-                totalFail += log.Errors.Count;
-                totalStale += log.Stale.Count;
-            }
-            summary.AppendLine();
-        }
-
-        summary.AppendLine($"Done: {totalOk} exported, {totalFail} failed, {totalStale} marked stale. Finished {DateTime.Now:yyyy-MM-dd HH:mm:ss} (started {startedAt:HH:mm:ss}).");
-
-        var summaryText = summary.ToString();
-        File.WriteAllText(Path.Combine(targetDirectory, "_export_summary.txt"), summaryText);
-        return summaryText;
+        foreach (var item in gone) result.AppendLine($"  REMOVED {Describe(item)} - no longer in the project, its files were deleted");
+        result.AppendLine($"Full item list: {summaryPath}");
+        return result.ToString();
     });
 
     // One parsed 'OK'/'FAILED'/'STALE' line from read_source_tree's _export_summary.txt (or a
@@ -1593,139 +1581,232 @@ Returns (and also writes to '<sourceDirectory>/_import_report.txt') a per-item r
     // net48's Dictionary<TKey, TValue> has no GetValueOrDefault.
     private static string? GetField(Dictionary<string, string> row, string key) => row.TryGetValue(key, out var v) ? v : null;
 
-    private async Task<(List<string> Exported, List<string> Errors, List<string> Stale)> ExportBlocks(string plcName, string plcDir)
+    // One item as exported from TIA Portal: its files (root-relative path, content, whether it is
+    // written with a UTF-8 BOM), or why it couldn't be exported. HMI alarms are three fixed items
+    // per HMI with Kind 'HMI DiscreteAlarms'/'HMI AnalogAlarms'/'HMI AlarmClasses' and no name -
+    // alarms and alarm classes have no folder/group concept in Openness.
+    private sealed class ExportedItem
     {
-        var blocks = await _session.ReadAllBlocksAsync(plcName);
-        var exported = new List<string>();
-        var errors = new List<string>();
-        var stale = new List<string>();
-        foreach (var (b, result) in blocks)
+        public ExportedItem(string device, string kind, string groupPath, string name, List<(string Path, string Content, bool Bom)> files, string? error)
         {
-            var label = string.IsNullOrEmpty(b.GroupPath) ? b.Name : $"{b.GroupPath}/{b.Name}";
-            var dir = GroupDir(plcDir, "Program blocks", b.GroupPath);
-            if (!result.Success)
-            {
-                errors.Add($"block '{label}': {result.Error}");
-                if (MarkStale(dir, b.Name)) stale.Add($"block '{label}'");
-                continue;
-            }
-            Directory.CreateDirectory(dir);
-            ClearStale(dir, b.Name);
-            foreach (var doc in result.Documents)
-                File.WriteAllText(Path.Combine(dir, Sanitize(EnsureExtension(doc.FileName))), doc.Content);
-            exported.Add($"block '{label}'");
+            Device = device; Kind = kind; GroupPath = groupPath; Name = name; Files = files; Error = error;
         }
-        return (exported, errors, stale);
+        public string Device { get; }
+        public string Kind { get; }
+        public string GroupPath { get; }
+        public string Name { get; }
+        public List<(string Path, string Content, bool Bom)> Files { get; }
+        public string? Error { get; }
+        public bool Ok => Error == null;
     }
 
-    private async Task<(List<string> Exported, List<string> Errors, List<string> Stale)> ExportTypes(string plcName, string plcDir)
+    private static readonly string[] HmiAlarmKinds = { "HMI DiscreteAlarms", "HMI AnalogAlarms", "HMI AlarmClasses" };
+
+    // Exports every item include (device, kind, group path, name) selects - all of them when it's
+    // null - from every PLC and HMI, or only deviceName's. Also returns the devices it went
+    // through, so a caller can tell which manifest items it would have seen if they still existed.
+    private async Task<(List<ExportedItem> Items, List<string> Devices)> ExportItems(Func<string, string, string, string, bool>? include, string? deviceName)
     {
-        var types = await _session.ReadAllUdtsAsync(plcName);
-        var exported = new List<string>();
-        var errors = new List<string>();
-        var stale = new List<string>();
-        foreach (var (t, result) in types)
+        var items = new List<ExportedItem>();
+        var devices = new List<string>();
+        bool Includes(string device, string kind, string groupPath, string name) => include == null || include(device, kind, groupPath, name);
+        bool IsSelectedDevice(string device) => deviceName == null || string.Equals(device, deviceName, StringComparison.OrdinalIgnoreCase);
+
+        foreach (var plc in (await _session.ListDevicesAsync()).Select(d => d.PlcSoftwareName).OfType<string>().Where(IsSelectedDevice))
         {
-            var label = string.IsNullOrEmpty(t.GroupPath) ? t.Name : $"{t.GroupPath}/{t.Name}";
-            var dir = GroupDir(plcDir, "PLC data types", t.GroupPath);
-            if (!result.Success)
-            {
-                errors.Add($"udt '{label}': {result.Error}");
-                if (MarkStale(dir, t.Name)) stale.Add($"udt '{label}'");
-                continue;
-            }
-            Directory.CreateDirectory(dir);
-            ClearStale(dir, t.Name);
-            foreach (var doc in result.Documents)
-                File.WriteAllText(Path.Combine(dir, Sanitize(EnsureExtension(doc.FileName))), doc.Content);
-            exported.Add($"udt '{label}'");
+            devices.Add(plc);
+            foreach (var (b, result) in await _session.ReadAllBlocksAsync(plc, (g, n) => Includes(plc, "block", g, n)))
+                items.Add(FromDocuments(plc, "block", b.GroupPath, b.Name, result));
+            foreach (var (t, result) in await _session.ReadAllTagTablesAsync(plc, (g, n) => Includes(plc, "tag table", g, n)))
+                items.Add(FromCsv(plc, "tag table", t.GroupPath, t.Name, result.Success ? FormatTagTable(result.Tags) : null, result.Error));
+            foreach (var (t, result) in await _session.ReadAllUdtsAsync(plc, (g, n) => Includes(plc, "udt", g, n)))
+                items.Add(FromDocuments(plc, "udt", t.GroupPath, t.Name, result));
         }
-        return (exported, errors, stale);
+
+        foreach (var hmi in (await _session.ListHmiDevicesAsync()).Select(h => h.HmiSoftwareName).Where(IsSelectedDevice))
+        {
+            devices.Add(hmi);
+            foreach (var table in (await _session.ListHmiTagTablesAsync(hmi)).Where(t => Includes(hmi, "HMI tag table", t.GroupPath, t.Name)))
+            {
+                try
+                {
+                    var result = await _session.ReadHmiTagTableAsync(hmi, table.Name);
+                    items.Add(FromCsv(hmi, "HMI tag table", table.GroupPath, table.Name, result.Success ? FormatHmiTagTable(result.Tags) : null, result.Error));
+                }
+                catch (Exception ex)
+                {
+                    items.Add(FromCsv(hmi, "HMI tag table", table.GroupPath, table.Name, null, ex.Message));
+                }
+            }
+
+            foreach (var kind in HmiAlarmKinds.Where(k => Includes(hmi, k, "", "")))
+            {
+                try
+                {
+                    var csv = kind == "HMI AlarmClasses"
+                        ? FormatHmiAlarmClasses(await _session.ListHmiAlarmClassesAsync(hmi))
+                        : FormatHmiAlarms(await _session.ListHmiAlarmsAsync(hmi, kind == "HMI DiscreteAlarms" ? "Discrete" : "Analog"));
+                    items.Add(FromCsv(hmi, kind, "", "", csv, null));
+                }
+                catch (Exception ex)
+                {
+                    items.Add(FromCsv(hmi, kind, "", "", null, ex.Message));
+                }
+            }
+        }
+
+        return (items, devices);
     }
 
-    private async Task<(List<string> Exported, List<string> Errors, List<string> Stale)> ExportTagTables(string plcName, string plcDir)
+    private static ExportedItem FromDocuments(string device, string kind, string groupPath, string name, ExportResult result)
     {
-        var tables = await _session.ReadAllTagTablesAsync(plcName);
-        var exported = new List<string>();
-        var errors = new List<string>();
-        var stale = new List<string>();
-        foreach (var (table, result) in tables)
-        {
-            var label = string.IsNullOrEmpty(table.GroupPath) ? table.Name : $"{table.GroupPath}/{table.Name}";
-            var dir = GroupDir(plcDir, "PLC tags", table.GroupPath);
-            if (!result.Success)
-            {
-                errors.Add($"tag table '{label}': {result.Error}");
-                if (MarkStale(dir, table.Name)) stale.Add($"tag table '{label}'");
-                continue;
-            }
-            Directory.CreateDirectory(dir);
-            ClearStale(dir, table.Name);
-            // UTF-8 with BOM so Excel auto-detects the encoding and opening the file directly
-            // (double-click) renders non-ASCII comment/tag text correctly instead of mangling it.
-            File.WriteAllText(Path.Combine(dir, Sanitize(table.Name) + ".csv"), FormatTagTable(result.Tags), new UTF8Encoding(true));
-            exported.Add($"tag table '{label}'");
-        }
-        return (exported, errors, stale);
+        var dir = ItemDir(device, kind, groupPath);
+        var files = result.Documents.Select(d => ($"{dir}/{Sanitize(EnsureExtension(d.FileName))}", d.Content, false)).ToList();
+        return new ExportedItem(device, kind, groupPath, name, files, result.Success ? null : result.Error ?? "export failed");
     }
 
-    private async Task<(List<string> Exported, List<string> Errors, List<string> Stale)> ExportHmiTagTables(string hmiName, string hmiDir)
+    // CSV gets a UTF-8 BOM so Excel auto-detects the encoding and opening the file directly
+    // (double-click) renders non-ASCII comment/tag text correctly instead of mangling it.
+    private static ExportedItem FromCsv(string device, string kind, string groupPath, string name, string? csv, string? error)
     {
-        var tables = await _session.ListHmiTagTablesAsync(hmiName);
-        var exported = new List<string>();
-        var errors = new List<string>();
-        var stale = new List<string>();
-        foreach (var table in tables)
-        {
-            var label = string.IsNullOrEmpty(table.GroupPath) ? table.Name : $"{table.GroupPath}/{table.Name}";
-            var dir = GroupDir(hmiDir, "HMI tags", table.GroupPath);
-            var result = await _session.ReadHmiTagTableAsync(hmiName, table.Name);
-            if (!result.Success)
-            {
-                errors.Add($"HMI tag table '{label}': {result.Error}");
-                if (MarkStale(dir, table.Name)) stale.Add($"HMI tag table '{label}'");
-                continue;
-            }
-            Directory.CreateDirectory(dir);
-            ClearStale(dir, table.Name);
-            File.WriteAllText(Path.Combine(dir, Sanitize(table.Name) + ".csv"), FormatHmiTagTable(result.Tags), new UTF8Encoding(true));
-            exported.Add($"HMI tag table '{label}'");
-        }
-        return (exported, errors, stale);
+        var files = csv == null
+            ? new List<(string, string, bool)>()
+            : new List<(string, string, bool)> { ($"{ItemDir(device, kind, groupPath)}/{Sanitize(ItemStem(kind, name))}.csv", csv, true) };
+        return new ExportedItem(device, kind, groupPath, name, files, csv == null ? error ?? "export failed" : null);
     }
 
-    // Alarms and alarm classes have no folder/group concept in Openness (see write_hmi_alarm's
-    // description), so unlike blocks/tag tables/UDTs there's exactly one flat item of each kind
-    // per HMI - three fixed filenames rather than one file per discovered item.
-    private async Task<(List<string> Exported, List<string> Errors, List<string> Stale)> ExportHmiAlarms(string hmiName, string hmiDir)
+    private static string SectionOf(string kind) => kind switch
     {
-        var dir = Path.Combine(hmiDir, "HMI alarms");
-        var exported = new List<string>();
-        var errors = new List<string>();
-        var stale = new List<string>();
+        "block" => "Program blocks",
+        "udt" => "PLC data types",
+        "tag table" => "PLC tags",
+        "HMI tag table" => "HMI tags",
+        _ => "HMI alarms",
+    };
 
-        async Task WriteItem(string itemName, Func<Task<string>> render)
+    // The file name (without extension) an item's files start with: its name, or for an HMI
+    // alarms item the fixed 'DiscreteAlarms'/'AnalogAlarms'/'AlarmClasses'.
+    private static string ItemStem(string kind, string name) =>
+        HmiAlarmKinds.Contains(kind) ? kind.Substring("HMI ".Length) : name;
+
+    // Root-relative, '/'-separated folder of an item: <device>/<section>/<group path>.
+    private static string ItemDir(string device, string kind, string groupPath)
+    {
+        var segments = new List<string> { Sanitize(device), SectionOf(kind) };
+        if (!string.IsNullOrEmpty(groupPath))
+            segments.AddRange(groupPath.Split('/').Select(Sanitize));
+        return string.Join("/", segments);
+    }
+
+    // Writes exported items to disk and records them in the manifest. A failed item keeps no file
+    // that looks current: what an earlier read left is renamed '.stale' (see MarkStale).
+    private static void WriteExport(string root, SourceTreeManifest manifest, IEnumerable<ExportedItem> items)
+    {
+        foreach (var item in items)
         {
-            try
+            var dir = Path.Combine(root, ItemDir(item.Device, item.Kind, item.GroupPath));
+            var stem = ItemStem(item.Kind, item.Name);
+            var previous = manifest.Find(item.Device, item.Kind, item.Name);
+            var entry = new SourceTreeItem { Device = item.Device, Kind = item.Kind, GroupPath = item.GroupPath, Name = item.Name };
+            if (!item.Ok)
             {
-                var content = await render();
-                Directory.CreateDirectory(dir);
-                ClearStale(dir, itemName);
-                File.WriteAllText(Path.Combine(dir, itemName + ".csv"), content, new UTF8Encoding(true));
-                exported.Add($"HMI {itemName}");
+                entry.Ok = false;
+                entry.Error = item.Error;
+                entry.Stale = MarkStale(dir, stem);
+                manifest.Set(entry);
+                continue;
             }
-            catch (Exception ex)
+
+            // Files of an earlier read this one no longer produces - e.g. a .s7res whose last
+            // comment was removed, or everything at the old place of an item moved to another group.
+            if (previous != null)
             {
-                errors.Add($"HMI {itemName}: {ex.Message}");
-                if (MarkStale(dir, itemName)) stale.Add($"HMI {itemName}");
+                foreach (var old in previous.Files.Keys.Where(k => !item.Files.Any(f => string.Equals(f.Path, k, StringComparison.OrdinalIgnoreCase))))
+                    DeleteFile(Path.Combine(root, old));
             }
+
+            Directory.CreateDirectory(dir);
+            ClearStale(dir, stem);
+            foreach (var file in item.Files)
+            {
+                File.WriteAllText(Path.Combine(root, file.Path), file.Content, new UTF8Encoding(file.Bom));
+                entry.Files[file.Path] = SourceTreeManifest.Hash(file.Content);
+            }
+            manifest.Set(entry);
+        }
+    }
+
+    // An item a read didn't find in the project any more (deleted or renamed in TIA Portal):
+    // its files go too, or write_source_tree would later create it again as a new item.
+    private static void RemoveFromTree(string root, SourceTreeManifest manifest, SourceTreeItem item)
+    {
+        foreach (var file in item.Files.Keys) DeleteFile(Path.Combine(root, file));
+        manifest.Items.Remove(item);
+    }
+
+    private static void DeleteFile(string path)
+    {
+        try { if (File.Exists(path)) File.Delete(path); } catch { /* best effort - a leftover file is reported by the next write_source_tree */ }
+    }
+
+    private static string Label(string groupPath, string name) =>
+        string.IsNullOrEmpty(groupPath) ? name : $"{groupPath}/{name}";
+
+    // How an item appears in _export_summary.txt and tool results - the format ParseSourceTreeList reads back.
+    private static string Describe(string kind, string groupPath, string name) =>
+        HmiAlarmKinds.Contains(kind) ? kind : $"{kind} '{Label(groupPath, name)}'";
+
+    private static string Describe(SourceTreeItem item) => Describe(item.Kind, item.GroupPath, item.Name);
+
+    private static readonly string[] KindOrder = { "block", "tag table", "udt", "HMI tag table", "HMI DiscreteAlarms", "HMI AnalogAlarms", "HMI AlarmClasses" };
+
+    // _export_summary.txt: every item in the tree, so it stays the full list for write_source_tree
+    // after a read of only part of the project.
+    private static string FormatSummary(string root, SourceTreeManifest manifest)
+    {
+        var summary = new StringBuilder();
+        summary.AppendLine($"Source tree - last read {manifest.LastRead:yyyy-MM-dd HH:mm:ss}");
+        summary.AppendLine($"Project: {manifest.Project}");
+        summary.AppendLine($"Target: {root}");
+        summary.AppendLine();
+
+        foreach (var device in manifest.Items.GroupBy(i => i.Device, StringComparer.OrdinalIgnoreCase).OrderBy(g => g.Key, StringComparer.OrdinalIgnoreCase))
+        {
+            summary.AppendLine(device.All(i => i.Kind.StartsWith("HMI")) ? $"=== {device.Key} (HMI) ===" : $"=== {device.Key} ===");
+            foreach (var item in device.OrderBy(i => Array.IndexOf(KindOrder, i.Kind)).ThenBy(i => Label(i.GroupPath, i.Name), StringComparer.OrdinalIgnoreCase))
+            {
+                if (item.Ok) { summary.AppendLine($"  OK     {Describe(item)}"); continue; }
+                summary.AppendLine($"  FAILED {Describe(item)}: {item.Error}");
+                if (item.Stale) summary.AppendLine($"  STALE  {Describe(item)} - previous export left on disk with a '.stale' suffix, does not reflect current state");
+            }
+            summary.AppendLine();
         }
 
-        await WriteItem("DiscreteAlarms", async () => FormatHmiAlarms(await _session.ListHmiAlarmsAsync(hmiName, "Discrete")));
-        await WriteItem("AnalogAlarms", async () => FormatHmiAlarms(await _session.ListHmiAlarmsAsync(hmiName, "Analog")));
-        await WriteItem("AlarmClasses", async () => FormatHmiAlarmClasses(await _session.ListHmiAlarmClassesAsync(hmiName)));
+        summary.AppendLine($"Done: {manifest.Items.Count(i => i.Ok)} exported, {manifest.Items.Count(i => !i.Ok)} failed, {manifest.Items.Count(i => i.Stale)} marked stale.");
+        return summary.ToString();
+    }
 
-        return (exported, errors, stale);
+    // read_source_tree's items: 'Name', 'group/path/Name', or 'group/path/' for everything below a
+    // group, case-insensitive. HMI alarms are 'DiscreteAlarms', 'AnalogAlarms', 'AlarmClasses', or
+    // 'HMI alarms/' for all three.
+    private static bool Selects(IReadOnlyList<string> selection, string kind, string groupPath, string name)
+    {
+        if (HmiAlarmKinds.Contains(kind)) (groupPath, name) = ("HMI alarms", ItemStem(kind, name));
+        var label = Label(groupPath, name);
+        foreach (var raw in selection)
+        {
+            var entry = raw.Trim().Replace('\\', '/');
+            if (entry.EndsWith("/"))
+            {
+                var group = entry.TrimEnd('/');
+                if (string.Equals(groupPath, group, StringComparison.OrdinalIgnoreCase) || groupPath.StartsWith(group + "/", StringComparison.OrdinalIgnoreCase)) return true;
+            }
+            else if (string.Equals(entry, entry.Contains("/") ? label : name, StringComparison.OrdinalIgnoreCase))
+            {
+                return true;
+            }
+        }
+        return false;
     }
 
     private static string FormatHmiAlarms(IReadOnlyList<HmiAlarmInfo> alarms) =>
