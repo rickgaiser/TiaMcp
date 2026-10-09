@@ -268,7 +268,7 @@ Whole-block STL: set stlBlock to true instead of using the SCL header shapes abo
     });
 
     [McpServerTool(Name = "read_plc_udt")]
-    [Description("Read a UDT's (PLC data type's) definition as plain text: 'TYPE Name : STRUCT ... END_STRUCT; END_TYPE'. Unlike blocks, this never produces a .s7res file - UDTs carry no multilingual comment text - so there is no duplicate-ID refusal case to worry about here. A field typed as another UDT is shown as '_.OtherTypeName' (the leading '_.' is TIA Portal's own real export syntax for a UDT reference, not a rendering choice by this server) - read that UDT separately if you need its fields too, same as how a block's own interface shows a UDT-typed member by name only.")]
+    [Description("Read a UDT's (PLC data type's) definition as plain text: 'TYPE Name : STRUCT ... END_STRUCT; END_TYPE', plus a .s7res file when members have comments (pass that back as resContent to write_plc_udt/create_plc_udt). A field typed as another UDT is shown as '_.OtherTypeName' (the leading '_.' is TIA Portal's own real export syntax for a UDT reference, not a rendering choice by this server) - read that UDT separately if you need its fields too, same as how a block's own interface shows a UDT-typed member by name only.")]
     public Task<string> ReadUdt(
         [Description("PLC software name, from list_plc_devices")] string plcName,
         [Description("UDT name, from list_plc_data_types")] string typeName) => Safe(async () =>
@@ -285,6 +285,8 @@ Whole-block STL: set stlBlock to true instead of using the SCL header shapes abo
     [McpServerTool(Name = "write_plc_udt")]
     [Description(@"Overwrite an existing UDT's definition in place (does not create new UDTs). Pass back the text from read_plc_udt, edited. Does not auto-compile - call compile_plc afterward; a UDT change can affect every block that references it, so check compile results carefully.
 
+Member comments go through an { S7_MLC := ""MLC_x"" } attribute plus the matching entry in resContent; '//' comments in the source are dropped by TIA Portal.
+
 TYPE
     Name : STRUCT
         Field1 : Bool;
@@ -295,9 +297,10 @@ END_TYPE")]
     public Task<string> WriteUdt(
         [Description("PLC software name, from list_plc_devices")] string plcName,
         [Description("UDT name, from list_plc_data_types")] string typeName,
-        [Description("The full 'TYPE ... END_TYPE' text, edited")] string content) => Safe(async () =>
+        [Description("The full 'TYPE ... END_TYPE' text, edited")] string content,
+        [Description("The .s7res file content, if read_plc_udt returned one for this UDT; omit otherwise")] string? resContent = null) => Safe(async () =>
     {
-        var docs = new List<BlockDocument> { new($"{typeName}.s7dcl", content) };
+        var docs = UdtDocuments(typeName, content, resContent);
         var result = await _session.WriteUdtAsync(plcName, typeName, docs);
         return $"{(result.Success ? "Success" : "FAILED")}\n{string.Join("\n", result.Messages)}";
     });
@@ -306,6 +309,8 @@ END_TYPE")]
     [Description(@"Create a new UDT (PLC data type). Fails if a UDT with this name already exists anywhere in the PLC (names are unique per-PLC). The target group must already exist - use create_plc_udt_group first, or pass an empty groupPath for the root. Does not auto-compile - call compile_plc afterward.
 
 The type name inside the content must match typeName exactly - that's where TIA Portal actually reads the name from (the parameter is just which file to import).
+
+Member comments go through an { S7_MLC := ""MLC_x"" } attribute plus the matching entry in resContent; '//' comments in the source are dropped by TIA Portal.
 
 TYPE
     Name : STRUCT
@@ -317,12 +322,20 @@ END_TYPE")]
         [Description("PLC software name, from list_plc_devices")] string plcName,
         [Description("Group path to create the UDT in, e.g. 'Types/Subgroup'; empty string for the root")] string groupPath,
         [Description("New UDT name")] string typeName,
-        [Description("The full 'TYPE ... END_TYPE' text")] string content) => Safe(async () =>
+        [Description("The full 'TYPE ... END_TYPE' text")] string content,
+        [Description("The .s7res file content, if modeling this UDT on one that read_plc_udt returned a .s7res for; omit otherwise")] string? resContent = null) => Safe(async () =>
     {
-        var docs = new List<BlockDocument> { new($"{typeName}.s7dcl", content) };
+        var docs = UdtDocuments(typeName, content, resContent);
         var result = await _session.CreateUdtAsync(plcName, groupPath, typeName, docs);
         return $"{(result.Success ? "Success" : "FAILED")}\n{string.Join("\n", result.Messages)}";
     });
+
+    private static List<BlockDocument> UdtDocuments(string typeName, string content, string? resContent)
+    {
+        var docs = new List<BlockDocument> { new($"{typeName}.s7dcl", content) };
+        if (!string.IsNullOrEmpty(resContent)) docs.Add(new BlockDocument($"{typeName}.s7res", resContent!));
+        return docs;
+    }
 
     [McpServerTool(Name = "delete_plc_udt")]
     [Description("Delete a UDT (PLC data type) by name. Fails with TIA Portal's own error if the UDT is still used as a member type by another UDT or block interface. This is destructive - confirm with the user before calling.")]

@@ -1209,9 +1209,8 @@ public sealed class TiaConnection : IDisposable
     }
 
     // UDTs (PlcType) export via the same ExportAsDocuments/.s7dcl route as SCL/FBD/LAD blocks,
-    // producing plain "TYPE Name : STRUCT ... END_STRUCT; END_TYPE" text with no .s7res file at
-    // all (UDTs carry no multilingual comment text the way blocks can), so there is no
-    // duplicate-ID risk here the way there is for ImportBlockDocuments.
+    // producing plain "TYPE Name : STRUCT ... END_STRUCT; END_TYPE" text, plus a .s7res when
+    // members carry comments - import then needs that .s7res next to the .s7dcl too.
     public ExportResult ReadUdt(string plcName, string typeName)
     {
         EnsureConnected();
@@ -1794,7 +1793,13 @@ public sealed class TiaConnection : IDisposable
             }
 
             var result = target.ImportFromDocuments(dir, typeName, options);
-            var messages = result.Messages.Select(m => m.Message).ToArray();
+            // TIA Portal adds "succeeded with comments ignored if any" to every UDT import, also when
+            // there are no comments or they all came in through S7_MLC/.s7res - it is about '//' comments.
+            var messages = result.Messages
+                .Select(m => m.Message.Contains("comments ignored")
+                    ? m.Message + " (TIA Portal's standard message: only '//' comments in the source are dropped; S7_MLC comments from the .s7res are imported)"
+                    : m.Message)
+                .ToArray();
             return new ImportResult(result.State != DocumentResultState.Failure, messages);
         }
         catch (Exception ex)

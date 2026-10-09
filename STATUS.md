@@ -16,7 +16,7 @@ For object types TiaMcp doesn't support yet, the notes say what the Openness API
 | Block: embedded STL networks | ✅ | ❌ | ✅ | ❌ | ✅ | ✅ | Read-only sidecar (`.stl-networks.awl`); rename/delete act on the whole block |
 | Instance-DB | ✅ | ✅ | ✅ | ❌ | ✅ | ✅ | Created bound to an FB; read returns the resolved member list |
 | Block group | ⚠️ | ✅ | — | — | ✅ | ✅ | Only visible through the group paths of the blocks in it; empty groups are not listed |
-| UDT (PLC data type) | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | `.s7dcl` |
+| UDT (PLC data type) | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | `.s7dcl` / `.s7res` |
 | UDT group | ⚠️ | ✅ | — | — | ✅ | ✅ | Empty groups are not listed |
 | Tag table | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | `.csv` |
 | Tag | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | Through the tag table CSV; delete via `deleteMissing`; rename via `rename_plc_tag` (keeps references) |

@@ -21,7 +21,7 @@ Special features that make TiaMcp fast for LLM's and human-readable friendly:
 | Instance-DB | full member list (no file export) | Yes | Create-only |
 | STL (whole-block) | `.awl` | Yes | Yes |
 | STL (embedded in mixed FBD/LAD/SCL block) | `.stl-networks.awl` (or `.stl-networks.xml` fallback) + `.s7dcl`/`.s7res` | Yes | No |
-| UDT (PLC data type) | `.s7dcl` (no `.s7res`) | Yes | Yes |
+| UDT (PLC data type) | `.s7dcl` / `.s7res` | Yes | Yes |
 | PLC tag table | `.csv`, Excel-compatible (synthesized) | Yes | Yes |
 | HMI tag table (WinCC Unified) | `.csv`, Excel-compatible (synthesized) | Yes | Yes |
 | HMI alarms (WinCC Unified) | `.csv`, Excel-compatible (synthesized) | Yes | Yes |
