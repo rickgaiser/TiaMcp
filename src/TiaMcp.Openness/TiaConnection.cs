@@ -2799,7 +2799,11 @@ public sealed class TiaConnection : IDisposable
 
         try
         {
-            resolved.Value.TagTables.Create(tableName);
+            // TIA can silently create the table as '<name>_1' when the name is still reserved
+            // (seen after deleting a table of that name), so the caller's follow-up lookup by
+            // name would miss it. Renaming it back is accepted.
+            var table = resolved.Value.TagTables.Create(tableName);
+            if (table.Name != tableName) table.Name = tableName;
             return new SimpleResult(true, null);
         }
         catch (Exception ex)
@@ -2965,8 +2969,10 @@ public sealed class TiaConnection : IDisposable
         try
         {
             var alarmClass = software.AlarmClasses.Find(spec.Name) ?? software.AlarmClasses.Create(spec.Name);
-            if (spec.Priority.HasValue) alarmClass.Priority = (byte)spec.Priority.Value;
-            if (spec.Log != null) alarmClass.Log = spec.Log;
+            // Only write what differs: system classes reject any Priority set, even an unchanged
+            // one, so a read_source_tree round trip would otherwise fail on every one of them.
+            if (spec.Priority.HasValue && alarmClass.Priority != spec.Priority.Value) alarmClass.Priority = (byte)spec.Priority.Value;
+            if (spec.Log != null && alarmClass.Log != spec.Log) alarmClass.Log = spec.Log;
             return new SimpleResult(true, null);
         }
         catch (Exception ex)
