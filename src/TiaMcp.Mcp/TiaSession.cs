@@ -80,6 +80,21 @@ public sealed class TiaSession
         return _sta.InvokeAsync(() => _connection.ReadBlock(plcName, blockName));
     }
 
+    public Task<IReadOnlyList<(BlockSummary Block, ExportResult Result)>> ReadAllBlocksAsync(string plcName)
+    {
+        return _sta.InvokeAsync(() => _connection.ReadAllBlocks(plcName));
+    }
+
+    public Task<IReadOnlyList<(TypeSummary Type, ExportResult Result)>> ReadAllUdtsAsync(string plcName)
+    {
+        return _sta.InvokeAsync(() => _connection.ReadAllUdts(plcName));
+    }
+
+    public Task<IReadOnlyList<(TagTableSummary Table, TagTableResult Result)>> ReadAllTagTablesAsync(string plcName)
+    {
+        return _sta.InvokeAsync(() => _connection.ReadAllTagTables(plcName));
+    }
+
     public Task<IReadOnlyList<TypeSummary>> ListPlcTypesAsync(string plcName)
     {
         return _sta.InvokeAsync(() => _connection.ListPlcTypes(plcName));

@@ -1483,15 +1483,14 @@ Returns (and also writes to '<sourceDirectory>/_import_report.txt') a per-item r
 
     private async Task<(List<string> Exported, List<string> Errors, List<string> Stale)> ExportBlocks(string plcName, string plcDir)
     {
-        var blocks = await _session.ListBlocksAsync(plcName);
+        var blocks = await _session.ReadAllBlocksAsync(plcName);
         var exported = new List<string>();
         var errors = new List<string>();
         var stale = new List<string>();
-        foreach (var b in blocks)
+        foreach (var (b, result) in blocks)
         {
             var label = string.IsNullOrEmpty(b.GroupPath) ? b.Name : $"{b.GroupPath}/{b.Name}";
             var dir = GroupDir(plcDir, "Program blocks", b.GroupPath);
-            var result = await _session.ReadBlockAsync(plcName, b.Name);
             if (!result.Success)
             {
                 errors.Add($"block '{label}': {result.Error}");
@@ -1509,15 +1508,14 @@ Returns (and also writes to '<sourceDirectory>/_import_report.txt') a per-item r
 
     private async Task<(List<string> Exported, List<string> Errors, List<string> Stale)> ExportTypes(string plcName, string plcDir)
     {
-        var types = await _session.ListPlcTypesAsync(plcName);
+        var types = await _session.ReadAllUdtsAsync(plcName);
         var exported = new List<string>();
         var errors = new List<string>();
         var stale = new List<string>();
-        foreach (var t in types)
+        foreach (var (t, result) in types)
         {
             var label = string.IsNullOrEmpty(t.GroupPath) ? t.Name : $"{t.GroupPath}/{t.Name}";
             var dir = GroupDir(plcDir, "PLC data types", t.GroupPath);
-            var result = await _session.ReadUdtAsync(plcName, t.Name);
             if (!result.Success)
             {
                 errors.Add($"udt '{label}': {result.Error}");
@@ -1535,15 +1533,14 @@ Returns (and also writes to '<sourceDirectory>/_import_report.txt') a per-item r
 
     private async Task<(List<string> Exported, List<string> Errors, List<string> Stale)> ExportTagTables(string plcName, string plcDir)
     {
-        var tables = await _session.ListTagTablesAsync(plcName);
+        var tables = await _session.ReadAllTagTablesAsync(plcName);
         var exported = new List<string>();
         var errors = new List<string>();
         var stale = new List<string>();
-        foreach (var table in tables)
+        foreach (var (table, result) in tables)
         {
             var label = string.IsNullOrEmpty(table.GroupPath) ? table.Name : $"{table.GroupPath}/{table.Name}";
             var dir = GroupDir(plcDir, "PLC tags", table.GroupPath);
-            var result = await _session.ReadTagTableAsync(plcName, table.Name);
             if (!result.Success)
             {
                 errors.Add($"tag table '{label}': {result.Error}");

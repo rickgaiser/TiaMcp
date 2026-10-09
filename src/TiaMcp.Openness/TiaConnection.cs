@@ -318,19 +318,41 @@ public sealed class TiaConnection : IDisposable
         return result;
     }
 
-    private void WalkBlocks(string plcName, PlcBlockComposition blocks, PlcBlockUserGroupComposition groups, string groupPath, List<BlockSummary> result)
+    // objects, when given, receives each listed block's object at the same index as its summary.
+    private void WalkBlocks(string plcName, PlcBlockComposition blocks, PlcBlockUserGroupComposition groups, string groupPath, List<BlockSummary> result, List<PlcBlock>? objects = null)
     {
         foreach (PlcBlock block in blocks)
         {
             if (block.ProgrammingLanguage == ProgrammingLanguage.Undef) continue;
             result.Add(new BlockSummary(plcName, groupPath, block.Name, block.ProgrammingLanguage.ToString(), block.IsConsistent));
+            objects?.Add(block);
         }
 
         foreach (var group in groups)
         {
             var childPath = string.IsNullOrEmpty(groupPath) ? group.Name : $"{groupPath}/{group.Name}";
-            WalkBlocks(plcName, group.Blocks, group.Groups, childPath, result);
+            WalkBlocks(plcName, group.Blocks, group.Groups, childPath, result, objects);
         }
+    }
+
+    // Bulk ListBlocks + ReadBlock for read_source_tree. Reads each block through the object the
+    // walk already found: looking every block up by name again re-walks the tree from the top,
+    // which made a full export quadratic in the block count (~0.3 s per lookup at ~500 blocks).
+    // A block that throws is reported as a failed result instead of aborting the whole export.
+    public IReadOnlyList<(BlockSummary Block, ExportResult Result)> ReadAllBlocks(string plcName)
+    {
+        EnsureConnected();
+        var software = GetSoftware(plcName);
+        var summaries = new List<BlockSummary>();
+        var objects = new List<PlcBlock>();
+        WalkBlocks(plcName, software.BlockGroup.Blocks, software.BlockGroup.Groups, "", summaries, objects);
+        return summaries.Select((s, i) => (s, ReadSafely(() => ReadBlock(software, objects[i])))).ToList();
+    }
+
+    private static ExportResult ReadSafely(Func<ExportResult> read)
+    {
+        try { return read(); }
+        catch (Exception ex) { return new ExportResult(false, Array.Empty<BlockDocument>(), ex.Message); }
     }
 
     public IReadOnlyList<TypeSummary> ListPlcTypes(string plcName)
@@ -342,17 +364,19 @@ public sealed class TiaConnection : IDisposable
         return result;
     }
 
-    private void WalkTypes(string plcName, PlcTypeComposition types, PlcTypeUserGroupComposition groups, string groupPath, List<TypeSummary> result)
+    // objects, when given, receives each listed type's object at the same index as its summary.
+    private void WalkTypes(string plcName, PlcTypeComposition types, PlcTypeUserGroupComposition groups, string groupPath, List<TypeSummary> result, List<PlcType>? objects = null)
     {
         foreach (var type in types)
         {
             result.Add(new TypeSummary(plcName, groupPath, type.Name));
+            objects?.Add(type);
         }
 
         foreach (var group in groups)
         {
             var childPath = string.IsNullOrEmpty(groupPath) ? group.Name : $"{groupPath}/{group.Name}";
-            WalkTypes(plcName, group.Types, group.Groups, childPath, result);
+            WalkTypes(plcName, group.Types, group.Groups, childPath, result, objects);
         }
     }
 
@@ -366,8 +390,11 @@ public sealed class TiaConnection : IDisposable
             return new ExportResult(false, Array.Empty<BlockDocument>(), $"Block '{blockName}' not found in PLC '{plcName}'.");
         }
 
-        var (block, _) = found.Value;
+        return ReadBlock(software, found.Value.block);
+    }
 
+    private ExportResult ReadBlock(PlcSoftware software, PlcBlock block)
+    {
         if (block.ProgrammingLanguage == ProgrammingLanguage.GRAPH)
         {
             return ReadGraphBlock(block);
@@ -424,21 +451,28 @@ public sealed class TiaConnection : IDisposable
             // ExtractCompileUnitTexts/RebuildDclWithNetworkTitles patching that path already does
             // for its surviving networks, best-effort, so a plain successful read doesn't quietly
             // ship with titles/comments the GUI shows but the export lost.
-            try { PatchMissingNetworkTitles(block, docs); } catch { /* best effort - leave docs as ExportAsDocuments produced them */ }
-
-            // Instance-DBs only export a bare linkage line (the interface lives on the FB
-            // type, which the SIMATIC-SD export route can fail to reach entirely - e.g. if
-            // the FB contains an STL network). Read the resolved interface directly off the
-            // instance instead - this is a live object-model property, not tied to that
-            // export route at all, so it works even when the FB export itself is broken.
-            if (block is InstanceDB idb)
+            // Data blocks have no networks, so there are no titles to patch - skipping saves an
+            // XML export per DB.
+            if (block is not DataBlock)
             {
-                docs.Add(new BlockDocument($"{block.Name}.interface.txt", FormatInstanceInterface(idb)));
+                try { PatchMissingNetworkTitles(block, docs); } catch { /* best effort - leave docs as ExportAsDocuments produced them */ }
             }
 
+            // Checked before adding the interface below: an instance DB with only its
+            // interface (e.g. of a know-how-protected FB) has no source to write back.
             if (docs.Count == 0)
             {
                 return new ExportResult(false, Array.Empty<BlockDocument>(), exportError ?? "Export produced no documents.");
+            }
+
+            // Instance-DBs only export a bare linkage line (the interface lives on the FB
+            // type, which the SIMATIC-SD export route can fail to reach entirely - e.g. if
+            // the FB contains an STL network). Read the resolved interface off the instance
+            // instead - not tied to that export route at all, so it works even when the FB
+            // export itself is broken.
+            if (block is InstanceDB idb)
+            {
+                docs.Add(new BlockDocument($"{block.Name}.interface.txt", FormatInstanceInterface(idb)));
             }
 
             return new ExportResult(true, docs, null);
@@ -1067,7 +1101,66 @@ public sealed class TiaConnection : IDisposable
         }
     }
 
+    // Renders the interface from one XML Export() of the instance. Interface.Members is a flat
+    // list with every array element as its own member (10,000+ for an FB with an alarm
+    // multi-instance), each read costing a round trip to TIA Portal - seconds per DB. The XML
+    // lists the same struct/UDT/multi-instance members once, with arrays as a single member.
+    // Falls back to the object model if the export or parse fails.
     private static string FormatInstanceInterface(InstanceDB idb)
+    {
+        try { return FormatInstanceInterfaceFromXml(idb); }
+        catch { return FormatInstanceInterfaceFromMembers(idb); }
+    }
+
+    private static string FormatInstanceInterfaceFromXml(InstanceDB idb)
+    {
+        var outDir = new DirectoryInfo(Path.Combine(Path.GetTempPath(), "TiaMcp", "idb", Guid.NewGuid().ToString("N")));
+        outDir.Create();
+        try
+        {
+            var xmlFile = new FileInfo(Path.Combine(outDir.FullName, "idb.xml"));
+            // WithDefaults: without it, UDT members still at their default value are left out.
+            idb.Export(xmlFile, ExportOptions.WithDefaults);
+            var iface = XDocument.Load(xmlFile.FullName).Descendants().First(e => e.Name.LocalName == "Interface");
+
+            var lines = new List<string>();
+            void Walk(IEnumerable<XElement> members, string prefix)
+            {
+                foreach (var m in members)
+                {
+                    // Quote names that aren't plain identifiers (e.g. "M1-01"), as the object
+                    // model does.
+                    var name = (string?)m.Attribute("Name") ?? "?";
+                    var path = prefix + (Regex.IsMatch(name, "^[A-Za-z_][A-Za-z0-9_]*$") ? name : $"\"{name}\"");
+                    lines.Add($"{path} : {(string?)m.Attribute("Datatype") ?? "?"}");
+                    Walk(ChildMembers(m), path + ".");
+                }
+            }
+            // A struct/array-of-struct member nests its members directly, a UDT or multi-instance
+            // member under Sections/Section.
+            static IEnumerable<XElement> ChildMembers(XElement parent) =>
+                parent.Elements().SelectMany(e =>
+                    e.Name.LocalName == "Member" ? new[] { e } :
+                    e.Name.LocalName == "Sections" ? e.Elements().SelectMany(s => s.Elements().Where(m => m.Name.LocalName == "Member")) :
+                    Enumerable.Empty<XElement>());
+
+            var sections = iface.Elements().Where(e => e.Name.LocalName == "Sections").Elements()
+                .Where(s => (string?)s.Attribute("Name") is not ("Temp" or "Constant"));
+            foreach (var section in sections)
+                Walk(section.Elements().Where(m => m.Name.LocalName == "Member"), "");
+
+            var sb = new StringBuilder();
+            sb.AppendLine($"Resolved interface of '{idb.Name}' (instance of '{idb.InstanceOfName}'), {lines.Count} members:");
+            foreach (var line in lines) sb.AppendLine(line);
+            return sb.ToString();
+        }
+        finally
+        {
+            try { outDir.Delete(true); } catch { /* best effort cleanup */ }
+        }
+    }
+
+    private static string FormatInstanceInterfaceFromMembers(InstanceDB idb)
     {
         var sb = new StringBuilder();
         sb.AppendLine($"Resolved interface of '{idb.Name}' (instance of '{idb.InstanceOfName}'), {idb.Interface.Members.Count} members:");
@@ -1095,7 +1188,22 @@ public sealed class TiaConnection : IDisposable
             return new ExportResult(false, Array.Empty<BlockDocument>(), $"UDT '{typeName}' not found in PLC '{plcName}'.");
         }
 
-        var (type, _) = found.Value;
+        return ReadUdt(found.Value.type);
+    }
+
+    // Bulk ListPlcTypes + ReadUdt for read_source_tree - see ReadAllBlocks.
+    public IReadOnlyList<(TypeSummary Type, ExportResult Result)> ReadAllUdts(string plcName)
+    {
+        EnsureConnected();
+        var software = GetSoftware(plcName);
+        var summaries = new List<TypeSummary>();
+        var objects = new List<PlcType>();
+        WalkTypes(plcName, software.TypeGroup.Types, software.TypeGroup.Groups, "", summaries, objects);
+        return summaries.Select((s, i) => (s, ReadSafely(() => ReadUdt(objects[i])))).ToList();
+    }
+
+    private static ExportResult ReadUdt(PlcType type)
+    {
         var outDir = new DirectoryInfo(Path.Combine(Path.GetTempPath(), "TiaMcp", "export-udt", Guid.NewGuid().ToString("N")));
         outDir.Create();
         try
@@ -1953,17 +2061,19 @@ public sealed class TiaConnection : IDisposable
         return result;
     }
 
-    private void WalkTagTables(string plcName, PlcTagTableComposition tables, PlcTagTableUserGroupComposition groups, string groupPath, List<TagTableSummary> result)
+    // objects, when given, receives each listed table's object at the same index as its summary.
+    private void WalkTagTables(string plcName, PlcTagTableComposition tables, PlcTagTableUserGroupComposition groups, string groupPath, List<TagTableSummary> result, List<PlcTagTable>? objects = null)
     {
         foreach (PlcTagTable table in tables)
         {
             result.Add(new TagTableSummary(plcName, groupPath, table.Name));
+            objects?.Add(table);
         }
 
         foreach (var group in groups)
         {
             var childPath = string.IsNullOrEmpty(groupPath) ? group.Name : $"{groupPath}/{group.Name}";
-            WalkTagTables(plcName, group.TagTables, group.Groups, childPath, result);
+            WalkTagTables(plcName, group.TagTables, group.Groups, childPath, result, objects);
         }
     }
 
@@ -1997,11 +2107,81 @@ public sealed class TiaConnection : IDisposable
             return new TagTableResult(false, Array.Empty<TagInfo>(), $"Tag table '{tableName}' not found in PLC '{plcName}'.");
         }
 
-        var tags = table.Tags
-            .Select(t => new TagInfo(t.Name, t.DataTypeName, t.LogicalAddress, ExtractText(t.Comment),
-                t.ExternalAccessible, t.ExternalVisible, t.ExternalWritable))
-            .ToArray();
-        return new TagTableResult(true, tags, null);
+        return ReadTagTable(table);
+    }
+
+    // Bulk ListTagTables + ReadTagTable for read_source_tree - see ReadAllBlocks.
+    public IReadOnlyList<(TagTableSummary Table, TagTableResult Result)> ReadAllTagTables(string plcName)
+    {
+        EnsureConnected();
+        var software = GetSoftware(plcName);
+        var summaries = new List<TagTableSummary>();
+        var objects = new List<PlcTagTable>();
+        WalkTagTables(plcName, software.TagTableGroup.TagTables, software.TagTableGroup.Groups, "", summaries, objects);
+        return summaries.Select((s, i) =>
+        {
+            try { return (s, ReadTagTable(objects[i])); }
+            catch (Exception ex) { return (s, new TagTableResult(false, Array.Empty<TagInfo>(), ex.Message)); }
+        }).ToList();
+    }
+
+    // Reads the tags from one XML Export() of the table: reading them property by property costs
+    // a round trip to TIA Portal per property (~5 ms per tag, against ~1 ms per tag this way).
+    // Falls back to the object model if the export or parse fails.
+    private static TagTableResult ReadTagTable(PlcTagTable table)
+    {
+        try { return new TagTableResult(true, ReadTagsFromXml(table), null); }
+        catch
+        {
+            var tags = table.Tags
+                .Select(t => new TagInfo(t.Name, t.DataTypeName, t.LogicalAddress, ExtractText(t.Comment),
+                    t.ExternalAccessible, t.ExternalVisible, t.ExternalWritable))
+                .ToArray();
+            return new TagTableResult(true, tags, null);
+        }
+    }
+
+    private static TagInfo[] ReadTagsFromXml(PlcTagTable table)
+    {
+        var outDir = new DirectoryInfo(Path.Combine(Path.GetTempPath(), "TiaMcp", "tagtable", Guid.NewGuid().ToString("N")));
+        outDir.Create();
+        try
+        {
+            var xmlFile = new FileInfo(Path.Combine(outDir.FullName, "tagtable.xml"));
+            table.Export(xmlFile, ExportOptions.WithDefaults);
+
+            // The XML lists comment languages in a different order than the object model's
+            // Comment.Items, which ExtractText (and so every earlier export) follows. Take that
+            // order from one tag - the languages are the project's, the same for every tag.
+            var cultureOrder = table.Tags.FirstOrDefault()?.Comment?.Items
+                .Select(i => i.Language.Culture.Name).ToList() ?? new List<string>();
+            int CultureRank(string? culture)
+            {
+                var rank = culture == null ? -1 : cultureOrder.IndexOf(culture);
+                return rank < 0 ? int.MaxValue : rank;
+            }
+
+            return XDocument.Load(xmlFile.FullName).Descendants("SW.Tags.PlcTag").Select(tag =>
+            {
+                var attributes = tag.Element("AttributeList") ?? throw new FormatException("PlcTag without AttributeList.");
+                string Required(string name) => (string?)attributes.Element(name) ?? throw new FormatException($"PlcTag without {name}.");
+                // Same rule as ExtractText: every non-empty language, in item order, joined with " | ".
+                var comment = string.Join(" | ", tag.Elements("ObjectList").Elements("MultilingualText")
+                    .Where(t => (string?)t.Attribute("CompositionName") == "Comment")
+                    .Descendants("MultilingualTextItem")
+                    .Select(i => i.Element("AttributeList"))
+                    .OrderBy(a => CultureRank((string?)a?.Element("Culture")))
+                    .Select(a => (string?)a?.Element("Text"))
+                    .Where(t => !string.IsNullOrEmpty(t)));
+                return new TagInfo(Required("Name"), Required("DataTypeName"), Required("LogicalAddress"),
+                    comment.Length == 0 ? null : comment,
+                    bool.Parse(Required("ExternalAccessible")), bool.Parse(Required("ExternalVisible")), bool.Parse(Required("ExternalWritable")));
+            }).ToArray();
+        }
+        finally
+        {
+            try { outDir.Delete(true); } catch { /* best effort cleanup */ }
+        }
     }
 
     public WriteTagsResult WriteTagTable(string plcName, string tableName, IReadOnlyList<TagSpec> tags, bool deleteMissing = false)
