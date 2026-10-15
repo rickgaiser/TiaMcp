@@ -42,9 +42,9 @@ public sealed partial class TiaTools
     }
 
     [McpServerTool(Name = "tia_connect")]
-    [Description("Attach to a running TIA Portal instance. With no arguments, attaches to whatever project is already open in the GUI - this only works when exactly one TIA Portal instance is running. If more than one instance is running, this returns an error listing their process ids instead of guessing or attaching to any of them (attaching is what triggers Openness's 'allow connection' dialog, so probing every instance would prompt all of them) - call list_tia_instances first, then call this again with processId set to the one you want. Pass projectPath to open a specific project (.apXX file) by path in the targeted instance - use this when the project you need isn't the one currently open. Call this first, and call it again (with no projectPath) if a PLC/device was renamed in the GUI or a tool starts reporting an unknown plcName - the PLC name index is only built at connect time.")]
+    [Description("Attach to a running TIA Portal instance. With no arguments, attaches to the single open project or Multiuser local session. If more than one TIA Portal instance is running, this returns an error listing their process ids instead of guessing or attaching to any of them (attaching is what triggers Openness's 'allow connection' dialog, so probing every instance would prompt all of them) - call list_tia_instances first, then call this again with processId set to the one you want. Pass projectPath to open a specific .apXX project or .alsXX local session, or to match that session if already open, in the targeted instance. Call this again if a PLC/device was renamed in the GUI or a tool starts reporting an unknown plcName - the PLC name index is only built at connect time.")]
     public Task<string> Connect(
-        [Description("Optional full path to a .apXX project file to open. Omit to use whatever project is already open in TIA Portal.")] string? projectPath = null,
+        [Description("Optional full path to a .apXX project file or .alsXX Multiuser local session to open. Omit to use whatever project or local session is already open in TIA Portal.")] string? projectPath = null,
         [Description("Optional process id (PID) of the specific running TIA Portal instance to attach to, from list_tia_instances. Required when more than one TIA Portal instance is running; omit when only one is running.")] int? processId = null) => Safe(async () =>
     {
         var result = await _session.ConnectAsync(projectPath, processId);
@@ -68,7 +68,7 @@ public sealed partial class TiaTools
     });
 
     [McpServerTool(Name = "save_project_as")]
-    [Description("Save the currently connected project to a new folder, like TIA Portal's own 'Save project as' - creates a copy at the target location and continues working on that copy. Use this before risky changes if you want an on-disk checkpoint distinct from the original project.")]
+    [Description("Save the currently connected project to a new folder, like TIA Portal's own 'Save project as' - creates a copy at the target location and continues working on that copy. Use this before risky changes if you want an on-disk checkpoint distinct from the original project. Not supported for Multiuser local sessions.")]
     public Task<string> SaveProjectAs(
         [Description("Target directory for the new project copy. Must not already contain a project.")] string targetDirectory) => Safe(async () =>
     {
@@ -81,7 +81,7 @@ public sealed partial class TiaTools
     });
 
     [McpServerTool(Name = "save_project")]
-    [Description("Save the currently connected project in place (equivalent to Ctrl+S in the TIA Portal GUI). Block/tag/group writes made through this server only live in the open session until this is called - call it after a batch of changes you want persisted to disk.")]
+    [Description("Save the currently connected project in place (equivalent to Ctrl+S in the TIA Portal GUI). Block/tag/group writes made through this server remain in the open session until this is called - call it after a batch of changes you want persisted to disk. For a Multiuser local session, this saves locally only and does not commit changes to the project server.")]
     public Task<string> SaveProject() => Safe(async () =>
     {
         var result = await _session.SaveProjectAsync();
@@ -89,7 +89,7 @@ public sealed partial class TiaTools
     });
 
     [McpServerTool(Name = "close_project")]
-    [Description("Close the currently connected project (equivalent to closing the project in the TIA Portal GUI). Unsaved changes are lost unless save_project was called first - this does not save automatically. Use this before tia_connect with a different projectPath if TIA Portal refuses to open a second project while one is already open.")]
+    [Description("Close the currently connected project (equivalent to closing it in the TIA Portal GUI). Save first to preserve unsaved edits; this does not save automatically. Use before tia_connect with a different projectPath if TIA refuses to open a second project. For a Multiuser local session, this closes the session without committing to the project server; it is not just an MCP disconnect.")]
     public Task<string> CloseProject() => Safe(async () =>
     {
         var result = await _session.CloseProjectAsync();
@@ -97,7 +97,7 @@ public sealed partial class TiaTools
     });
 
     [McpServerTool(Name = "project_status")]
-    [Description("Report the connected project's save state: whether it has unsaved changes, and who/when it was last saved.")]
+    [Description("Report the connected project's save state: whether it has unsaved changes, and who/when it was last saved. For a Multiuser local session, the path shown is the inner .amcXX project file, not the outer .alsXX session file.")]
     public Task<string> ProjectStatus() => Safe(async () =>
     {
         var s = await _session.GetProjectStatusAsync();
@@ -405,7 +405,7 @@ public sealed partial class TiaTools
     });
 
     [McpServerTool(Name = "compile_plc")]
-    [Description("Compile a PLC's software and report errors/warnings.")]
+    [Description("Compile a PLC's software and report errors/warnings. On a Multiuser local session this compiles locally, can mark the session modified, and does not commit results to the server.")]
     public Task<string> Compile([Description("PLC software name, from list_project")] string plcName) => Safe(async () =>
     {
         var result = await _session.CompileAsync(plcName);
