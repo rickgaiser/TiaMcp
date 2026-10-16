@@ -519,7 +519,7 @@ Without filter or deviceName, a project of more than 200 items only gets counts 
 
 Pass items to read only part of the project (much faster than a full read): e.g. one block to look at or refresh, or a group. A read overwrites the selected items' files, including unsaved edits to them. An item that no longer exists in the project (deleted or renamed in TIA Portal) has its files deleted.
 
-Files per item: blocks and UDTs keep TIA Portal's own document format (.s7dcl, plus .s7res holding the comment/title texts its S7_MLC attributes refer to); a GRAPH block is '<name>.graph.il', a whole-block-STL block '<name>.awl' (TIA Portal's own 'Generate source' text). Read-only companions, never written back: '<name>.interface.txt' (an instance DB's resolved interface) and '<name>.stl-networks.awl'/'.xml' (the STL networks inside an otherwise FBD/LAD/SCL block; the .s7dcl keeps an empty placeholder NETWORK with S7_Language := ""STL"" at each one's position). Tag tables, alarms and alarm text lists (From, To, one Text [language] column per project language) are Excel-compatible CSV with a UTF-8 BOM.
+Files per item: blocks and UDTs keep TIA Portal's own document format (.s7dcl, plus .s7res holding the comment/title texts its S7_MLC attributes refer to); a GRAPH block is '<name>.graph.il', a whole-block-STL block '<name>.awl' (TIA Portal's own 'Generate source' text). A fail-safe (F-) block additionally gets '<name>.xml' (SimaticML): TIA Portal can't import F-blocks from .s7dcl, so the .xml is what write_source_tree writes for it - change it there; the .s7dcl stays the readable view. Read-only companions, never written back: '<name>.interface.txt' (an instance DB's resolved interface) and '<name>.stl-networks.awl'/'.xml' (the STL networks inside an otherwise FBD/LAD/SCL block; the .s7dcl keeps an empty placeholder NETWORK with S7_Language := ""STL"" at each one's position). Tag tables, alarms and alarm text lists (From, To, one Text [language] column per project language) are Excel-compatible CSV with a UTF-8 BOM.
 
 An item that fails to export (e.g. an inconsistent block - GRAPH blocks must be compiled first) is reported, and files from an earlier read of it are renamed with a '.stale' suffix rather than left looking current. '_export_summary.txt' lists every item in the tree; '_manifest.json' is write_source_tree's bookkeeping - don't edit it. Returns counts, failures, and for a partial read each item's files.")]
     public Task<string> ReadSourceTree(
@@ -618,6 +618,7 @@ Writing rules per file type:
 - SCL block: the '{ S7_EditorMode := ""SCL"" }' attribute block before FUNCTION/FUNCTION_BLOCK/DATA_BLOCK is required. FBD/LAD: never hand-write NETWORK/RUNG notation from scratch - copy a similar existing block's .s7dcl/.s7res and adapt it.
 - Comments and titles: an { S7_MLC := ""MLC_x"" } attribute (S7_NetworkTitle/S7_NetworkComment for networks) referring to an entry in the .s7res; '//' comments in the source are dropped by TIA Portal. Keep text ids unique within a .s7res.
 - GRAPH ('.graph.il'): step/transition attributes, actions and conditions are writable, steps/transitions can be added or removed, and BRANCHES/CONNECTIONS of a SEQUENCE are rewritten when present; INTERFACE and PREOPERATIONS are read-only. A condition still containing a construct shown as generic 'PartName(args)' is refused. A new GRAPH block is made by cloning an existing GRAPH block of the PLC (picked automatically) and reshaping it. The write recompiles the block and reports errors.
+- Fail-safe (F-) blocks: written from '<name>.xml' (SimaticML), because TIA Portal refuses F-blocks from .s7dcl. Needs the safety-program login in TIA Portal. A change made only in the .s7dcl is refused instead of silently dropped. A new F-block is created from its .s7dcl like any other block. After a failed F-block import every further block write is refused until the project was closed without saving and reconnected.
 - Whole-block STL ('.awl'): AWL text as TIA Portal's 'Generate source' produces it, block name in the header unchanged. A block with embedded STL networks can't be written.
 - Instance DB: its .s7dcl ('DATA_BLOCK ""x"" ... : FB_y'); the FB must exist.
 - PLC tag table CSV: Name, DataType, LogicalAddress, Comment, ExternalAccessible, ExternalVisible, ExternalWritable (True/False). Rows update or add tags; an empty cell leaves that value unchanged; removing a row deletes that tag (not when writing a tree read from another project). Renaming a tag in the CSV deletes it and makes a new one, breaking references - use rename_plc_tag.
@@ -1050,7 +1051,10 @@ Writes '<sourceDirectory>/_import_report.txt' with one CREATED/UPDATED/SKIPPED/F
             foreach (var write in layers[i])
             {
                 var result = await write.Write();
-                if (result.Success) { (write.IsCreate ? created : updated).Add(write.Label); written.Add(write.Item); }
+                // An F-block write reports its compile and cross-reference check - keep those visible.
+                var notes = result.Success && result.Messages.Any(m => m.StartsWith("Cross-reference check", StringComparison.Ordinal))
+                    ? $"  [{string.Join(" ", result.Messages)}]" : "";
+                if (result.Success) { (write.IsCreate ? created : updated).Add(write.Label + notes); written.Add(write.Item); }
                 else if (write.IsCreate) { retry.Add(write); lastError[write] = string.Join(" | ", result.Messages); }
                 else failed.Add($"{write.Label}: {string.Join(" | ", result.Messages)}");
             }
@@ -1311,6 +1315,9 @@ Writes '<sourceDirectory>/_import_report.txt' with one CREATED/UPDATED/SKIPPED/F
         var docs = new List<BlockDocument> { new($"{blockName}.s7dcl", File.ReadAllText(dclFile)) };
         var resFile = Path.Combine(dir, sanitizedName + ".s7res");
         if (File.Exists(resFile)) docs.Add(new BlockDocument($"{blockName}.s7res", File.ReadAllText(resFile)));
+        // A fail-safe block's SimaticML, which is what actually gets written for it.
+        var xmlFile = Path.Combine(dir, sanitizedName + ".xml");
+        if (File.Exists(xmlFile)) docs.Add(new BlockDocument($"{blockName}.xml", File.ReadAllText(xmlFile)));
         return (docs, null);
     }
 
