@@ -11,7 +11,9 @@ public sealed record BlockDocument(string FileName, string Content);
 
 public sealed record ExportResult(bool Success, IReadOnlyList<BlockDocument> Documents, string? Error);
 
-public sealed record ImportResult(bool Success, IReadOnlyList<string> Messages);
+// ShowMessages: the write reports something worth keeping in the tree report even on success
+// (an F-block write: its compile result and cross-reference check).
+public sealed record ImportResult(bool Success, IReadOnlyList<string> Messages, bool ShowMessages = false);
 
 public sealed record CompileResult(string State, int ErrorCount, int WarningCount, IReadOnlyList<string> Messages);
 

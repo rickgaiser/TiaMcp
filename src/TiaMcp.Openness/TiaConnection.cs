@@ -181,6 +181,7 @@ public sealed partial class TiaConnection : IDisposable
             CollectSoftware(device.DeviceItems);
         }
 
+        LoadFailsafeImportFlag();
         return new ConnectResult(true, project.Name, project.Path?.FullName, null);
     }
 
@@ -469,6 +470,14 @@ public sealed partial class TiaConnection : IDisposable
             if (block is InstanceDB idb)
             {
                 docs.Add(new BlockDocument($"{block.Name}.interface.txt", FormatInstanceInterface(idb)));
+            }
+
+            // F-blocks are written back from SimaticML (see TiaConnection.Failsafe.cs).
+            if (IsFailsafe(block))
+            {
+                var xml = ExportBlockXml(block, out var xmlError);
+                if (xml == null) return new ExportResult(false, docs, $"XML export of fail-safe block failed: {xmlError}");
+                docs.Add(new BlockDocument($"{block.Name}.xml", xml));
             }
 
             return new ExportResult(true, docs, null);
@@ -1270,6 +1279,13 @@ public sealed partial class TiaConnection : IDisposable
 
         var (block, owner) = found.Value;
 
+        if (RefusedAfterFailedImport() is { } refused) return refused;
+
+        if (IsFailsafe(block))
+        {
+            return WriteFailsafeBlock(software, block, owner, documents);
+        }
+
         if (block.ProgrammingLanguage == ProgrammingLanguage.GRAPH)
         {
             return WriteGraphBlock(software, block, owner, documents);
@@ -1298,7 +1314,7 @@ public sealed partial class TiaConnection : IDisposable
             });
         }
 
-        return ImportBlockDocuments(owner, blockName, documents, ImportDocumentOptions.Override);
+        return ImportBlockDocuments(owner, blockName, documents.Where(d => !IsBlockXml(d)).ToList(), ImportDocumentOptions.Override);
     }
 
     private static bool IsStlInvolved(PlcBlock block)
@@ -1491,6 +1507,8 @@ public sealed partial class TiaConnection : IDisposable
             return new ImportResult(false, new[] { $"A block named '{blockName}' already exists in PLC '{plcName}' (block names are unique per-PLC, not per-group). Pick a different name." });
         }
 
+        if (RefusedAfterFailedImport() is { } refused) return refused;
+
         PlcBlockUserGroup? targetGroup = null;
         if (!string.IsNullOrEmpty(groupPath))
         {
@@ -1522,6 +1540,8 @@ public sealed partial class TiaConnection : IDisposable
             return new ImportResult(false, new[] { $"Group '{groupPath}' not found in PLC '{plcName}'. Use create_group first, or pass an empty groupPath for the root." });
         }
 
+        if (IsFailsafeSource(documents)) return CreateFailsafeBlock(software, resolved.Value.Blocks, blockName, documents);
+        if (RefusedAfterFailedImport() is { } refused) return refused;
         return ImportBlockDocuments(resolved.Value.Blocks, blockName, documents, ImportDocumentOptions.None);
     }
 
@@ -1555,6 +1575,8 @@ public sealed partial class TiaConnection : IDisposable
         {
             return new ImportResult(false, new[] { $"Group '{groupPath}' not found in PLC '{plcName}'. Use create_plc_group first, or pass an empty groupPath for the root." });
         }
+
+        if (RefusedAfterFailedImport() is { } refused) return refused;
 
         var templateFound = FindBlockByName(software.BlockGroup.Blocks, software.BlockGroup.Groups, templateBlockName);
         if (templateFound == null)

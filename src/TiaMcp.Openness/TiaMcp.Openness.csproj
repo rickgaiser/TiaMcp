@@ -22,6 +22,10 @@
       <HintPath>C:\Program Files\Siemens\Automation\Portal V21\PublicAPI\V21\net48\Siemens.Engineering.Step7.dll</HintPath>
       <Private>False</Private>
     </Reference>
+    <Reference Include="Siemens.Engineering.Safety">
+      <HintPath>C:\Program Files\Siemens\Automation\Portal V21\PublicAPI\V21\net48\Siemens.Engineering.Safety.dll</HintPath>
+      <Private>False</Private>
+    </Reference>
     <Reference Include="Siemens.Engineering.WinCC">
       <HintPath>C:\Program Files\Siemens\Automation\Portal V21\PublicAPI\V21\net48\Siemens.Engineering.WinCC.dll</HintPath>
       <Private>False</Private>

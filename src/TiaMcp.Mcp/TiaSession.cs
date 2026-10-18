@@ -61,6 +61,10 @@ public sealed class TiaSession
         return result;
     }
 
+    public Task<string?> ReleaseFailedImportBlockAsync() => _sta.InvokeAsync(() => _connection.ReleaseFailedImportBlock());
+
+    public Task<string?> FailedImportBlockAsync() => _sta.InvokeAsync(() => _connection.FailedImportBlock);
+
     public Task<ProjectStatus> GetProjectStatusAsync()
     {
         return _sta.InvokeAsync(() => _connection.GetProjectStatus());
