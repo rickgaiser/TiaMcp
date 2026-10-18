@@ -25,7 +25,7 @@ TiaMcp makes a TIA Portal project workable for an LLM by mirroring it as a **sou
 
 | Project | Role |
 |---|---|
-| `TiaMcp.Formats` | File format converters (CSV, GRAPH DSL) and the records they convert, the format ids (`SourceFormat`) and the manifest. No Openness or MCP dependency. |
+| `TiaMcp.Formats` | File format converters (CSV, GRAPH DSL, the screen JSON diff) and the records they convert, the format ids (`SourceFormat`) and the manifest. No Openness or MCP dependency. |
 | `TiaMcp.Openness` | All Openness API calls, run on one STA thread (`StaDispatcher`). No MCP code. |
 | `TiaMcp.Mcp` | MCP tools, the source tree and the manifest. One handler per kind in `SourceKinds/`. `TiaSession` is the only path into Openness. |
 | `TiaMcp.Host` | stdio entry point, Openness assembly resolving. |
@@ -39,12 +39,13 @@ Each kind of item (block, UDT, tag table, HMI screen, ...) is one class implemen
 
 ## Formats
 
-A format is named like its file extension: `s7dcl` (with its `.s7res` and companions), `graph.il`, `awl`, `csv`, `xml` (`SourceFormat`). A kind lists its formats with its own first and `xml` last; an item has its own format plus `xml` where the kind has one (a block's own format follows from its language).
+A format is named like its file extension: `s7dcl` (with its `.s7res` and companions), `graph.il`, `awl`, `csv`, `json`, `xml` (`SourceFormat`). A kind lists its formats with its own first and `xml` last; an item has its own format plus `xml` where the kind has one (a block's own format follows from its language).
 
 - `list_project` ends each item line with the formats it can be read in, e.g. `tag table 'Motors' [csv, xml]`; `_export_summary.txt` with the formats it has in the tree. Passing such a line to `read_source_tree` reads those formats. Without one, an item is read in the formats it already has in the tree, else its own; the read-back after a write and the conflict check use the formats in the tree.
 - **One Openness export per item.** A read asks `TiaConnection` for the formats it needs and gets one document per format. Where the own format is made from the XML export (tag tables, GRAPH, the title cross-check of code blocks), that same export is kept as the `.xml`; a second export only happens where the own format comes from another Openness call (ExportAsDocuments, Generate source) and the XML is wanted too.
 - **A write uses one format per item:** the one whose files were edited since the read. An item edited in more than one format, or new in the tree in more than one, is refused. The read-back refreshes every format in the tree.
 - An XML export needs a consistent block or UDT (`ISourceKind.XmlNeedsCompile`), so a write compiles the PLC before reading such items back as XML.
+- A `json` file is built from the object model and written property by property, which takes minutes for a large screen. So a read also keeps it as read under `.base/` in the tree, and a write sends only what differs from that copy (`ScreenJson.ChangedSince`). The copy is used only when the project still matches it: the item passed the conflict check (`WriteContext.Baseline`, not with `force`) and the copy's hash matches the manifest. Otherwise everything is written.
 
 `_manifest.json` (version 2): per item `"formats": ["csv", "xml"]` (what it can be read in, as `list_project` shows), and per file an object `{ "hash": "...", "format": "csv" }`, so that later fields (multiuser state, timestamps) can be added without another version. A version 1 manifest (path → bare hash) is still read and saved as version 2.
 

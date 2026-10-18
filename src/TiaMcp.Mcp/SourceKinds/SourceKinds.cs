@@ -8,8 +8,8 @@ internal static class SourceKinds
     // Per family in write order - what an item references is written before it: tags can be
     // UDT-typed, and blocks reference both UDTs and tags (a block imported before what it
     // references fails to import); the PLC alarm text lists' messages belong to the alarms the
-    // blocks define. A classic HMI's screens use its text lists, tags, templates and pop-ups, and
-    // Unified alarms their alarm classes.
+    // blocks define. An HMI's screens use its tags (a classic HMI's also its text lists, templates and
+    // pop-ups), and Unified alarms their alarm classes.
     public static IReadOnlyList<ISourceKind> All { get; } = new ISourceKind[]
     {
         new UdtKind(),
@@ -18,6 +18,7 @@ internal static class SourceKinds
         new PlcAlarmTextListKind(),
 
         new HmiTagTableKind(),
+        new HmiScreenKind(),
         HmiAlarmsKind.Classes,
         HmiAlarmsKind.Discrete,
         HmiAlarmsKind.Analog,
