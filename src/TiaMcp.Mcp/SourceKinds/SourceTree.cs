@@ -1,3 +1,4 @@
+using System.Text;
 using TiaMcp.Openness;
 
 namespace TiaMcp.Mcp;
@@ -70,6 +71,34 @@ internal static class SourceTree
             if (ensured.Add(path)) await createGroup(current, segment);
             current = path;
         }
+    }
+
+    // '<root>/.base/<file path>': each file of an object-model format (json) as last read. Such a
+    // file is written property by property through Openness, which takes minutes for a large
+    // screen, so a write diffs the file against this copy and writes only what changed.
+    public const string BaseDirName = ".base";
+
+    public static bool KeepsBase(string path) => SourceTreeManifest.FormatOf(path) == SourceFormat.Json;
+
+    public static string BasePath(string root, string path) => Path.Combine(root, BaseDirName, path);
+
+    public static void WriteBase(string root, string path, string content)
+    {
+        var file = BasePath(root, path);
+        Directory.CreateDirectory(Path.GetDirectoryName(file)!);
+        File.WriteAllText(file, content, new UTF8Encoding(false));
+    }
+
+    // The file as last read, if the project is known to still match it: the write checked the item
+    // for changes in TIA Portal (context.Baseline set) and the copy's hash matches the manifest.
+    public static string? ReadBase(WriteContext context, string path)
+    {
+        if (context.Baseline is not { } manifest) return null;
+        var file = BasePath(context.Root, path);
+        var entry = manifest.Items.FirstOrDefault(i => i.Files.ContainsKey(path));
+        if (entry == null || !File.Exists(file)) return null;
+        var content = File.ReadAllText(file);
+        return SourceTreeManifest.Hash(content) == entry.Files[path].Hash ? content : null;
     }
 
     // Marks a report line of an item written from its raw XML.

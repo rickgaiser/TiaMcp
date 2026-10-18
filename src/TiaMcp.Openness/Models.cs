@@ -58,3 +58,18 @@ public sealed class PlcAlarmTextListChange
 
 // Message: the error when not successful, otherwise an optional note (e.g. TIA reported warnings).
 public sealed record PlcAlarmTextWriteResult(bool Success, IReadOnlyList<PlcAlarmTextListChange> Changes, string? Message);
+
+public sealed record HmiScreenSummary(string HmiName, string GroupPath, string Name, int ScreenNumber, long Width, long Height, int ItemCount);
+
+// Screens travel as JSON text (see HmiScreenConverter).
+public sealed record HmiScreenResult(bool Success, string? Json, string? Error);
+
+public sealed record WriteHmiScreenResult(bool Success, int Created, int Updated, int Deleted, IReadOnlyList<string> Messages);
+
+public sealed record LibraryTypeVersionInfo(string Version, bool IsDefault, string State, string ContainedType);
+
+public sealed record LibraryTypeSummary(string FolderPath, string Name, string Kind, IReadOnlyList<LibraryTypeVersionInfo> Versions);
+
+public sealed record FaceplateInterfaceInfo(string PropertyName, string? ValueType, string? DefaultValue);
+
+public sealed record FaceplateTypeResult(bool Success, string ContainedType, IReadOnlyList<FaceplateInterfaceInfo> Interface, IReadOnlyList<string> Events, string? Error);
