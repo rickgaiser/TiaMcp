@@ -115,6 +115,15 @@ All MCP tools exposed by the server, grouped by area.
 | `delete_hmi_alarm_class` | Delete a WinCC Unified HMI alarm class by name (fails if an alarm still references it) |
 | `delete_hmi_alarm` | Delete a discrete or analog HMI alarm by name |
 
+### Hardware
+
+| Tool | Purpose |
+|---|---|
+| `list_hardware` | Devices with their modules (slot, order number, firmware, I/Q range), drive telegrams and network data (IP, PROFINET name, IO system, device number) |
+| `read_io_map` | Per PLC: every module address range with the tags inside it, plus tags outside every module, overlapping ranges and modules without tags |
+| `set_io_address` | Move one module's I or Q range to a new start byte and move the tags in it along; refuses overlaps, fail-safe modules and online PLCs; dry run by default |
+| `export_hardware_aml` | Export one device or the whole project as AutomationML |
+
 ### Source tree (reading and writing all source)
 
 | Tool | Purpose |
@@ -204,7 +213,7 @@ AGPL-3.0 (see [LICENSE](LICENSE)). Contributions require signing the [CLA](CLA.m
 
 ## Not (yet) supported
 
-- Hardware config.
+- Changing hardware beyond I/O start addresses (adding modules, network settings).
 - Explicit block numbering (manual vs. automatic, specific number).
 
 ## Known limitations

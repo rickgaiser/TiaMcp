@@ -110,3 +110,21 @@ public sealed class PlcAlarmTextListChange
 
 // Message: the error when not successful, otherwise an optional note (e.g. TIA reported warnings).
 public sealed record PlcAlarmTextWriteResult(bool Success, IReadOnlyList<PlcAlarmTextListChange> Changes, string? Message);
+
+// Hardware (read-only). Address length is as TIA reports it (bits); Area is "I" or "Q".
+public sealed record HwAddress(string Area, int Start, int Length, string? Plc);
+
+public sealed record HwNode(string Interface, string NodeType, string? Subnet, string? Address, string? PnDeviceName,
+    string? IoSystem, string? Role, int? DeviceNumber, string? ControllerPlc);
+
+public sealed record HwModule(string Path, int Depth, int Position, string Name, string? OrderNumber, string? Firmware,
+    string? TypeName, IReadOnlyList<HwAddress> Addresses, bool Failsafe = false);
+
+// set_io_address: Report is the preview or the result; StateHash covers what the preview saw.
+public sealed record IoAddressChangeResult(bool Success, string Report, string StateHash);
+
+public sealed record HwDevice(string Name, string? TypeName, string? TypeIdentifier, bool IsGsd, string? OwnerPlc,
+    string? PlcSoftware, IReadOnlyList<HwNode> Network, IReadOnlyList<HwModule> Modules);
+
+public sealed record AmlExportResult(bool FileWritten, string File, long Size, string State, int ErrorCount, int WarningCount,
+    IReadOnlyList<string> Problems, string LogFile);

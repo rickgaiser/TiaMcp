@@ -26,6 +26,10 @@
       <HintPath>C:\Program Files\Siemens\Automation\Portal V21\PublicAPI\V21\net48\Siemens.Engineering.WinCC.dll</HintPath>
       <Private>False</Private>
     </Reference>
+    <Reference Include="Siemens.Engineering.Startdrive">
+      <HintPath>C:\Program Files\Siemens\Automation\Portal V21\PublicAPI\V21\net48\Siemens.Engineering.Startdrive.dll</HintPath>
+      <Private>False</Private>
+    </Reference>
     <Reference Include="Siemens.Engineering.WinCCUnified">
       <HintPath>C:\Program Files\Siemens\Automation\Portal V21\PublicAPI\V21\net48\Siemens.Engineering.WinCCUnified.dll</HintPath>
       <Private>False</Private>

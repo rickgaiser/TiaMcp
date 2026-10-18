@@ -86,6 +86,13 @@ public sealed class TiaSession
         return _sta.InvokeAsync(() => _connection.ReadAllUdts(plcName, include));
     }
 
+    public Task<IReadOnlyList<HwDevice>> ReadHardwareAsync(string? deviceFilter = null) => _sta.InvokeAsync(() => _connection.ReadHardware(deviceFilter));
+
+    public Task<IoAddressChangeResult> SetIoAddressAsync(string plcName, string deviceName, string modulePath, string area, int newStart, bool dryRun) =>
+        _sta.InvokeAsync(() => _connection.SetIoAddress(plcName, deviceName, modulePath, area, newStart, dryRun));
+
+    public Task<AmlExportResult> ExportHardwareAmlAsync(string targetFile, string? deviceName) => _sta.InvokeAsync(() => _connection.ExportHardwareAml(targetFile, deviceName));
+
     public Task<IReadOnlyList<(TagTableSummary Table, TagTableResult Result)>> ReadAllTagTablesAsync(string plcName, Func<string, string, bool>? include = null)
     {
         return _sta.InvokeAsync(() => _connection.ReadAllTagTables(plcName, include));
