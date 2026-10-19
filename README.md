@@ -162,7 +162,7 @@ Openness has no export format for Unified screens, so in the source tree a scree
 - A read leaves out values still at their default. Defaults are sampled from a scratch screen inside a transaction that is rolled back, so the project is not changed.
 - A write sets every key in the file; leaving a property, dynamization or event out doesn't reset it (set the default value, or `null` to remove a dynamization or script). Items are matched by name: new names are created, removed items are deleted. Failures are reported per property and the rest still applies.
 - A new screen is created by adding a new `.json` file. Openness can't copy a Unified screen, so a copy is a new file too.
-- Faceplates must be in the **project library**. `list_library_types` gives the `ContainedType` (`V<version>\<type>`), `read_faceplate_type` the interface. A UDT-typed interface property takes the HMI tag name as its value; texts are plain text.
+- Faceplates must be in the **project library**. `list_library_types` gives the `ContainedType` (`V<version>\<type>`), `read_faceplate_type` the interface. A UDT-typed interface property takes the HMI tag name as its value; texts are plain text. An interface property bound to a tag is an object, `{"type": "Tag", "Tag": "<HMI tag>"}`: a plain string is a static value.
 - Writing is slow: every item goes through Openness separately, so creating, copying or force-writing a screen of a few hundred items takes about a minute. An edited screen only gets its changed properties written, by comparing the file with its copy as last read (`.base/` in the tree).
 - `HmiSystemDiagnosisControl.ScriptDiagnosisOverviewText` is never read or written: reading it crashes TIA Portal V21.
 

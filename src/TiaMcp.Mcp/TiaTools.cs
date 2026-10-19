@@ -658,7 +658,7 @@ Writing rules per file type:
 - HMI tag table CSV: Name, DataType, Address, Connection, PlcName, PlcTag, Comment, AcquisitionCycle. Bind to a PLC tag with Connection + PlcTag (dot-qualified for a DB member); DataType then follows from the PLC tag. PlcName is ignored on write. AcquisitionCycle (e.g. T1s) only on PLC-bound tags. Rows and removed rows as for PLC tag tables; rename with rename_hmi_tag.
 - PLC alarm text list CSV ('PLC alarm text lists/<list>.csv'): From, To, Text [language]... Only existing user lists (create a new list in TIA Portal). The write patches a fresh export of all lists and imports it, so other lists are untouched; a removed row deletes that entry (not when writing a tree read from another project); a language column left out stays unchanged. Every list's language must be a project language.
 - Classic WinCC XML (screens, templates, pop-ups, tag tables, text lists): native Openness XML as read; <Name> must match the file name. A new screen needs a <Number> not used by another screen - checked before the import (a duplicate number makes TIA Portal V21 terminate itself).
-- WinCC Unified screen ('.json', built from the Openness object model - there is no export format): the screen's properties plus ""items"", one object per screen item with ""name"", ""type"" (see describe_hmi_item_type) and its properties under their Openness names; parts are nested objects, part lists arrays. Colors '#AARRGGBB', enums by member name, texts plain text in the editing language. Reserved keys: ""dynamizations"" ({""<Property>"": ""<HMI tag>""} or {""type"": ""Script"", ...}), ""events"" ({""<EventType>"": ""<JS code>""}), ""propertyEvents"" ({""<Property>:Change"": ...}). A FaceplateContainer has ""ContainedType"" (see list_library_types) and ""Interface"" (a UDT-typed property takes the HMI tag name; see read_faceplate_type). Only values that differ from a new item are shown; leaving a property, dynamization or event out of the file doesn't reset it - set the default value, or null to remove a dynamization/script. Items are matched by name: a new name creates the item (appended - Openness has no z-order control), a changed type recreates it, a removed item is deleted (not when writing a tree read from another project). A new screen is created from a new file. Each property is set on its own; failures are reported per property and the rest still applies. SLOW: a screen is written item by item through Openness - a new screen (also a copy of an existing one: Openness can't copy Unified screens) or a forced write takes about 0.2 s per item, close to a minute for a screen of a few hundred items. An edit to a screen read into this tree writes only the changed properties and is fast. The read before and after each write adds a few seconds per screen.
+- WinCC Unified screen ('.json', built from the Openness object model - there is no export format): the screen's properties plus ""items"", one object per screen item with ""name"", ""type"" (see describe_hmi_item_type) and its properties under their Openness names; parts are nested objects, part lists arrays. Colors '#AARRGGBB', enums by member name, texts plain text in the editing language. Reserved keys: ""dynamizations"" ({""<Property>"": ""<HMI tag>""} or {""type"": ""Script"", ...}), ""events"" ({""<EventType>"": ""<JS code>""}), ""propertyEvents"" ({""<Property>:Change"": ...}). A FaceplateContainer has ""ContainedType"" (see list_library_types) and ""Interface"" (see read_faceplate_type): a plain value is static - a UDT-typed property takes the HMI tag name - and a binding is an object, {""type"": ""Tag"", ""Tag"": ""<HMI tag>""} or a script. Only values that differ from a new item are shown; leaving a property, dynamization or event out of the file doesn't reset it - set the default value, or null to remove a dynamization/script. Items are matched by name: a new name creates the item (appended - Openness has no z-order control), a changed type recreates it, a removed item is deleted (not when writing a tree read from another project). A new screen is created from a new file. Each property is set on its own; failures are reported per property and the rest still applies. SLOW: a screen is written item by item through Openness - a new screen (also a copy of an existing one: Openness can't copy Unified screens) or a forced write takes about 0.2 s per item, close to a minute for a screen of a few hundred items. An edit to a screen read into this tree writes only the changed properties and is fast. The read before and after each write adds a few seconds per screen.
 - HMI alarms CSV: rows update or add alarms by name; a removed row is not deleted (use delete_hmi_alarm). RaisedStateTag binds the trigger (a tag or member path whose base HMI tag exists); TriggerAddress is computed and read-only. EventText/InfoText are plain text. AlarmClasses.csv: Name, Priority, Log; system classes accept no Priority change.
 
 Writes in dependency order: UDTs, then tag tables, then blocks, with UDTs and blocks each split into layers by what their source references (nested UDTs first; global DBs and called FBs before their callers and instance DBs), compiling the PLC between UDT layers - imports can fail, or a UDT can silently lose nested start values, when what they reference isn't there yet.
@@ -683,6 +683,9 @@ Writes '<sourceDirectory>/_import_report.txt' with one CREATED/UPDATED/SKIPPED/F
         // copy of this one: all of it is written, and nothing is compared with or refreshed from it.
         var workingCopy = manifest != null && manifest.Project == _session.ProjectName;
         var notes = new List<string>();
+        var projectDevices = await Devices(null);
+        DeviceFamily? FamilyOf(string device) =>
+            projectDevices.Where(d => string.Equals(d.Name, device, StringComparison.OrdinalIgnoreCase)).Select(d => (DeviceFamily?)d.Family).FirstOrDefault();
 
         List<ImportListItem> items;
         var invalidCount = 0;
@@ -708,7 +711,7 @@ Writes '<sourceDirectory>/_import_report.txt' with one CREATED/UPDATED/SKIPPED/F
         {
             items = manifest.Items.Where(i => i.Ok)
                 .Select(i => new ImportListItem(i.Device, i.Kind, i.GroupPath, i.Name, true))
-                .Concat(NewItemsInTree(sourceDirectory, manifest))
+                .Concat(NewItemsInTree(sourceDirectory, manifest, FamilyOf))
                 .ToList();
         }
 
@@ -724,7 +727,7 @@ Writes '<sourceDirectory>/_import_report.txt' with one CREATED/UPDATED/SKIPPED/F
         foreach (var item in items)
         {
             var entry = workingCopy ? manifest!.Find(item.DeviceName, item.Kind, item.ItemName) : null;
-            var (format, state, error) = WriteFormat(sourceDirectory, item, entry, workingCopy);
+            var (format, state, error) = WriteFormat(sourceDirectory, item, SourceKinds.Find(item.Kind, FamilyOf(item.DeviceName))!, entry, workingCopy);
             if (error != null) { refused.Add((item, error)); continue; }
             if (state == DiskState.Deleted)
             {
@@ -738,7 +741,6 @@ Writes '<sourceDirectory>/_import_report.txt' with one CREATED/UPDATED/SKIPPED/F
         if (unchanged > 0) notes.Add($"{unchanged} item(s) unchanged since read_source_tree were not written (all=true writes them anyway).");
         items = toWrite;
 
-        var projectDevices = await Devices(null);
         await _session.ClearHmiClassicScreenNumbersAsync();
 
         var conflicts = new List<(ImportListItem Item, string Reason)>();
@@ -767,7 +769,7 @@ Writes '<sourceDirectory>/_import_report.txt' with one CREATED/UPDATED/SKIPPED/F
             var deviceName = deviceGroup.Key;
             var deviceDir = Path.Combine(sourceDirectory, DirName(deviceName));
             var deviceItems = deviceGroup.Where(items.Contains).ToList();
-            var family = projectDevices.Where(d => string.Equals(d.Name, deviceName, StringComparison.OrdinalIgnoreCase)).Select(d => (DeviceFamily?)d.Family).FirstOrDefault();
+            var family = FamilyOf(deviceName);
             var isHmi = family is DeviceFamily.HmiUnified or DeviceFamily.HmiClassic || (family == null && deviceGroup.All(i => i.Kind.StartsWith("HMI")));
             summary.AppendLine(isHmi ? $"=== {deviceName} (HMI) ===" : $"=== {deviceName} ===");
 
@@ -857,9 +859,8 @@ Writes '<sourceDirectory>/_import_report.txt' with one CREATED/UPDATED/SKIPPED/F
     // format it has in the tree. For anything else (a new file, a tree from another project or
     // without manifest): the first format of the kind whose file is there - so its own format
     // before the raw XML - except that a new item of the working copy in two formats is refused.
-    private static (string? Format, DiskState State, string? Error) WriteFormat(string root, ImportListItem item, SourceTreeItem? entry, bool workingCopy)
+    private static (string? Format, DiskState State, string? Error) WriteFormat(string root, ImportListItem item, ISourceKind kind, SourceTreeItem? entry, bool workingCopy)
     {
-        var kind = SourceKinds.Find(item.Kind)!;
         var dir = ItemDir(item.DeviceName, item.Kind, item.GroupPath);
         var stem = Sanitize(ItemStem(item.Kind, item.ItemName));
         var present = kind.Formats.Where(f => File.Exists(Path.Combine(root, $"{dir}/{stem}{SourceFormat.Extension(f)}"))).ToList();
@@ -905,7 +906,7 @@ Writes '<sourceDirectory>/_import_report.txt' with one CREATED/UPDATED/SKIPPED/F
 
     // Source files in the tree that no read put there: new items to create. Kind and group path
     // follow from the folder (see ItemDir), the name from the file name.
-    private static List<ImportListItem> NewItemsInTree(string root, SourceTreeManifest manifest)
+    private static List<ImportListItem> NewItemsInTree(string root, SourceTreeManifest manifest, Func<string, DeviceFamily?> familyOf)
     {
         var found = new List<ImportListItem>();
         foreach (var deviceDir in Directory.GetDirectories(root).Where(d => Path.GetFileName(d) != BaseDirName))
@@ -919,9 +920,11 @@ Writes '<sourceDirectory>/_import_report.txt' with one CREATED/UPDATED/SKIPPED/F
             foreach (var item in manifest.Items.Where(i => i.Device == device && !string.IsNullOrEmpty(i.GroupPath)))
                 groupOf[ItemDir(item.Device, item.Kind, item.GroupPath)] = item.GroupPath;
 
-            // Two kinds can share a section (classic and Unified HMI tag tables): a file is new for
-            // the first kind it fits.
-            foreach (var kind in SourceKinds.All)
+            // Two kinds can share a section (classic and Unified HMI screens and tag tables): a file
+            // is new for the first kind of the device's family it fits (any family for a device
+            // the project doesn't have).
+            var family = familyOf(device);
+            foreach (var kind in SourceKinds.All.Where(k => family == null || k.Family == family))
             {
                 var sectionDir = Path.Combine(deviceDir, kind.Section);
                 if (!Directory.Exists(sectionDir)) continue;
