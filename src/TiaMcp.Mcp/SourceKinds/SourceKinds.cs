@@ -39,6 +39,11 @@ internal static class SourceKinds
     // section and files too.
     public static ISourceKind? Find(string name) => All.FirstOrDefault(k => k.Name == name);
 
+    // For an item of a device: classic and Unified HMI screens and tag tables share their name, but
+    // not their formats. Without a (known) family, the first kind of that name.
+    public static ISourceKind? Find(string name, DeviceFamily? family) =>
+        All.FirstOrDefault(k => k.Name == name && k.Family == family) ?? Find(name);
+
     public static bool IsFixed(string name) => Find(name)?.FixedName != null;
 
     public static int ListIndex(string name) => Array.IndexOf(ListOrder, name);

@@ -258,6 +258,8 @@ internal sealed class HmiScreenConverter
             && m.GetParameters() is { Length: 1 } ps && ps[0].ParameterType.IsEnum);
 
     // Faceplate / custom control interface: { "<PropertyName>": <static value> | <dynamization> }.
+    // A dynamization is always an object here, a tag binding too: a bare string is a static value
+    // (a UDT-typed property's value is the HMI tag name).
     private JsonObject? SerializeInterface(IEnumerable composition)
     {
         var json = new JsonObject();
@@ -271,8 +273,8 @@ internal sealed class HmiScreenConverter
             if (element is UIBase ui && ui.Dynamizations.Count > 0)
             {
                 var dyn = ui.Dynamizations[0];
-                var node = SerializeDynamization(dyn);
-                if (dyn.PropertyName != "Value" && node is JsonObject o) o["dynamizedProperty"] = dyn.PropertyName;
+                var node = SerializeDynamization(dyn) is JsonObject o ? o : new JsonObject { [TypeKey] = "Tag", ["Tag"] = ((TagDynamization)dyn).Tag };
+                if (dyn.PropertyName != "Value") node["dynamizedProperty"] = dyn.PropertyName;
                 json[name!] = node;
             }
             else
@@ -821,19 +823,20 @@ internal sealed class HmiScreenConverter
                 }
                 else
                 {
-                    // A static value replaces any tag/script binding.
-                    if (ui != null)
-                        foreach (var dyn in ui.Dynamizations.Cast<DynamizationBase>().ToList()) dyn.Delete();
+                    // A static value replaces any tag/script binding - once it converts, so a value
+                    // that doesn't fit leaves the binding alone.
                     var valueProp = Prop(element.GetType(), "Value")!;
                     var current = TryGetValue(valueProp, element);
                     var value = JsonToValue(kv.Value, typeof(object), current);
+                    var dyns = ui == null ? new List<DynamizationBase>() : ui.Dynamizations.Cast<DynamizationBase>().ToList();
+                    foreach (var dyn in dyns) dyn.Delete();
                     if (current is string currentText && value is string newText && ProjectTextToPlain(currentText) is { } currentPlain
                         && !newText.StartsWith("<", StringComparison.Ordinal))
                     {
                         if (currentPlain == newText) continue;
                         value = ProjectTextHeader + PlainToHtml(newText) + "</ProjectText>";
                     }
-                    if (!Equals(current, value)) valueProp.SetValue(element, value);
+                    if (dyns.Count > 0 || !Equals(current, value)) valueProp.SetValue(element, value);
                 }
             }
             catch (Exception ex)
@@ -1167,8 +1170,10 @@ internal sealed class HmiScreenConverter
             case bool b: return JsonValue.Create(b);
             case Enum e: return JsonValue.Create(e.ToString());
             case Color c: return JsonValue.Create($"#{c.A:X2}{c.R:X2}{c.G:X2}{c.B:X2}");
-            case float f: return float.IsNaN(f) || float.IsInfinity(f) ? JsonValue.Create(f.ToString(CultureInfo.InvariantCulture)) : JsonValue.Create((decimal)f);
-            case double d: return double.IsNaN(d) || double.IsInfinity(d) || Math.Abs(d) > 1e20 ? JsonValue.Create(d.ToString("R", CultureInfo.InvariantCulture)) : JsonValue.Create((decimal)d);
+            // A JSON number as a decimal (no binary noise like 0.1 -> 0.10000000149); what a decimal
+            // can't hold (NaN, infinity, huge values) as a round-trip string, which JsonToValue parses.
+            case float f: return FitsDecimal(f) ? JsonValue.Create((decimal)f) : JsonValue.Create(f.ToString("R", CultureInfo.InvariantCulture));
+            case double d: return FitsDecimal(d) ? JsonValue.Create((decimal)d) : JsonValue.Create(d.ToString("R", CultureInfo.InvariantCulture));
             case decimal m: return JsonValue.Create(m);
             case ulong ul: return JsonValue.Create(ul);
             case IConvertible when value.GetType().IsPrimitive: return JsonValue.Create(Convert.ToInt64(value, CultureInfo.InvariantCulture));
@@ -1179,6 +1184,8 @@ internal sealed class HmiScreenConverter
             default: return JsonValue.Create(value.ToString());
         }
     }
+
+    private static bool FitsDecimal(double d) => !double.IsNaN(d) && !double.IsInfinity(d) && Math.Abs(d) <= 1e20;
 
     private static object? JsonToValue(JsonNode? node, Type target, object? current)
     {
@@ -1209,6 +1216,11 @@ internal sealed class HmiScreenConverter
         }
         if (target.IsEnum) return Enum.Parse(target, text, true);
         if (target == typeof(Color)) return ParseColor(text);
+        if (target == typeof(double) || target == typeof(float))
+        {
+            var d = double.Parse(text, NumberStyles.Float, CultureInfo.InvariantCulture);
+            return target == typeof(float) ? (object)(float)d : d;
+        }
         return Convert.ChangeType(decimal.Parse(text, NumberStyles.Float, CultureInfo.InvariantCulture), target, CultureInfo.InvariantCulture);
     }
 
