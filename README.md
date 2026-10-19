@@ -202,38 +202,33 @@ A new `.graph.il` file in the source tree is created by cloning an existing GRAP
 ```
 <targetDirectory>/
   <PlcName>/
-    Program blocks/
-      <group path>/
-        Main.s7dcl
-        Main.s7res
-    PLC tags/
-      <group path>/
-        Default tag table.csv
-    PLC data types/
-      <group path>/
-        SomeUdt.s7dcl
+    Program blocks/<group path>/
+      Main.s7dcl
+      Main.s7res
+    PLC tags/<group path>/
+      Default tag table.csv
+    PLC data types/<group path>/
+      SomeUdt.s7dcl
     PLC alarm text lists/
       Textlist_ErrorsMessages.csv
   <HmiName>/
-    HMI tags/
-      <group path>/
-        Default tag table.csv
-    HMI alarms/
+    HMI tags/<group path>/
+      Default tag table.csv/xml                   (Unified/classic)
+    HMI alarms/                                   (Unified only)
       DiscreteAlarms.csv
       AnalogAlarms.csv
       AlarmClasses.csv
-    Screens/
-      <group path>/
-        Overview.json
-  <ClassicHmiName>/
-    HMI tags/<folder>/Tags.xml
-    Screens/<folder>/Main.xml
-    Screen templates/<folder>/Template.xml
-    Pop-up screens/<folder>/Popup.xml
-    Text lists/States.xml
+    Screens/<group path>/
+      Overview.json/xml                           (Unified/classic)
+    Screen templates/<group path>/                (classic only)
+      Template.xml
+    Pop-up screens/<group path>/                  (classic only)
+      Popup.xml
+    Text lists/                                   (classic only)
+      States.xml
   _export_summary.txt
   _manifest.json
-  .base/              (Unified screens as last read, see below)
+  .base/                                          (Unified screens as last read)
 ```
 
 A `/` in a group name gives a folder per part (`Valve fwd / rev` → `Valve fwd/ rev/`), and folder names lose trailing spaces and dots, as Windows does. A new file in such a folder goes to the group read into it; the group tools take the name as it is (`groupPath: "Valve fwd / rev/Sub"`).
