@@ -44,8 +44,9 @@ For object types TiaMcp doesn't support yet, the notes say what the Openness API
 | HMI tag table group | ✅ | ✅ | — | — | ✅ | ✅ | Empty groups are listed as `Group/` |
 | Alarm class | ✅ | ✅ | ✅ | ✅ | ❌ | ✅ | `AlarmClasses.csv` |
 | Alarm (discrete / analog) | ✅ | ✅ | ✅ | ✅ | ❌ | ✅ | `DiscreteAlarms.csv` / `AnalogAlarms.csv` |
-| Screen | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | Openness: create, delete; content via properties (no text export) |
-| Screen group | ❌ | ❌ | — | — | ❌ | ❌ | Openness: create, delete |
+| Screen | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | `.json`, built from the object model (Openness has no screen export) |
+| Screen item (incl. faceplate) | ✅ | ✅ | ✅ | ✅ | ❌ | ✅ | Through the screen JSON: properties, dynamizations, events, faceplate interface. No z-order control |
+| Screen group | ✅ | ✅ | — | — | ✅ | ✅ | Empty groups are listed as `Group/` |
 | Script module (global) | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | Openness: import/export |
 | Text list / graphic list | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | Openness: delete, import/export |
 | HMI connection | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | Openness: create, delete |
@@ -81,4 +82,4 @@ For object types TiaMcp doesn't support yet, the notes say what the Openness API
 | Sync domain / MRP domain | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | Openness: create, delete |
 | Web server / OPC UA user | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | Openness: create, delete |
 | Library master copy + folder | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | Openness: create, delete |
-| Library type + version + folder | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | Openness: create from blocks/UDTs, delete, export |
+| Library type + version + folder | ⚠️ | ❌ | ⚠️ | ❌ | ❌ | ❌ | Project library only: `list_library_types`, faceplate interface via `read_faceplate_type`. Openness: create from blocks/UDTs, delete, export |

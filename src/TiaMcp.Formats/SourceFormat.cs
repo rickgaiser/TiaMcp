@@ -18,10 +18,13 @@ public static class SourceFormat
     // Tables, converted from the raw XML or the object model.
     public const string Csv = "csv";
 
+    // Object models without an Openness export, as JSON (WinCC Unified screens, see ScreenJson).
+    public const string Json = "json";
+
     // The raw SimaticML export, as Openness writes and imports it (without DocumentInfo).
     public const string Xml = "xml";
 
-    public static readonly IReadOnlyList<string> All = new[] { S7dcl, GraphIL, Awl, Csv, Xml };
+    public static readonly IReadOnlyList<string> All = new[] { S7dcl, GraphIL, Awl, Csv, Json, Xml };
 
     // The file extension of a format's main file.
     public static string Extension(string format) => "." + format;
