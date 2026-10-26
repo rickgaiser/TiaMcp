@@ -678,7 +678,7 @@ Writes '<sourceDirectory>/_import_report.txt' with one CREATED/UPDATED/SKIPPED/F
         foreach (var deviceGroup in items.Concat(conflicts.Select(c => c.Item)).GroupBy(i => i.DeviceName, StringComparer.OrdinalIgnoreCase))
         {
             var deviceName = deviceGroup.Key;
-            var deviceDir = Path.Combine(sourceDirectory, Sanitize(deviceName));
+            var deviceDir = Path.Combine(sourceDirectory, DirName(deviceName));
             var deviceItems = deviceGroup.Where(items.Contains).ToList();
             var family = projectDevices.Where(d => string.Equals(d.Name, deviceName, StringComparison.OrdinalIgnoreCase)).Select(d => (DeviceFamily?)d.Family).FirstOrDefault();
             var isHmi = family is DeviceFamily.HmiUnified or DeviceFamily.HmiClassic || (family == null && deviceGroup.All(i => i.Kind.StartsWith("HMI")));
@@ -823,7 +823,13 @@ Writes '<sourceDirectory>/_import_report.txt' with one CREATED/UPDATED/SKIPPED/F
         foreach (var deviceDir in Directory.GetDirectories(root))
         {
             var dirName = Path.GetFileName(deviceDir);
-            var device = manifest.Items.Select(i => i.Device).FirstOrDefault(d => Sanitize(d) == dirName) ?? dirName;
+            var device = manifest.Items.Select(i => i.Device).FirstOrDefault(d => DirName(d) == dirName) ?? dirName;
+
+            // The group each folder holds per the last read: a folder doesn't always give the group
+            // path back ('/' in a group name, trailing spaces and dots, replaced characters).
+            var groupOf = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+            foreach (var item in manifest.Items.Where(i => i.Device == device && !string.IsNullOrEmpty(i.GroupPath)))
+                groupOf[ItemDir(item.Device, item.Kind, item.GroupPath)] = item.GroupPath;
 
             // Two kinds can share a section (classic and Unified HMI tag tables): a file is new for
             // the first kind it fits.
@@ -843,7 +849,7 @@ Writes '<sourceDirectory>/_import_report.txt' with one CREATED/UPDATED/SKIPPED/F
 
                     var name = kind.FixedName == null ? stem : "";
                     if (manifest.Find(device, kind.Name, name) == null && !found.Any(i => i.Is(device, kind.Name, name)))
-                        found.Add(new ImportListItem(device, kind.Name, relDir, name, true));
+                        found.Add(new ImportListItem(device, kind.Name, groupOf.TryGetValue(ItemDir(device, kind.Name, relDir), out var groupPath) ? groupPath : relDir, name, true));
                 }
             }
         }

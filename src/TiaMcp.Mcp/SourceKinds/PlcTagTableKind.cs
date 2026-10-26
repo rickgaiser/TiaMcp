@@ -45,6 +45,7 @@ internal sealed class PlcTagTableKind : ISourceKind
             {
                 var (groupPath, tableName) = (item.GroupPath, item.ItemName);
                 await WriteXml(context, this, item, log, existingTables.Contains(item.ItemName), ensuredGroups,
+                    path => session.TagTableGroupExistsAsync(plc, path),
                     (parent, segment) => session.CreateTagTableGroupAsync(plc, parent, segment),
                     xml => session.ImportTagTableXmlAsync(plc, groupPath, tableName, xml));
                 continue;
@@ -71,7 +72,7 @@ internal sealed class PlcTagTableKind : ISourceKind
                 if (!context.CreateMissing) { log.Skipped.Add($"{label} - does not exist, createMissing=false"); continue; }
                 if (context.DryRun) { log.Created.Add($"{label} (dry run, {tags.Length} tag(s))"); continue; }
 
-                await EnsureGroupPath(item.GroupPath, (parent, segment) => session.CreateTagTableGroupAsync(plc, parent, segment), ensuredGroups);
+                await EnsureGroupPath(item.GroupPath, path => session.TagTableGroupExistsAsync(plc, path), (parent, segment) => session.CreateTagTableGroupAsync(plc, parent, segment), ensuredGroups);
                 var createResult = await session.CreateTagTableAsync(plc, item.GroupPath, item.ItemName);
                 if (!createResult.Success) { log.Failed.Add($"{label}: {createResult.Error}"); continue; }
 

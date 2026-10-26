@@ -171,16 +171,15 @@ public sealed partial class TiaConnection
         }
     }
 
+    // A folder name may contain '/' itself: see FindByPath.
     private static ClassicFolder? FindClassicFolder(ClassicFolder root, string folderPath)
     {
-        var current = root;
-        foreach (var segment in SplitFolderPath(folderPath))
-        {
-            current = current.Children().FirstOrDefault(c => string.Equals(c.Name, segment, StringComparison.Ordinal));
-            if (current == null) return null;
-        }
-        return current;
+        var path = NormalizeFolderPath(folderPath);
+        return path.Length == 0 ? root : FindByPath<ClassicFolder>(path, ChildNamed(root), ChildNamed);
     }
+
+    private static Func<string, ClassicFolder?> ChildNamed(ClassicFolder folder) =>
+        name => folder.Children().FirstOrDefault(c => string.Equals(c.Name, name, StringComparison.Ordinal));
 
     private static string[] SplitFolderPath(string? folderPath) =>
         (folderPath ?? "").Split(new[] { '/', '\\' }, StringSplitOptions.RemoveEmptyEntries);

@@ -20,9 +20,9 @@ internal static class SourceTree
     // Root-relative, '/'-separated folder of an item: <device>/<section>/<group path>.
     public static string ItemDir(string device, string kind, string groupPath)
     {
-        var segments = new List<string> { Sanitize(device), SectionOf(kind) };
+        var segments = new List<string> { DirName(device), SectionOf(kind) };
         if (!string.IsNullOrEmpty(groupPath))
-            segments.AddRange(groupPath.Split('/').Select(Sanitize));
+            segments.AddRange(groupPath.Split('/').Select(DirName));
         return string.Join("/", segments);
     }
 
@@ -30,7 +30,7 @@ internal static class SourceTree
     {
         var segments = new List<string> { deviceDir, sectionName };
         if (!string.IsNullOrEmpty(groupPath))
-            segments.AddRange(groupPath.Split('/').Select(Sanitize));
+            segments.AddRange(groupPath.Split('/').Select(DirName));
         return Path.Combine(segments.ToArray());
     }
 
@@ -47,6 +47,15 @@ internal static class SourceTree
         return name;
     }
 
+    // A folder name: Windows strips trailing spaces and dots from a folder it creates, so a group
+    // 'Valve fwd / rev' (segments 'Valve fwd ' and ' rev') would be looked up under a name it
+    // doesn't have. File names keep them - the extension follows.
+    public static string DirName(string name)
+    {
+        name = Sanitize(name).TrimEnd(' ', '.');
+        return name.Length == 0 ? "_" : name;
+    }
+
     // Groups with no table anywhere below them - otherwise empty groups would be invisible.
     public static IEnumerable<string> EmptyGroups(IEnumerable<string> tableGroupPaths, IReadOnlyList<string> groups)
     {
@@ -58,13 +67,22 @@ internal static class SourceTree
     // exist" requirement doesn't block restoring a full
     // tree into an empty/new PLC or HMI. Failures (including "already exists") are ignored here - a
     // genuine problem still surfaces from the subsequent create call itself right after this runs.
+    // Only what's below the longest part of the path that exists is created: a group name may
+    // contain '/' itself ('Valve fwd / rev'), so creating every '/'-segment would add wrong groups.
     // ensured: group paths already handled in this import, so each folder is created (or found to
     // exist - a create that throws, which is slow over Openness) once rather than once per item.
-    public static async Task EnsureGroupPath(string groupPath, Func<string, string, Task> createGroup, ISet<string> ensured)
+    public static async Task EnsureGroupPath(string groupPath, Func<string, Task<bool>> exists, Func<string, string, Task> createGroup, ISet<string> ensured)
     {
         if (string.IsNullOrEmpty(groupPath)) return;
-        var current = "";
-        foreach (var segment in groupPath.Split('/'))
+        var end = groupPath.Length;
+        while (end > 0 && !ensured.Contains(groupPath.Substring(0, end)) && !await exists(groupPath.Substring(0, end)))
+            end = groupPath.LastIndexOf('/', end - 1);
+        if (end <= 0) end = 0;
+        var current = groupPath.Substring(0, end);
+        if (end > 0) ensured.Add(current);
+        if (end == groupPath.Length) return;
+
+        foreach (var segment in groupPath.Substring(end == 0 ? 0 : end + 1).Split('/'))
         {
             var path = string.IsNullOrEmpty(current) ? segment : $"{current}/{segment}";
             if (ensured.Add(path)) await createGroup(current, segment);
@@ -87,7 +105,7 @@ internal static class SourceTree
     // Writes one item from its raw XML right away (kinds without dependency layers): replaces it
     // when it exists, creates it (and its group) when it doesn't.
     public static async Task WriteXml(WriteContext context, ISourceKind kind, ImportListItem item, WriteLog log, bool exists, ISet<string> ensuredGroups,
-        Func<string, string, Task> createGroup, Func<string, Task<ImportResult>> import)
+        Func<string, Task<bool>> groupExists, Func<string, string, Task> createGroup, Func<string, Task<ImportResult>> import)
     {
         var label = Describe(kind.Name, item.GroupPath, item.ItemName) + FromXml(item);
         var xml = ReadXml(context, kind, item, log);
@@ -96,7 +114,7 @@ internal static class SourceTree
         if (!exists && !context.CreateMissing) { log.Skipped.Add($"{label} - does not exist, createMissing=false"); return; }
         if (context.DryRun) { (exists ? log.Updated : log.Created).Add($"{label} (dry run)"); return; }
 
-        if (!exists) await EnsureGroupPath(item.GroupPath, createGroup, ensuredGroups);
+        if (!exists) await EnsureGroupPath(item.GroupPath, groupExists, createGroup, ensuredGroups);
         var result = await import(xml);
         if (!result.Success) { log.Failed.Add($"{label}: {string.Join(" | ", result.Messages)}"); return; }
         (exists ? log.Updated : log.Created).Add(label);
