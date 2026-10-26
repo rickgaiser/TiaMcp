@@ -91,6 +91,12 @@ public sealed partial class TiaConnection
         return null;
     }
 
+    public bool HmiScreenGroupExists(string hmiName, string groupPath)
+    {
+        EnsureConnected();
+        return ResolveHmiScreenGroup(GetHmiSoftware(hmiName), groupPath) != null;
+    }
+
     private static (HmiScreenComposition Screens, HmiScreenGroupComposition Groups)? ResolveHmiScreenGroup(HmiSoftware software, string groupPath)
     {
         if (string.IsNullOrEmpty(groupPath))
@@ -103,18 +109,8 @@ public sealed partial class TiaConnection
         return (group.Screens, group.Groups);
     }
 
-    private static HmiScreenGroup? FindHmiScreenGroupByPath(HmiScreenGroupComposition rootGroups, string path)
-    {
-        var current = rootGroups;
-        HmiScreenGroup? group = null;
-        foreach (var segment in path.Split('/'))
-        {
-            group = current.Find(segment);
-            if (group == null) return null;
-            current = group.Groups;
-        }
-        return group;
-    }
+    private static HmiScreenGroup? FindHmiScreenGroupByPath(HmiScreenGroupComposition rootGroups, string path) =>
+        FindByPath<HmiScreenGroup>(path, rootGroups.Find, g => g.Groups.Find);
 
     public SimpleResult CreateHmiScreen(string hmiName, string groupPath, string screenName)
     {

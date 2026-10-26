@@ -446,6 +446,11 @@ public sealed class TiaSession
         return _sta.InvokeAsync(() => _connection.RenameHmiScreen(hmiName, screenName, newName));
     }
 
+    public Task<bool> HmiScreenGroupExistsAsync(string hmiName, string groupPath)
+    {
+        return _sta.InvokeAsync(() => _connection.HmiScreenGroupExists(hmiName, groupPath));
+    }
+
     public Task<SimpleResult> CreateHmiScreenGroupAsync(string hmiName, string parentGroupPath, string groupName)
     {
         return _sta.InvokeAsync(() => _connection.CreateHmiScreenGroup(hmiName, parentGroupPath, groupName));

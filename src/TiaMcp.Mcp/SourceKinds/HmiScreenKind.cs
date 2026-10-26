@@ -62,7 +62,7 @@ internal sealed class HmiScreenKind : ISourceKind
 
             if (!exists)
             {
-                await EnsureGroupPath(item.GroupPath, (parent, segment) => session.CreateHmiScreenGroupAsync(hmi, parent, segment), ensuredGroups);
+                await EnsureGroupPath(item.GroupPath, path => session.HmiScreenGroupExistsAsync(hmi, path), (parent, segment) => session.CreateHmiScreenGroupAsync(hmi, parent, segment), ensuredGroups);
                 var createResult = await session.CreateHmiScreenAsync(hmi, item.GroupPath, item.ItemName);
                 if (!createResult.Success) { log.Failed.Add($"{label}: {createResult.Error}"); continue; }
                 existingScreens.Add(item.ItemName);
