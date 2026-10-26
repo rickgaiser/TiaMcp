@@ -61,7 +61,7 @@ internal sealed class BlockKind : ISourceKind
                 if (!exists && !context.CreateMissing) { log.Skipped.Add($"{label} - does not exist, createMissing=false"); continue; }
                 if (context.DryRun) { (exists ? log.Updated : log.Created).Add($"{label}{FromXml(item)} (dry run)"); continue; }
 
-                if (!exists) await EnsureGroupPath(item.GroupPath, (parent, segment) => session.CreateBlockGroupAsync(plc, parent, segment), ensuredGroups);
+                if (!exists) await EnsureGroupPath(item.GroupPath, path => session.BlockGroupExistsAsync(plc, path), (parent, segment) => session.CreateBlockGroupAsync(plc, parent, segment), ensuredGroups);
                 var (xmlGroup, xmlName) = (item.GroupPath, item.ItemName);
                 writes.Add(new PendingWrite(item, label + FromXml(item), new List<BlockDocument> { new(xmlName + SourceFormat.Extension(SourceFormat.Xml), xml) }, !exists,
                     () => session.ImportBlockXmlAsync(plc, xmlGroup, xmlName, xml)));
@@ -110,7 +110,7 @@ internal sealed class BlockKind : ISourceKind
 
             if (context.DryRun) { log.Created.Add($"{label} (dry run)"); continue; }
 
-            await EnsureGroupPath(item.GroupPath, (parent, segment) => session.CreateBlockGroupAsync(plc, parent, segment), ensuredGroups);
+            await EnsureGroupPath(item.GroupPath, path => session.BlockGroupExistsAsync(plc, path), (parent, segment) => session.CreateBlockGroupAsync(plc, parent, segment), ensuredGroups);
             var (groupPath, blockName) = (item.GroupPath, item.ItemName);
             // Whole-block STL can't go through ImportFromDocuments - it goes through 'Generate blocks from source' (CreateStlBlock).
             var isStl = docs.Count == 1 && docs[0].FileName.EndsWith(".awl", StringComparison.OrdinalIgnoreCase);

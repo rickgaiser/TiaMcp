@@ -2143,6 +2143,13 @@ public sealed partial class TiaConnection : IDisposable
         }
     }
 
+    // Whether a group exists: write_source_tree creates only the part of a group path that doesn't.
+    public bool BlockGroupExists(string plcName, string groupPath)
+    {
+        EnsureConnected();
+        return ResolveGroup(GetSoftware(plcName), groupPath) != null;
+    }
+
     private static (PlcBlockComposition Blocks, PlcBlockUserGroupComposition Groups)? ResolveGroup(PlcSoftware software, string groupPath)
     {
         if (string.IsNullOrEmpty(groupPath))
@@ -2155,18 +2162,29 @@ public sealed partial class TiaConnection : IDisposable
         return (group.Blocks, group.Groups);
     }
 
-    private static PlcBlockUserGroup? FindGroupByPath(PlcBlockUserGroupComposition rootGroups, string path)
+    // A group by its '/'-joined path. A group name may contain '/' itself ('Valve fwd / rev'), so each
+    // level tries the longest name the path starts with first, and a shorter one when the rest of
+    // the path isn't found below it.
+    private static TGroup? FindByPath<TGroup>(string path, Func<string, TGroup?> find, Func<TGroup, Func<string, TGroup?>> findBelow) where TGroup : class
     {
-        var segments = path.Split('/');
-        var current = rootGroups;
-        PlcBlockUserGroup? group = null;
-        foreach (var segment in segments)
+        for (var end = path.Length; end > 0; end = path.LastIndexOf('/', end - 1))
         {
-            group = current.Find(segment);
-            if (group == null) return null;
-            current = group.Groups;
+            var group = find(path.Substring(0, end));
+            if (group == null) continue;
+            if (end == path.Length) return group;
+            var below = FindByPath(path.Substring(end + 1), findBelow(group), findBelow);
+            if (below != null) return below;
         }
-        return group;
+        return null;
+    }
+
+    private static PlcBlockUserGroup? FindGroupByPath(PlcBlockUserGroupComposition rootGroups, string path) =>
+        FindByPath<PlcBlockUserGroup>(path, rootGroups.Find, g => g.Groups.Find);
+
+    public bool TypeGroupExists(string plcName, string groupPath)
+    {
+        EnsureConnected();
+        return ResolveTypeGroup(GetSoftware(plcName), groupPath) != null;
     }
 
     private static (PlcTypeComposition Types, PlcTypeUserGroupComposition Groups)? ResolveTypeGroup(PlcSoftware software, string groupPath)
@@ -2181,19 +2199,8 @@ public sealed partial class TiaConnection : IDisposable
         return (group.Types, group.Groups);
     }
 
-    private static PlcTypeUserGroup? FindTypeGroupByPath(PlcTypeUserGroupComposition rootGroups, string path)
-    {
-        var segments = path.Split('/');
-        var current = rootGroups;
-        PlcTypeUserGroup? group = null;
-        foreach (var segment in segments)
-        {
-            group = current.Find(segment);
-            if (group == null) return null;
-            current = group.Groups;
-        }
-        return group;
-    }
+    private static PlcTypeUserGroup? FindTypeGroupByPath(PlcTypeUserGroupComposition rootGroups, string path) =>
+        FindByPath<PlcTypeUserGroup>(path, rootGroups.Find, g => g.Groups.Find);
 
     public SimpleResult CreateTypeGroup(string plcName, string parentGroupPath, string groupName)
     {
@@ -2629,6 +2636,12 @@ public sealed partial class TiaConnection : IDisposable
         }
     }
 
+    public bool TagTableGroupExists(string plcName, string groupPath)
+    {
+        EnsureConnected();
+        return ResolveTagTableGroup(GetSoftware(plcName), groupPath) != null;
+    }
+
     private static (PlcTagTableComposition TagTables, PlcTagTableUserGroupComposition Groups)? ResolveTagTableGroup(PlcSoftware software, string groupPath)
     {
         if (string.IsNullOrEmpty(groupPath))
@@ -2641,19 +2654,8 @@ public sealed partial class TiaConnection : IDisposable
         return (group.TagTables, group.Groups);
     }
 
-    private static PlcTagTableUserGroup? FindTagTableGroupByPath(PlcTagTableUserGroupComposition rootGroups, string path)
-    {
-        var segments = path.Split('/');
-        var current = rootGroups;
-        PlcTagTableUserGroup? group = null;
-        foreach (var segment in segments)
-        {
-            group = current.Find(segment);
-            if (group == null) return null;
-            current = group.Groups;
-        }
-        return group;
-    }
+    private static PlcTagTableUserGroup? FindTagTableGroupByPath(PlcTagTableUserGroupComposition rootGroups, string path) =>
+        FindByPath<PlcTagTableUserGroup>(path, rootGroups.Find, g => g.Groups.Find);
 
     public SimpleResult CreateTagTableGroup(string plcName, string parentGroupPath, string groupName)
     {
@@ -3013,6 +3015,12 @@ public sealed partial class TiaConnection : IDisposable
         }
     }
 
+    public bool HmiTagTableGroupExists(string hmiName, string groupPath)
+    {
+        EnsureConnected();
+        return ResolveHmiTagTableGroup(GetHmiSoftware(hmiName), groupPath) != null;
+    }
+
     private static (HmiTagTableComposition TagTables, HmiTagTableGroupComposition Groups)? ResolveHmiTagTableGroup(HmiSoftware software, string groupPath)
     {
         if (string.IsNullOrEmpty(groupPath))
@@ -3025,19 +3033,8 @@ public sealed partial class TiaConnection : IDisposable
         return (group.TagTables, group.Groups);
     }
 
-    private static HmiTagTableGroup? FindHmiTagTableGroupByPath(HmiTagTableGroupComposition rootGroups, string path)
-    {
-        var segments = path.Split('/');
-        var current = rootGroups;
-        HmiTagTableGroup? group = null;
-        foreach (var segment in segments)
-        {
-            group = current.Find(segment);
-            if (group == null) return null;
-            current = group.Groups;
-        }
-        return group;
-    }
+    private static HmiTagTableGroup? FindHmiTagTableGroupByPath(HmiTagTableGroupComposition rootGroups, string path) =>
+        FindByPath<HmiTagTableGroup>(path, rootGroups.Find, g => g.Groups.Find);
 
     public SimpleResult CreateHmiTagTableGroup(string hmiName, string parentGroupPath, string groupName)
     {

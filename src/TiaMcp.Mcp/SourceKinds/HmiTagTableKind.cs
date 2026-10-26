@@ -72,7 +72,7 @@ internal sealed class HmiTagTableKind : ISourceKind
                 if (!context.CreateMissing) { log.Skipped.Add($"{label} - does not exist, createMissing=false"); continue; }
                 if (context.DryRun) { log.Created.Add($"{label} (dry run, {tags.Length} tag(s))"); continue; }
 
-                await EnsureGroupPath(item.GroupPath, (parent, segment) => session.CreateHmiTagTableGroupAsync(hmi, parent, segment), ensuredGroups);
+                await EnsureGroupPath(item.GroupPath, path => session.HmiTagTableGroupExistsAsync(hmi, path), (parent, segment) => session.CreateHmiTagTableGroupAsync(hmi, parent, segment), ensuredGroups);
                 var createResult = await session.CreateHmiTagTableAsync(hmi, item.GroupPath, item.ItemName);
                 if (!createResult.Success) { log.Failed.Add($"{label}: {createResult.Error}"); continue; }
 

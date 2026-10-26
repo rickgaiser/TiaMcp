@@ -72,7 +72,7 @@ internal sealed class UdtKind : ISourceKind
                 if (!context.CreateMissing) { log.Skipped.Add($"{label} - does not exist, createMissing=false"); continue; }
                 if (context.DryRun) { log.Created.Add($"{label} (dry run)"); continue; }
 
-                await EnsureGroupPath(item.GroupPath, (parent, segment) => session.CreateTypeGroupAsync(plc, parent, segment), ensuredGroups);
+                await EnsureGroupPath(item.GroupPath, path => session.TypeGroupExistsAsync(plc, path), (parent, segment) => session.CreateTypeGroupAsync(plc, parent, segment), ensuredGroups);
                 writes.Add(new PendingWrite(item, label, docs, true, write));
             }
         }

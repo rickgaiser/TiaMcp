@@ -193,6 +193,8 @@ A new `.graph.il` file in the source tree is created by cloning an existing GRAP
   _manifest.json
 ```
 
+A `/` in a group name gives a folder per part (`Valve fwd / rev` → `Valve fwd/ rev/`), and folder names lose trailing spaces and dots, as Windows does. A new file in such a folder goes to the group read into it; the group tools take the name as it is (`groupPath: "Valve fwd / rev/Sub"`).
+
 Read and edit the files with your own file tools, then call `write_source_tree`. It writes back only what changed since the read — edited files, plus new files as new blocks, UDTs or tag tables — in dependency order, and then reads the written items back so the files show what TIA Portal made of them. Removing a row from a tag table CSV deletes that tag; deleting a file does not delete the item (use the `delete_*` tools).
 
 PLC alarm text lists: one CSV per user list (`From`, `To`, one `Text [language]` column per project language). TIA Portal's Excel import replaces whole lists, so a write starts from a fresh export, changes only the lists being written and imports that; removing a row deletes that entry (not when writing a tree read from another project). Lists can't be created through Openness - create a new list in TIA Portal first. System lists (`SYSTEM_*`) are not exported.

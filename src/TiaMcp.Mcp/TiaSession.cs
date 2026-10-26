@@ -196,6 +196,11 @@ public sealed class TiaSession
         return _sta.InvokeAsync(() => _connection.CreateStlBlock(plcName, groupPath, blockName, documents));
     }
 
+    public Task<bool> BlockGroupExistsAsync(string plcName, string groupPath)
+    {
+        return _sta.InvokeAsync(() => _connection.BlockGroupExists(plcName, groupPath));
+    }
+
     public Task<SimpleResult> CreateBlockGroupAsync(string plcName, string parentGroupPath, string groupName)
     {
         return _sta.InvokeAsync(() => _connection.CreateBlockGroup(plcName, parentGroupPath, groupName));
@@ -221,6 +226,11 @@ public sealed class TiaSession
         return _sta.InvokeAsync(() => _connection.RenamePlcBlock(plcName, blockName, newName));
     }
 
+    public Task<bool> TypeGroupExistsAsync(string plcName, string groupPath)
+    {
+        return _sta.InvokeAsync(() => _connection.TypeGroupExists(plcName, groupPath));
+    }
+
     public Task<SimpleResult> CreateTypeGroupAsync(string plcName, string parentGroupPath, string groupName)
     {
         return _sta.InvokeAsync(() => _connection.CreateTypeGroup(plcName, parentGroupPath, groupName));
@@ -236,6 +246,11 @@ public sealed class TiaSession
         return _sta.InvokeAsync(() => _connection.RenameTypeGroup(plcName, groupPath, newName));
     }
 
+    public Task<bool> TagTableGroupExistsAsync(string plcName, string groupPath)
+    {
+        return _sta.InvokeAsync(() => _connection.TagTableGroupExists(plcName, groupPath));
+    }
+
     public Task<SimpleResult> CreateTagTableGroupAsync(string plcName, string parentGroupPath, string groupName)
     {
         return _sta.InvokeAsync(() => _connection.CreateTagTableGroup(plcName, parentGroupPath, groupName));
@@ -249,6 +264,11 @@ public sealed class TiaSession
     public Task<SimpleResult> RenameTagTableGroupAsync(string plcName, string groupPath, string newName)
     {
         return _sta.InvokeAsync(() => _connection.RenameTagTableGroup(plcName, groupPath, newName));
+    }
+
+    public Task<bool> HmiTagTableGroupExistsAsync(string hmiName, string groupPath)
+    {
+        return _sta.InvokeAsync(() => _connection.HmiTagTableGroupExists(hmiName, groupPath));
     }
 
     public Task<SimpleResult> CreateHmiTagTableGroupAsync(string hmiName, string parentGroupPath, string groupName)
