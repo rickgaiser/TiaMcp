@@ -665,6 +665,7 @@ An item in more than one format is written from the one format whose files were 
 
 Writing rules per file type:
 - SCL block: the '{ S7_EditorMode := ""SCL"" }' attribute block before FUNCTION/FUNCTION_BLOCK/DATA_BLOCK is required. FBD/LAD: never hand-write NETWORK/RUNG notation from scratch - copy a similar existing block's .s7dcl/.s7res and adapt it.
+- A block with a textual interface (S7_EditorMode := ""[SCL,TextualInterface]""): TIA Portal V21 terminates when it overwrites one that was read more than once since the project was opened or the block was last written, so such a write is refused then - every read, change check and read-back counts. After save_project, close_project and tia_connect with projectPath, one write with the change check goes through (don't read the block again first); after that, the next one needs force=true or another reopen.
 - What TIA Portal's .s7dcl import gets wrong is refused, with a workaround: an array access inside an index in a LAD/FBD network, and a project FB or UDT named like a system type (TON, TOF, TP, TONR, CTU, CTD, CTUD, R_TRIG, F_TRIG), and an AT overlay (.s7dcl has no AT: the read marks the overlay's declaration with a '// TiaMcp: AT' comment; the import would make it an independent variable). read_source_tree warns about them.
 - Comments and titles: an { S7_MLC := ""MLC_x"" } attribute (S7_NetworkTitle/S7_NetworkComment for networks) referring to an entry in the .s7res; '//' comments in the source are dropped by TIA Portal. Keep text ids unique within a .s7res.
 - GRAPH ('.graph.il'): step/transition attributes, actions and conditions are writable, steps/transitions can be added or removed, and BRANCHES/CONNECTIONS of a SEQUENCE are rewritten when present; INTERFACE and PREOPERATIONS are read-only. A condition still containing a construct shown as generic 'PartName(args)' is refused. A new GRAPH block is made by cloning an existing GRAPH block of the PLC (picked automatically) and reshaping it. The write recompiles the block and reports errors.
@@ -760,8 +761,13 @@ Writes '<sourceDirectory>/_import_report.txt' with one CREATED/UPDATED/SKIPPED/F
 
         await _session.ClearHmiClassicScreenNumbersAsync();
 
+        // Checked before the change check, which exports the block once more.
+        var checkChanges = workingCopy && !force;
+        refused.AddRange(await ExportedTooOften(sourceDirectory, items, checkChanges, FamilyOf));
+        items = items.Where(i => !refused.Any(r => r.Item == i)).ToList();
+
         var conflicts = new List<(ImportListItem Item, string Reason)>();
-        if (workingCopy && !force && items.Count > 0)
+        if (checkChanges && items.Count > 0)
         {
             conflicts = await FindConflicts(manifest!, items);
             items = items.Where(i => !conflicts.Any(c => c.Item == i)).ToList();
@@ -798,7 +804,7 @@ Writes '<sourceDirectory>/_import_report.txt' with one CREATED/UPDATED/SKIPPED/F
             // Each kind in the registry's write order, which puts what an item references first.
             var kinds = family == null ? new List<ISourceKind>() : SourceKinds.Of(family.Value).ToList();
             var context = new WriteContext(_session, deviceName, sourceDirectory, deviceDir, createMissing, overwriteExisting, dryRun, workingCopy,
-                workingCopy && !force ? manifest : null, written);
+                workingCopy ? manifest : null, workingCopy && !force ? manifest : null, written);
             foreach (var kind in kinds)
             {
                 var kindItems = deviceItems.Where(i => i.Kind == kind.Name).ToList();
@@ -992,6 +998,40 @@ Writes '<sourceDirectory>/_import_report.txt' with one CREATED/UPDATED/SKIPPED/F
                 conflicts.Add((item, "changed in TIA Portal since read_source_tree. Read it again (read_source_tree with items; this overwrites the file, so keep a copy of your edit), merge, and write again - or pass force=true to overwrite the project's version."));
         }
         return conflicts;
+    }
+
+    // Existing blocks with a textual interface that TIA Portal V21 would terminate on overwriting:
+    // exported more than once since the project was opened or the block last written, counting
+    // the change check's export (see TiaConnection.ExportsSinceImport). Created blocks are fine.
+    private async Task<List<(ImportListItem Item, string Reason)>> ExportedTooOften(string root, List<ImportListItem> items, bool changeCheck, Func<string, DeviceFamily?> familyOf)
+    {
+        var refused = new List<(ImportListItem, string)>();
+        var existing = new Dictionary<string, HashSet<string>>(StringComparer.OrdinalIgnoreCase);
+        foreach (var item in items.Where(i => i.Kind == "block" && familyOf(i.DeviceName) == DeviceFamily.Plc && HasTextualInterface(root, i)))
+        {
+            if (!existing.TryGetValue(item.DeviceName, out var names))
+                existing[item.DeviceName] = names = (await _session.ListBlocksAsync(item.DeviceName)).Select(b => b.Name).ToHashSet(StringComparer.OrdinalIgnoreCase);
+            if (!names.Contains(item.ItemName)) continue;
+
+            var exports = await _session.ExportsSinceImportAsync(item.DeviceName, item.ItemName);
+            if (exports != null && exports + (changeCheck ? 1 : 0) <= 1) continue;
+            var why = exports == null
+                ? "this server attached to a project that was already open, so it can't tell how often the block was exported since"
+                : $"this server exported it {exports} time(s) since{(changeCheck ? ", and the change check would export it once more" : "")}";
+            var orForce = exports == 1 && changeCheck
+                ? "; or, if the block wasn't changed in TIA Portal since it was read, write it with force=true (no change check)"
+                : "";
+            refused.Add((item, $"refused: it has a textual interface, and TIA Portal V21 terminates when it overwrites such a block that was exported (read) more than once since the project was opened or the block was last written - {why}. " +
+                               $"Save the project (save_project), close it (close_project), open it again (tia_connect with projectPath) and write right away{orForce}."));
+        }
+        return refused;
+    }
+
+    // The block's .s7dcl in the tree declares a textual interface (S7_EditorMode := "[SCL,TextualInterface]").
+    private static bool HasTextualInterface(string root, ImportListItem item)
+    {
+        var path = Path.Combine(root, ItemDir(item.DeviceName, item.Kind, item.GroupPath), Sanitize(item.ItemName) + SourceFormat.Extension(SourceFormat.S7dcl));
+        return File.Exists(path) && File.ReadAllText(path).IndexOf("TextualInterface", StringComparison.OrdinalIgnoreCase) >= 0;
     }
 
     // Parses an item list - _export_summary.txt or list_project output, or a trimmed copy/excerpt of

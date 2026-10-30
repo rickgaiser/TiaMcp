@@ -96,7 +96,9 @@ internal sealed class BlockKind : ISourceKind
                 if (context.DryRun) { log.Updated.Add($"{label} (dry run)"); continue; }
 
                 var name = item.ItemName;
-                writes.Add(new PendingWrite(item, label, docs, false, () => session.WriteBlockAsync(plc, name, docs)));
+                // The read wrote an .stl-networks companion: the block has embedded STL networks.
+                var stlAtRead = context.Tree?.Find(plc, Name, name)?.Files.Keys.Any(k => k.IndexOf(".stl-networks.", StringComparison.OrdinalIgnoreCase) >= 0) == true;
+                writes.Add(new PendingWrite(item, label, docs, false, () => session.WriteBlockAsync(plc, name, docs, stlAtRead)));
                 continue;
             }
 

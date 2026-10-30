@@ -145,9 +145,14 @@ public sealed class TiaSession
         return _sta.InvokeAsync(() => _connection.ListTagTableGroups(plcName));
     }
 
-    public Task<ImportResult> WriteBlockAsync(string plcName, string blockName, IReadOnlyList<BlockDocument> documents)
+    public Task<int?> ExportsSinceImportAsync(string plcName, string blockName)
     {
-        return _sta.InvokeAsync(() => _connection.WriteBlock(plcName, blockName, documents));
+        return _sta.InvokeAsync(() => _connection.ExportsSinceImport(plcName, blockName));
+    }
+
+    public Task<ImportResult> WriteBlockAsync(string plcName, string blockName, IReadOnlyList<BlockDocument> documents, bool stlAtRead = false)
+    {
+        return _sta.InvokeAsync(() => _connection.WriteBlock(plcName, blockName, documents, stlAtRead));
     }
 
     public Task<WriteTagsResult> WriteTagTableAsync(string plcName, string tableName, IReadOnlyList<TagSpec> tags, bool deleteMissing = false)

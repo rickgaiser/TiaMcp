@@ -80,10 +80,10 @@ internal sealed class ListedEntry
 internal sealed class WriteContext
 {
     public WriteContext(TiaSession session, string device, string root, string deviceDir, bool createMissing, bool overwriteExisting, bool dryRun, bool workingCopy,
-        SourceTreeManifest? baseline, List<ImportListItem> written)
+        SourceTreeManifest? tree, SourceTreeManifest? baseline, List<ImportListItem> written)
     {
         Session = session; Device = device; Root = root; DeviceDir = deviceDir; CreateMissing = createMissing;
-        OverwriteExisting = overwriteExisting; DryRun = dryRun; WorkingCopy = workingCopy; Baseline = baseline; Written = written;
+        OverwriteExisting = overwriteExisting; DryRun = dryRun; WorkingCopy = workingCopy; Tree = tree; Baseline = baseline; Written = written;
     }
     public TiaSession Session { get; }
     public string Device { get; }
@@ -98,6 +98,9 @@ internal sealed class WriteContext
     // The tree is a working copy of this project: its table files are whole tables as read, so a
     // removed row means a deleted row.
     public bool WorkingCopy { get; }
+
+    // The tree's manifest when it is a working copy: what the last read found. Null otherwise.
+    public SourceTreeManifest? Tree { get; }
 
     // The manifest when the items being written were checked to be unchanged in TIA Portal since
     // the read (a working copy, without force): the project then still matches the tree as read

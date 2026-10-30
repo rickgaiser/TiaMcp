@@ -304,11 +304,11 @@ public sealed partial class TiaConnection : IDisposable
             if (isLocalSessionFile)
             {
                 var session = portal.LocalSessions.Open(fileInfo);
-                return FinalizeConnect(portal, session.Project, session, fileInfo.FullName);
+                return FinalizeConnect(portal, session.Project, session, fileInfo.FullName, openedHere: true);
             }
 
             var opened = portal.Projects.Open(fileInfo);
-            return FinalizeConnect(portal, opened);
+            return FinalizeConnect(portal, opened, openedHere: true);
         }
         catch (Exception ex)
         {
@@ -352,11 +352,14 @@ public sealed partial class TiaConnection : IDisposable
         return string.Equals(GetLocalSessionPath(session.Project.Path), sessionFile.FullName, StringComparison.OrdinalIgnoreCase);
     }
 
-    private ConnectResult FinalizeConnect(TiaPortal portal, ProjectBase project, LocalSession? localSession = null, string? localSessionPath = null)
+    // openedHere: this server opened the project, rather than attaching to one already open.
+    private ConnectResult FinalizeConnect(TiaPortal portal, ProjectBase project, LocalSession? localSession = null, string? localSessionPath = null, bool openedHere = false)
     {
         _tiaPortal = portal;
         _project = project;
         _localSession = localSession;
+        _openedHere = openedHere;
+        _exportsSinceImport.Clear();
         _softwareByName.Clear();
         _hmiSoftwareByName.Clear();
         _hmiTargetByName.Clear();
@@ -659,6 +662,7 @@ public sealed partial class TiaConnection : IDisposable
 
     private ExportResult ReadBlock(PlcSoftware software, PlcBlock block, IReadOnlyCollection<string> formats)
     {
+        CountExport(software.Name, block.Name);
         // The own-format read of a code block exports the XML anyway (see PatchMissingNetworkTitles):
         // keep it to mark the AT overlays the .s7dcl can't show.
         RawXmlCapture? seen = null;
@@ -670,6 +674,32 @@ public sealed partial class TiaConnection : IDisposable
             Documents = result.Documents.Select(d => d.FileName.EndsWith(".s7dcl", StringComparison.OrdinalIgnoreCase)
                 ? new BlockDocument(d.FileName, S7dclSource.WithAtMarkers(d.Content, overlays)) : d).ToList(),
         };
+    }
+
+    // TIA Portal V21 terminates (DeclInstanceProvider.RemoveAndRelease) when it overwrites a block
+    // with a textual interface that was exported more than once since the project was opened or
+    // the block was last imported - waiting or a compile doesn't help, reopening the project does.
+    // So this counts the reads of each block ("plc/block"); write_source_tree checks the count.
+    private readonly Dictionary<string, int> _exportsSinceImport = new(StringComparer.OrdinalIgnoreCase);
+
+    // This server opened the project: a block without a count wasn't exported since.
+    private bool _openedHere;
+
+    // How often this server read the block since the project was opened or the block last
+    // imported; null when it can't tell (it attached to a project that was already open, and
+    // hasn't imported the block since).
+    public int? ExportsSinceImport(string plcName, string blockName) =>
+        _exportsSinceImport.TryGetValue($"{plcName}/{blockName}", out var count) ? count : _openedHere ? 0 : null;
+
+    private void CountExport(string plcName, string blockName)
+    {
+        if (ExportsSinceImport(plcName, blockName) is { } count) _exportsSinceImport[$"{plcName}/{blockName}"] = count + 1;
+    }
+
+    private ImportResult Imported(string plcName, string blockName, ImportResult result)
+    {
+        if (result.Success) _exportsSinceImport[$"{plcName}/{blockName}"] = 0;
+        return result;
     }
 
     // A block's own format: GRAPH is converted from the XML ('.graph.il'), whole-block STL is
@@ -1562,7 +1592,8 @@ public sealed partial class TiaConnection : IDisposable
         }
     }
 
-    public ImportResult WriteBlock(string plcName, string blockName, IReadOnlyList<BlockDocument> documents)
+    // stlAtRead: the block had embedded STL networks when it was read into the tree.
+    public ImportResult WriteBlock(string plcName, string blockName, IReadOnlyList<BlockDocument> documents, bool stlAtRead = false)
     {
         EnsureConnected();
         var software = GetSoftware(plcName);
@@ -1592,8 +1623,10 @@ public sealed partial class TiaConnection : IDisposable
         // SILENTLY DELETES the STL network(s) from the real block. Whole-block STL is handled
         // above via WriteStlBlock; a mixed FBD/LAD/SCL block with one or more embedded STL
         // networks has no such route yet (there's no per-network import API either) - refuse
-        // outright here rather than risk a silent, destructive partial overwrite.
-        if (IsStlInvolved(block))
+        // outright here rather than risk a silent, destructive partial overwrite. Told from the
+        // read and the documents, not by exporting the block: an export right before the override
+        // import below makes TIA Portal V21 terminate for a block with a textual interface.
+        if (stlAtRead || documents.Any(d => d.FileName.EndsWith(".s7dcl", StringComparison.OrdinalIgnoreCase) && StlPlaceholder.IsMatch(d.Content)))
         {
             return new ImportResult(false, new[]
             {
@@ -1602,30 +1635,29 @@ public sealed partial class TiaConnection : IDisposable
             });
         }
 
-        return ImportBlockDocuments(owner, blockName, documents, ImportDocumentOptions.Override);
+        return Imported(plcName, blockName, ImportBlockDocuments(owner, blockName, documents, ImportDocumentOptions.Override));
     }
 
-    private static bool IsStlInvolved(PlcBlock block)
+    // After a failed call: a message when the TIA Portal process is gone - an Openness error then
+    // only says which method failed. Null while it still runs.
+    private string? PortalStopped()
     {
-        if (block.ProgrammingLanguage == ProgrammingLanguage.STL) return true;
-
-        var probeDir = new DirectoryInfo(Path.Combine(Path.GetTempPath(), "TiaMcp", "stl-probe", Guid.NewGuid().ToString("N")));
-        probeDir.Create();
         try
         {
-            var result = block.ExportAsDocuments(probeDir, FileStem(block.Name));
-            return result.State == DocumentResultState.Failure
-                && result.Messages.Any(m => m.Message.Contains("cannot be exported to or imported from SIMATIC SD"));
+            if (_tiaPortal == null) return null;
+            using var process = System.Diagnostics.Process.GetProcessById(_tiaPortal.GetCurrentProcess().Id);
+            if (!process.HasExited) return null;
         }
-        catch (Exception ex)
+        catch
         {
-            return ex.Message.Contains("cannot be exported to or imported from SIMATIC SD");
+            // Gone: Openness or GetProcessById threw.
         }
-        finally
-        {
-            try { probeDir.Delete(true); } catch { /* best effort cleanup */ }
-        }
+        return "TIA Portal stopped during the import (unsaved changes in the project are lost). Its crash report is under " +
+               @"C:\ProgramData\Siemens\Automation\Portal V21\Diagnostics. Start TIA Portal again and call tia_connect.";
     }
+
+    // The placeholder NETWORK ReadMixedStlBlock leaves at each embedded STL network.
+    private static readonly Regex StlPlaceholder = new(@"S7_Language\s*:=\s*""STL""");
 
     // GRAPH write, mirroring ReadGraphBlock's use of the separate PlcBlock.Export/
     // PlcBlockComposition.Import XML API (not ImportFromDocuments). Conservative by design -
@@ -1826,7 +1858,7 @@ public sealed partial class TiaConnection : IDisposable
             return new ImportResult(false, new[] { $"Group '{groupPath}' not found in PLC '{plcName}'. Use create_group first, or pass an empty groupPath for the root." });
         }
 
-        return ImportBlockDocuments(resolved.Value.Blocks, blockName, documents, ImportDocumentOptions.None);
+        return Imported(plcName, blockName, ImportBlockDocuments(resolved.Value.Blocks, blockName, documents, ImportDocumentOptions.None));
     }
 
     // Creating a brand-new GRAPH block from nothing isn't possible through Openness:
@@ -1988,7 +2020,7 @@ public sealed partial class TiaConnection : IDisposable
         }
         catch (Exception ex)
         {
-            return new ImportResult(false, new[] { ex.Message });
+            return new ImportResult(false, new[] { PortalStopped() ?? ex.Message });
         }
         finally
         {
