@@ -3357,8 +3357,27 @@ public sealed partial class TiaConnection : IDisposable
         var software = GetSoftware(plcName);
         var compilable = software.GetService<ICompilable>();
         var result = compilable.Compile();
-        var messages = result.Messages.Cast<CompilerResultMessage>().Select(m => $"[{m.State}] {m.Description}").ToArray();
+        // The top-level messages are only the summary; the errors and warnings
+        // are nested per object (block > network > message). Report every
+        // error/warning leaf with the path of the objects above it.
+        var messages = new List<string>();
+        CollectCompileMessages(result.Messages, "", messages);
+        const int maxMessages = 100;
+        if (messages.Count > maxMessages)
+            messages = messages.Take(maxMessages).Append($"... {messages.Count - maxMessages} more").ToList();
         return new CompileResult(result.State.ToString(), result.ErrorCount, result.WarningCount, messages);
+    }
+
+    private static void CollectCompileMessages(CompilerResultMessageComposition messages, string path, List<string> output)
+    {
+        foreach (CompilerResultMessage m in messages)
+        {
+            var here = string.IsNullOrEmpty(m.Path) ? path : string.IsNullOrEmpty(path) ? m.Path : $"{path} > {m.Path}";
+            if (m.Messages.Count > 0)
+                CollectCompileMessages(m.Messages, here, output);
+            else if (m.State is CompilerResultState.Error or CompilerResultState.Warning && !string.IsNullOrWhiteSpace(m.Description))
+                output.Add($"[{m.State}] {(string.IsNullOrEmpty(here) ? "" : here + ": ")}{m.Description}");
+        }
     }
 
     // Block names are unique per-PLC regardless of group (enforced by TIA Portal itself, and
