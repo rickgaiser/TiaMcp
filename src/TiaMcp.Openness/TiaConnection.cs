@@ -39,41 +39,55 @@ public sealed partial class TiaConnection : IDisposable
 
     public bool IsConnected => _project != null;
 
-    // Lists running TIA Portal GUI processes WITHOUT calling TiaPortalProcess.Attach() on any of
-    // them - Attach() is what triggers Openness's interactive "allow external connection" dialog
-    // in the TIA Portal GUI, so scanning every running instance just to disambiguate (as Connect()
-    // briefly did) meant that dialog popped up on every single one of them every time, even though
-    // only one instance was ever actually wanted. This uses plain OS process enumeration instead -
-    // matching by executable name only, no Openness/COM involved - so it never prompts anything.
-    // MainWindowTitle is the only identifying detail available this way; it's blank for a headless
-    // orphan instance or one not currently showing a project window, in which case the caller has
-    // to attach (via Connect's processId) to find out what's actually open in it.
-    public static IReadOnlyList<TiaInstanceInfo> ListRunningInstances()
+    // Lists running TIA Portal processes WITHOUT calling TiaPortalProcess.Attach() on any of them -
+    // Attach() is what triggers Openness's interactive "allow external connection" dialog in the
+    // TIA Portal GUI. TiaPortalProcess tells the open project, the mode and the attached clients
+    // without attaching.
+    public IReadOnlyList<TiaInstanceInfo> ListRunningInstances()
     {
+        int? ownId = null;
+        try { ownId = _tiaPortal?.GetCurrentProcess().Id; }
+        catch { /* the attached instance is gone */ }
+
         var result = new List<TiaInstanceInfo>();
-        foreach (var proc in System.Diagnostics.Process.GetProcessesByName("Siemens.Automation.Portal"))
+        foreach (var proc in TiaPortal.GetProcesses())
         {
-            try
-            {
-                string? title;
-                try { title = string.IsNullOrEmpty(proc.MainWindowTitle) ? null : proc.MainWindowTitle; }
-                catch { title = null; }
-                result.Add(new TiaInstanceInfo(proc.Id, title));
-            }
-            finally
-            {
-                proc.Dispose();
-            }
+            int clients;
+            try { clients = proc.AttachedSessions.Count; }
+            catch { clients = 0; }
+            bool withUserInterface;
+            try { withUserInterface = proc.Mode == TiaPortalMode.WithUserInterface; }
+            catch { withUserInterface = true; }
+            result.Add(new TiaInstanceInfo(proc.Id, OpenProjectPath(proc), withUserInterface, clients, proc.Id == ownId));
         }
         return result;
     }
 
-    public ConnectResult Connect(string? projectPath = null, int? processId = null)
+    // The project or Multiuser local session (.alsXX) a TIA Portal process has open, as the
+    // process reports it - also a project the GUI has open that Openness can't get at.
+    private static string? OpenProjectPath(TiaPortalProcess proc)
+    {
+        try
+        {
+            var path = proc.ProjectPath;
+            return path == null ? null : GetLocalSessionPath(path) ?? path.FullName;
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    public ConnectResult Connect(string? projectPath = null, int? processId = null, bool startPortal = false)
     {
         var processes = TiaPortal.GetProcesses().ToList();
         if (processes.Count == 0)
         {
-            return new ConnectResult(false, null, null, "No running TIA Portal instance found. Open TIA Portal first (with or without a project loaded).");
+            if (!startPortal)
+                return new ConnectResult(false, null, null, "No running TIA Portal instance found. Open TIA Portal first, or call tia_connect with startPortal=true and projectPath to start one.");
+            if (string.IsNullOrWhiteSpace(projectPath))
+                return new ConnectResult(false, null, null, "startPortal needs projectPath: the project to open in the TIA Portal it starts.");
+            return StartPortal(projectPath!);
         }
 
         if (processId.HasValue)
@@ -81,21 +95,92 @@ public sealed partial class TiaConnection : IDisposable
             return ConnectToSpecificProcess(processes, processId.Value, projectPath);
         }
 
-        // TiaPortal.GetProcesses() has no notion of which running instance the caller means - its
-        // order reflects OS process enumeration, not launch order or anything project-aware.
-        // Picking .First() blindly could silently attach to the wrong instance; attaching to
-        // every instance to figure out which one is right is correct but triggers Openness's
-        // "allow connection" dialog on every single running instance, every time. With more than
-        // one instance running, refuse to guess or scan: send the caller to ListRunningInstances
-        // (zero-prompt) to pick a processId first.
-        if (processes.Count > 1)
+        // Attaching to every instance to find the right one would pop Openness's "allow
+        // connection" dialog on each of them; the open project each process reports (no attach
+        // needed) picks it when that is unambiguous, otherwise the caller picks a processId.
+        var chosen = PickProcess(processes, projectPath);
+        if (chosen == null)
         {
-            var pids = string.Join(", ", processes.Select(p => p.Id));
+            var list = string.Join("\n", processes.Select(p => $"- PID {p.Id}: {OpenProjectPath(p) ?? "no project open"}"));
             return new ConnectResult(false, null, null,
-                $"{processes.Count} TIA Portal instances are running (PIDs: {pids}). Call list_tia_instances first, then call tia_connect again with processId set to the one you want - connecting without it would otherwise prompt every running instance for Openness access.");
+                $"{processes.Count} TIA Portal instances are running and it is not clear which one to use:\n{list}\nCall tia_connect again with processId set to the one you want.");
+        }
+        return ConnectToSpecificProcess(processes, chosen.Id, projectPath);
+    }
+
+    // The one instance that has projectPath open, else the one with no project open (to open it
+    // in); without projectPath the one instance that has a project open. Null when not unambiguous.
+    private static TiaPortalProcess? PickProcess(List<TiaPortalProcess> processes, string? projectPath)
+    {
+        if (processes.Count == 1) return processes[0];
+        var open = processes.ToDictionary(p => p.Id, OpenProjectPath);
+        if (string.IsNullOrWhiteSpace(projectPath))
+        {
+            var withProject = processes.Where(p => open[p.Id] != null).ToList();
+            return withProject.Count == 1 ? withProject[0] : null;
         }
 
-        return ConnectToSpecificProcess(processes, processes[0].Id, projectPath);
+        string fullPath;
+        try { fullPath = Path.GetFullPath(projectPath); }
+        catch { return null; }
+        var withIt = processes.Where(p => string.Equals(open[p.Id], fullPath, StringComparison.OrdinalIgnoreCase)).ToList();
+        if (withIt.Count == 1) return withIt[0];
+        if (withIt.Count > 1) return null;
+        var empty = processes.Where(p => open[p.Id] == null).ToList();
+        return empty.Count == 1 ? empty[0] : null;
+    }
+
+    // Starts the TIA Portal GUI as a process of its own - not through new TiaPortal(), whose
+    // instance belongs to this server and would close, unsaved work and all, when the server
+    // stops - then attaches to it once it accepts that and opens projectPath.
+    private ConnectResult StartPortal(string projectPath)
+    {
+        if (!File.Exists(projectPath))
+            return new ConnectResult(false, null, null, $"Project file not found: {projectPath}");
+        var exe = Path.Combine(PortalInstallPath(), "Bin", "Siemens.Automation.Portal.exe");
+        if (!File.Exists(exe))
+            return new ConnectResult(false, null, null, $"TIA Portal not found at {exe}. Start TIA Portal yourself, then call tia_connect.");
+
+        using var started = System.Diagnostics.Process.Start(exe);
+        var deadline = DateTime.UtcNow.AddMinutes(5);
+        Exception? lastError = null;
+        while (DateTime.UtcNow < deadline)
+        {
+            System.Threading.Thread.Sleep(2000);
+            if (started.HasExited)
+                return new ConnectResult(false, null, null, $"TIA Portal (process {started.Id}) exited right after starting, with exit code {started.ExitCode}.");
+            var proc = TiaPortal.GetProcesses().FirstOrDefault(p => p.Id == started.Id);
+            if (proc == null) continue;
+            TiaPortal portal;
+            try
+            {
+                portal = proc.Attach();
+            }
+            catch (Exception ex)
+            {
+                // Still starting up.
+                lastError = ex;
+                continue;
+            }
+            return ConnectAttached(portal, proc, projectPath);
+        }
+        return new ConnectResult(false, null, null,
+            $"Started TIA Portal (process {started.Id}), but could not attach to it within 5 minutes{(lastError == null ? "" : $": {lastError.Message}")}. Call tia_connect again once it is up.");
+    }
+
+    // TIA Portal V21's install folder, from the registry; the default folder when it isn't there.
+    private static string PortalInstallPath()
+    {
+        try
+        {
+            using var key = Microsoft.Win32.Registry.LocalMachine.OpenSubKey(@"SOFTWARE\Siemens\Automation\_InstalledSW\TIAP21\Global");
+            if (key?.GetValue("Path") is string path && Directory.Exists(path)) return path;
+        }
+        catch
+        {
+            // Fall through to the default.
+        }
+        return @"C:\Program Files\Siemens\Automation\Portal V21";
     }
 
     // Attaches to exactly one, caller-chosen running instance - the only Attach() call this makes,
@@ -119,7 +204,12 @@ public sealed partial class TiaConnection : IDisposable
         {
             return new ConnectResult(false, null, null, $"Could not attach to TIA Portal process {processId}: {ex.Message}");
         }
+        return ConnectAttached(portal, proc, projectPath);
+    }
 
+    private ConnectResult ConnectAttached(TiaPortal portal, TiaPortalProcess proc, string? projectPath)
+    {
+        var processId = proc.Id;
         ProjectBase? existing;
         LocalSession? existingSession = null;
         try
@@ -157,6 +247,17 @@ public sealed partial class TiaConnection : IDisposable
             portal.Dispose();
             return new ConnectResult(false, null, null,
                 $"Attached to TIA Portal process {processId}, but could not inspect its open projects: {ex.GetType().Name}: {ex.Message}");
+        }
+
+        // The process reports a project, but Openness gets none: opening it any other way fails
+        // with an opaque "Another project is already open".
+        var hiddenProject = existing == null ? OpenProjectPath(proc) : null;
+        if (hiddenProject != null)
+        {
+            portal.Dispose();
+            return new ConnectResult(false, null, null,
+                $"TIA Portal process {processId} has '{hiddenProject}' open, but TIA Portal doesn't give it to Openness. It may still be opening or waiting on a dialog, be missing support packages (e.g. GSD files), or be protected by user management. " +
+                "Close the project in TIA Portal and call tia_connect with projectPath: TIA Portal then reports why it can't be opened.");
         }
 
         if (string.IsNullOrWhiteSpace(projectPath))

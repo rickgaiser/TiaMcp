@@ -16,9 +16,9 @@ public sealed class TiaSession
     private readonly StaDispatcher _sta = new();
     private readonly TiaConnection _connection = new();
 
-    public async Task<ConnectResult> ConnectAsync(string? projectPath = null, int? processId = null)
+    public async Task<ConnectResult> ConnectAsync(string? projectPath = null, int? processId = null, bool startPortal = false)
     {
-        var result = await _sta.InvokeAsync(() => _connection.Connect(projectPath, processId));
+        var result = await _sta.InvokeAsync(() => _connection.Connect(projectPath, processId, startPortal));
         if (result.Success)
         {
             ProjectName = result.ProjectName;
@@ -27,11 +27,10 @@ public sealed class TiaSession
         return result;
     }
 
-    // Plain OS process enumeration, not an Openness call - doesn't need the STA/Openness
-    // dispatcher, and deliberately doesn't attach to anything (see TiaConnection.ListRunningInstances).
+    // Doesn't attach to anything (see TiaConnection.ListRunningInstances).
     public Task<IReadOnlyList<TiaInstanceInfo>> ListInstancesAsync()
     {
-        return Task.FromResult(TiaConnection.ListRunningInstances());
+        return _sta.InvokeAsync(() => _connection.ListRunningInstances());
     }
 
     public async Task<ConnectResult> SaveProjectAsAsync(string targetDirectory)

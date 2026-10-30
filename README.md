@@ -70,8 +70,8 @@ All MCP tools exposed by the server, grouped by area.
 
 | Tool | Purpose |
 |---|---|
-| `tia_connect` | Attach to an open project or Multiuser local session, or open one by path (`.apXX` or `.alsXX`); pass `processId` (from `list_tia_instances`) when more than one instance is running |
-| `list_tia_instances` | List running TIA Portal instances (PID + window title) with no Openness prompt, to pick a `processId` for `tia_connect` |
+| `tia_connect` | Attach to an open project or Multiuser local session, or open one by path (`.apXX` or `.alsXX`). With several instances running it picks the one by the project it has open; pass `processId` (from `list_tia_instances`) when that isn't clear. `startPortal: true` starts the TIA Portal GUI when none is running and opens `projectPath` in it |
+| `list_tia_instances` | List running TIA Portal instances with no Openness prompt: PID, open project, GUI or not, and the attached Openness clients |
 | `project_status` | Report unsaved-changes state, author, last-saved info |
 | `save_project` / `save_project_as` | Save in place, or save a copy to a new folder; for Multiuser local sessions, save is local-only and Save As is unsupported |
 | `close_project` | Close the connected project; closing a Multiuser local session does not commit it to the server |

@@ -46,12 +46,13 @@ public sealed partial class TiaTools
     }
 
     [McpServerTool(Name = "tia_connect")]
-    [Description("Attach to a running TIA Portal instance. With no arguments, attaches to the single open project or Multiuser local session. If more than one TIA Portal instance is running, this returns an error listing their process ids instead of guessing or attaching to any of them (attaching is what triggers Openness's 'allow connection' dialog, so probing every instance would prompt all of them) - call list_tia_instances first, then call this again with processId set to the one you want. Pass projectPath to open a specific .apXX project or .alsXX local session, or to match that session if already open, in the targeted instance. Call this again if a PLC/device was renamed in the GUI or a tool starts reporting an unknown plcName - the PLC name index is only built at connect time.")]
+    [Description("Attach to a running TIA Portal instance. With no arguments, attaches to the open project or Multiuser local session. With more than one TIA Portal instance running, it picks the instance by the project each one has open: the one that has projectPath open (else the one with no project, to open it in), or without projectPath the only one with a project open. When that isn't clear it lists the instances and their projects instead of attaching to any of them (attaching is what triggers Openness's 'allow connection' dialog) - call it again with processId. Pass projectPath to open a specific .apXX project or .alsXX local session, or to match it if already open. With no TIA Portal running, startPortal=true starts the TIA Portal GUI and opens projectPath in it. Call this again if a PLC/device was renamed in the GUI or a tool starts reporting an unknown plcName - the PLC name index is only built at connect time.")]
     public Task<string> Connect(
         [Description("Optional full path to a .apXX project file or .alsXX Multiuser local session to open. Omit to use whatever project or local session is already open in TIA Portal.")] string? projectPath = null,
-        [Description("Optional process id (PID) of the specific running TIA Portal instance to attach to, from list_tia_instances. Required when more than one TIA Portal instance is running; omit when only one is running.")] int? processId = null) => Safe(async () =>
+        [Description("Optional process id (PID) of the TIA Portal instance to attach to, from list_tia_instances. Only needed when tia_connect can't tell which instance is meant.")] int? processId = null,
+        [Description("Start the TIA Portal GUI when none is running, and open projectPath in it (required then). It runs on its own: it stays open when this server stops. Takes a minute or two. Default false.")] bool startPortal = false) => Safe(async () =>
     {
-        var result = await _session.ConnectAsync(projectPath, processId);
+        var result = await _session.ConnectAsync(projectPath, processId, startPortal);
         if (!result.Success)
         {
             return $"Connect failed: {result.Error}";
@@ -62,15 +63,20 @@ public sealed partial class TiaTools
     });
 
     [McpServerTool(Name = "list_tia_instances")]
-    [Description("List running TIA Portal GUI instances (process id and window title, if visible) without attaching to any of them. Use this before tia_connect when more than one TIA Portal instance is running, to pick the right one via processId without triggering an Openness 'allow connection' prompt on every instance. Window title may be blank for a headless/orphaned instance or one not currently showing a project window - attach to it with tia_connect's processId to see what project (if any) it actually has open.")]
+    [Description("List running TIA Portal instances without attaching to any of them (no Openness 'allow connection' prompt): per process id the project or Multiuser local session it has open, whether it has a GUI, and how many Openness clients (other agent sessions, scripts, this server) are attached to it. Pass a process id to tia_connect's processId when tia_connect can't tell which instance is meant.")]
     public Task<string> ListInstances() => Safe(async () =>
     {
         var instances = await _session.ListInstancesAsync();
         if (instances.Count == 0)
         {
-            return "No running TIA Portal instance found. Open TIA Portal first.";
+            return "No running TIA Portal instance found. Open TIA Portal first, or call tia_connect with startPortal=true and projectPath.";
         }
-        return string.Join("\n", instances.Select(i => $"- PID {i.ProcessId}: {i.WindowTitle ?? "(no window title - headless or not currently showing a project)"}"));
+        return string.Join("\n", instances.Select(i =>
+        {
+            var clients = i.AttachedClients == 0 ? "no Openness clients"
+                : $"{i.AttachedClients} Openness client{(i.AttachedClients == 1 ? "" : "s")}{(i.ThisServer ? ", this server included" : "")}";
+            return $"- PID {i.ProcessId}: {i.ProjectPath ?? "no project open"} ({(i.WithUserInterface ? "GUI" : "no GUI")}, {clients})";
+        }));
     });
 
     [McpServerTool(Name = "save_project_as")]

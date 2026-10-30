@@ -68,8 +68,8 @@ For object types TiaMcp doesn't support yet, the notes say what the Openness API
 
 | Object | List | Create | Read | Update | Rename | Delete | Notes |
 |---|---|---|---|---|---|---|---|
-| TIA Portal instance | ✅ | — | — | — | — | — | |
-| Project | — | ❌ | ✅ | ✅ | ❌ | ❌ | Open/close, status, save, save as |
+| TIA Portal instance | ✅ | ✅ | — | — | — | — | Create: start the GUI (`tia_connect` `startPortal`) |
+| Project | — | ❌ | ✅ | ✅ | ❌ | ❌ | Open/close, status, save, save as. Protected projects (user management) can't be opened through Openness yet |
 | Source tree | — | — | ✅ | ✅ | — | — | All source is read and written through it; partial reads; writes back only changes, refuses items changed in TIA Portal since the read; never deletes items |
 
 ## Hardware & library
