@@ -528,6 +528,15 @@ public sealed partial class TiaTools
         return $"State: {result.State}  Errors: {result.ErrorCount}  Warnings: {result.WarningCount}\n{messages}";
     });
 
+    [McpServerTool(Name = "compile_hmi")]
+    [Description("Compile an HMI's software (WinCC Unified or classic WinCC) and report errors/warnings with their path (e.g. screen > item > property): screen items or alarms bound to tags that don't exist, broken faceplate interfaces. Can take minutes for a large HMI. On a Multiuser local session this compiles locally and does not commit to the server.")]
+    public Task<string> CompileHmi([Description("HMI software name, from list_project")] string hmiName) => Safe(async () =>
+    {
+        var result = await _session.CompileHmiAsync(hmiName);
+        var messages = string.Join("\n", result.Messages);
+        return $"State: {result.State}  Errors: {result.ErrorCount}  Warnings: {result.WarningCount}\n{messages}";
+    });
+
     [McpServerTool(Name = "list_project")]
     [Description(@"List what the connected project has, per PLC and HMI software ('=== name ===' - the plcName/hmiName other tools take): blocks with their language (INCONSISTENT: needs compile_plc, e.g. before a GRAPH or STL block can be read), UDTs, tag tables, empty tag table groups and alarm text lists; for WinCC Unified the HMI tag tables, screens and alarm files, for classic WinCC the tag tables, text lists, screen templates, pop-up screens and screens. Fast: names only, no source - read_source_tree reads the source. Each item line ends with the formats it can be read in, its own first, e.g. ""tag table 'Tags' [csv, xml]"" (""xml"" is the raw Openness export). Item lines are in _export_summary.txt's format and can be passed to read_source_tree's items as they are.
 
@@ -717,8 +726,14 @@ In a Multiuser local session the read also checks each item's mark state (about 
             else if (partial) result.AppendLine($"  OK      {Describe(item.Kind, item.GroupPath, item.Name)}: {string.Join(", ", item.Files.Select(f => f.Path))}");
         }
         foreach (var item in gone) result.AppendLine($"  REMOVED {Describe(item.Kind, item.GroupPath, item.Name)} - no longer in the project, its files were deleted");
-        foreach (var item in exported.Where(e => e.Warnings.Count > 0))
-            result.AppendLine($"  WARNING {Describe(item.Kind, item.GroupPath, item.Name)}: write_source_tree refuses to write its .s7dcl as it is - {string.Join(" | ", item.Warnings)}");
+        // The same warning for many blocks (a library pattern) is explained once, its blocks below it.
+        var warnings = exported.SelectMany(e => e.Warnings.Select(w => (Describe(e.Kind, e.GroupPath, e.Name), w)));
+        foreach (var (text, names) in GroupSimilar(warnings))
+        {
+            if (names.Count == 1) { result.AppendLine($"  WARNING {names[0]}: write_source_tree refuses to write its .s7dcl as it is - {text}"); continue; }
+            result.AppendLine($"  WARNING {names.Count} items: write_source_tree refuses to write their .s7dcl as it is - {text}");
+            foreach (var name in names) result.AppendLine($"    {name}");
+        }
         foreach (var note in _exportNotes) result.AppendLine($"  {note}");
         if (_session.IsMultiuser)
         {

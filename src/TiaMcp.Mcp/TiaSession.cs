@@ -302,6 +302,11 @@ public sealed class TiaSession
         return _sta.InvokeAsync(() => _connection.Compile(plcName));
     }
 
+    public Task<CompileResult> CompileHmiAsync(string hmiName)
+    {
+        return _sta.InvokeAsync(() => _connection.CompileHmi(hmiName));
+    }
+
     public Task<IReadOnlyList<HmiDeviceSummary>> ListHmiDevicesAsync()
     {
         return _sta.InvokeAsync(() => _connection.ListHmiDevices());

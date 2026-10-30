@@ -127,6 +127,7 @@ Screen content is read and written through the source tree; these tools manage s
 |---|---|
 | `delete_hmi_screen` / `rename_hmi_screen` | Delete or rename a screen |
 | `create_hmi_screen_group` / `delete_hmi_screen_group` / `rename_hmi_screen_group` | Manage screen group folders |
+| `compile_hmi` | Compile an HMI's software (WinCC Unified or classic), report errors/warnings with their path (screen > item > property) |
 | `describe_hmi_item_type` | Properties, events and dynamization options per screen item type |
 | `list_library_types` / `read_faceplate_type` | Project library types and versions / a faceplate's interface |
 

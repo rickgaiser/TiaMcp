@@ -168,31 +168,33 @@ internal static class SourceTree
     // differing only in the PLC tag it names - so messages that differ in a word or two group.
     public static string FailedTags(WriteTagsResult result)
     {
-        var groups = new List<(string[] Words, List<string> Names)>();
-        var other = new List<string>();
-        foreach (var message in result.Messages)
+        var rows = result.Messages.Select(m => FailedRow.Match(m)).Where(m => m.Success).Select(m => (m.Groups["name"].Value, m.Groups["error"].Value));
+        var other = result.Messages.Where(m => !FailedRow.IsMatch(m) && !m.StartsWith("Created '") && !m.StartsWith("Updated '")).Select(OneLine);
+        var parts = GroupSimilar(rows).Select(g =>
         {
-            var match = FailedRow.Match(message);
-            if (!match.Success)
-            {
-                if (!message.StartsWith("Created '") && !message.StartsWith("Updated '")) other.Add(OneLine(message));
-                continue;
-            }
-            var words = OneLine(match.Groups["error"].Value).Split(' ');
+            var shown = string.Join(", ", g.Names.Take(5)) + (g.Names.Count > 5 ? $" and {g.Names.Count - 5} more" : "");
+            return $"FAILED {(g.Names.Count == 1 ? shown : $"{g.Names.Count} tags ({shown})")}: {g.Text}";
+        });
+        return string.Join(" | ", parts.Concat(other));
+    }
+
+    // Messages grouped where they differ in at most two words (e.g. the name of what they are
+    // about): per group the shared text, with "<...>" for the words that differ, and the names of
+    // the messages in it, in their order.
+    public static List<(string Text, List<string> Names)> GroupSimilar(IEnumerable<(string Name, string Message)> messages)
+    {
+        var groups = new List<(string[] Words, List<string> Names)>();
+        foreach (var (name, message) in messages)
+        {
+            var words = OneLine(message).Split(' ');
             var group = groups.FirstOrDefault(g => g.Words.Length == words.Length
                 && g.Words.Where((w, i) => w != words[i] && w != Varies).Count() <= 1
                 && g.Words.Where((w, i) => w != words[i] || w == Varies).Count() <= 2);
-            if (group.Words == null) { groups.Add((words, new List<string> { match.Groups["name"].Value })); continue; }
+            if (group.Words == null) { groups.Add((words, new List<string> { name })); continue; }
             for (var i = 0; i < words.Length; i++) if (group.Words[i] != words[i]) group.Words[i] = Varies;
-            group.Names.Add(match.Groups["name"].Value);
+            group.Names.Add(name);
         }
-
-        var parts = groups.Select(g =>
-        {
-            var shown = string.Join(", ", g.Names.Take(5)) + (g.Names.Count > 5 ? $" and {g.Names.Count - 5} more" : "");
-            return $"FAILED {(g.Names.Count == 1 ? shown : $"{g.Names.Count} tags ({shown})")}: {string.Join(" ", g.Words)}";
-        });
-        return string.Join(" | ", parts.Concat(other));
+        return groups.Select(g => (string.Join(" ", g.Words), g.Names)).ToList();
     }
 
     // Stands for the word(s) in which grouped error messages differ.

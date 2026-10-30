@@ -36,6 +36,8 @@ public sealed partial class TiaConnection : IDisposable
     private LocalSession? _localSession;
     private readonly Dictionary<string, PlcSoftware> _softwareByName = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, HmiSoftware> _hmiSoftwareByName = new(StringComparer.OrdinalIgnoreCase);
+    // The device item holding each Unified HMI's software: where compile_hmi looks for a compiler.
+    private readonly Dictionary<string, DeviceItem> _hmiDeviceItemByName = new(StringComparer.OrdinalIgnoreCase);
 
     public bool IsConnected => _project != null;
 
@@ -362,6 +364,7 @@ public sealed partial class TiaConnection : IDisposable
         _exportsSinceImport.Clear();
         _softwareByName.Clear();
         _hmiSoftwareByName.Clear();
+        _hmiDeviceItemByName.Clear();
         _hmiTargetByName.Clear();
         _screenDefaults.Clear();
         foreach (Device device in project.Devices)
@@ -427,6 +430,7 @@ public sealed partial class TiaConnection : IDisposable
             _localSession = null;
             _softwareByName.Clear();
             _hmiSoftwareByName.Clear();
+            _hmiDeviceItemByName.Clear();
             _hmiTargetByName.Clear();
             try
             {
@@ -470,6 +474,7 @@ public sealed partial class TiaConnection : IDisposable
             if (container?.Software is HmiSoftware hmiSoftware)
             {
                 _hmiSoftwareByName[hmiSoftware.Name] = hmiSoftware;
+                _hmiDeviceItemByName[hmiSoftware.Name] = item;
             }
             IndexHmiClassic(container);
 
@@ -3549,8 +3554,50 @@ public sealed partial class TiaConnection : IDisposable
     public CompileResult Compile(string plcName)
     {
         EnsureConnected();
-        var software = GetSoftware(plcName);
-        var compilable = software.GetService<ICompilable>();
+        return Compile(GetSoftware(plcName).GetService<ICompilable>());
+    }
+
+    // A WinCC Unified HMI or a classic WinCC HMI target.
+    public CompileResult CompileHmi(string hmiName)
+    {
+        EnsureConnected();
+        // HmiSoftware doesn't declare GetService. Candidates for the compiler, most specific
+        // first: the software itself at runtime, the device item holding it and the items and
+        // device above that (the GUI compiles the HMI device).
+        var candidates = new List<object>();
+        if (_hmiSoftwareByName.TryGetValue(hmiName, out var unified))
+        {
+            candidates.Add(unified);
+            if (_hmiDeviceItemByName.TryGetValue(hmiName, out var item))
+            {
+                candidates.Add(item);
+                candidates.AddRange(Ancestors(item));
+            }
+        }
+        else if (_hmiTargetByName.TryGetValue(hmiName, out var classic)) candidates.Add(classic);
+        else
+        {
+            var available = string.Join(", ", _hmiSoftwareByName.Keys.Concat(_hmiTargetByName.Keys));
+            throw new InvalidOperationException($"Unknown HMI '{hmiName}'. Known HMIs: [{available}]. For a PLC use compile_plc.");
+        }
+
+        foreach (var candidate in candidates)
+        {
+            ICompilable? compilable = null;
+            try { compilable = (candidate as IEngineeringServiceProvider)?.GetService<ICompilable>(); }
+            catch { /* not a compiler here - try the next */ }
+            if (compilable != null) return Compile(compilable);
+        }
+        throw new InvalidOperationException($"Openness has no compiler for HMI '{hmiName}' (tried: {string.Join(", ", candidates.Select(c => c.GetType().Name))}).");
+    }
+
+    private static IEnumerable<IEngineeringObject> Ancestors(IEngineeringObject obj)
+    {
+        for (var parent = obj.Parent; parent != null; parent = parent.Parent) yield return parent;
+    }
+
+    private static CompileResult Compile(ICompilable compilable)
+    {
         var result = compilable.Compile();
         // The top-level messages are only the summary; the errors and warnings
         // are nested per object (block > network > message). Report every
@@ -3622,6 +3669,8 @@ public sealed partial class TiaConnection : IDisposable
     {
         if (!_softwareByName.TryGetValue(plcName, out var software))
         {
+            if (_hmiSoftwareByName.ContainsKey(plcName) || _hmiTargetByName.ContainsKey(plcName))
+                throw new InvalidOperationException($"'{plcName}' is an HMI, not a PLC - use the HMI tools (e.g. compile_hmi).");
             var available = string.Join(", ", _softwareByName.Keys);
             throw new InvalidOperationException(
                 $"Unknown PLC '{plcName}'. Known PLCs: [{available}]. " +
