@@ -72,6 +72,37 @@ public sealed class SourceTreeManifestTests : IDisposable
     }
 
     [Fact]
+    public void Save_Multiuser_RoundTripsAndIsLeftOutWhenNull()
+    {
+        var manifest = new SourceTreeManifest();
+        manifest.Set(new SourceTreeItem { Device = "PLC_1", Kind = "block", Name = "Main" });
+        manifest.Set(new SourceTreeItem
+        {
+            Device = "PLC_1", Kind = "tag table", Name = "Tags",
+            Multiuser = new SourceTreeMarks { Objects = 3, ByMe = 1, ByOthers = 2, ByOthersNames = new() { "Tag_A", "Tag_B" } },
+        });
+        manifest.Save(_root);
+
+        Assert.Equal(1, System.Text.RegularExpressions.Regex.Matches(ManifestText, "\"multiuser\"").Count);
+        var loaded = SourceTreeManifest.Load(_root)!;
+        Assert.Null(loaded.Find("PLC_1", "block", "Main")!.Multiuser);
+        var marks = loaded.Find("PLC_1", "tag table", "Tags")!.Multiuser!;
+        Assert.Equal(new[] { "Tag_A", "Tag_B" }, marks.ByOthersNames);
+        Assert.Equal("marked by another user: 2 of 3 (Tag_A, Tag_B); marked by me: 1 of 3", marks.Describe());
+    }
+
+    [Theory]
+    [InlineData(1, 0, 0, "marked by me")]
+    [InlineData(0, 1, 0, "marked by another user")]
+    [InlineData(0, 0, 1, "not up to date with the server")]
+    [InlineData(0, 0, 0, "")]
+    public void Marks_Describe_SingleObject(int byMe, int byOthers, int notUpToDate, string expected)
+    {
+        var marks = new SourceTreeMarks { Objects = 1, ByMe = byMe, ByOthers = byOthers, NotUpToDate = notUpToDate };
+        Assert.Equal(expected, marks.Describe());
+    }
+
+    [Fact]
     public void Load_NewerVersion_IsRefused()
     {
         File.WriteAllText(Path.Combine(_root, SourceTreeManifest.FileName), """{ "version": 99, "items": [] }""");

@@ -29,7 +29,20 @@ public sealed record WriteTagsResult(bool Success, IReadOnlyList<string> Message
 
 public sealed record SimpleResult(bool Success, string? Error);
 
-public sealed record ProjectStatus(string Name, string? Path, bool IsModified, string Author, DateTime LastModified, string LastModifiedBy, string Version);
+// Multiuser: null for a plain project.
+public sealed record ProjectStatus(string Name, string? Path, bool IsModified, string Author, DateTime LastModified, string LastModifiedBy, string Version, MultiuserStatus? Multiuser = null);
+
+// A Multiuser local session against its server. Null fields: Openness couldn't tell (e.g. the server isn't reachable).
+// Marked: the names of the marked objects that have one (MarkedCount counts them all).
+public sealed record MultiuserStatus(bool? UpToDate, int? MarkedCount, IReadOnlyList<string>? Marked, int? Conflicted, string? Error);
+
+// What TiaConnection.GetMarkStates checks the mark state of: one item kind of the source tree.
+public enum MarkTarget { Block, Udt, TagTable, HmiTagTable, HmiScreen, HmiAlarmClasses, HmiDiscreteAlarms, HmiAnalogAlarms }
+
+// The Multiuser mark state of one item, over the markable objects it is made of (one for a block,
+// every tag of a tag table): how many are marked by this session, marked by another user, and not
+// up to date with the server - with the names of the latter two.
+public sealed record MarkSummary(int Objects, int ByMe, int ByOthers, int NotUpToDate, IReadOnlyList<string> ByOthersNames, IReadOnlyList<string> NotUpToDateNames);
 
 public sealed record HmiDeviceSummary(string DeviceName, string ItemName, string HmiSoftwareName);
 

@@ -12,6 +12,7 @@ internal sealed class UdtKind : ISourceKind
     public DeviceFamily Family => DeviceFamily.Plc;
     public string? FixedName => null;
     public bool XmlNeedsCompile => true;
+    public MarkTarget? MarkTarget => Openness.MarkTarget.Udt;
     public IReadOnlyList<string> Formats { get; } = new[] { SourceFormat.S7dcl, SourceFormat.Xml };
 
     public async Task<IReadOnlyList<ListedEntry>> List(TiaSession session, string plc) =>

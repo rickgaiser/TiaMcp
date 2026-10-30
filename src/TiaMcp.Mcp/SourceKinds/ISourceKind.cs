@@ -30,6 +30,10 @@ internal interface ISourceKind
     // such an item back as XML.
     bool XmlNeedsCompile { get; }
 
+    // What a Multiuser mark state is read of for an item of this kind (see TiaConnection.GetMarkStates);
+    // null where Openness has none.
+    MarkTarget? MarkTarget { get; }
+
     // Every SourceFormat an item of this kind can be in, its own formats first and "xml" (the raw
     // export) last where Openness has one. A file in the section with one of their extensions that
     // no read put there is a new item.
@@ -109,6 +113,11 @@ internal sealed class WriteContext
 
     // Items written successfully; they are read back into the tree afterward.
     public List<ImportListItem> Written { get; }
+
+    // Items whose write failed, but changed them in the project all the same (some rows or screen
+    // items written). Their files keep the edit; only the tree's record of the project is brought
+    // up to date, so writing them again isn't refused as changed in TIA Portal since the read.
+    public List<ImportListItem> Touched { get; } = new();
 }
 
 // One report line per item (per row where a kind writes rows), as write_source_tree reports them.

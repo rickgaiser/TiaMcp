@@ -145,6 +145,9 @@ public sealed class SourceTreeItem
     // Root-relative path ('/'-separated) -> the file as exported.
     public Dictionary<string, SourceTreeFile> Files { get; set; } = new();
 
+    // Its Multiuser mark state when it was read, in a Multiuser local session; null otherwise.
+    public SourceTreeMarks? Multiuser { get; set; }
+
     public bool Is(string device, string kind, string name) =>
         string.Equals(Device, device, StringComparison.OrdinalIgnoreCase)
         && Kind == kind
@@ -153,6 +156,38 @@ public sealed class SourceTreeItem
     [JsonIgnore]
     public IEnumerable<KeyValuePair<string, SourceTreeFile>> WritableFiles =>
         Files.Where(f => !SourceTreeManifest.IsReadOnlyCompanion(f.Key));
+}
+
+// The Multiuser mark state of an item, over the markable objects it is made of: one for a block,
+// UDT or screen, every tag of a tag table, every alarm of an alarm file.
+public sealed class SourceTreeMarks
+{
+    public int Objects { get; set; }
+    public int ByMe { get; set; }
+    public int ByOthers { get; set; }
+
+    // Not up to date with the project server: changed there since this local session last got it.
+    public int NotUpToDate { get; set; }
+
+    public List<string>? ByOthersNames { get; set; }
+    public List<string>? NotUpToDateNames { get; set; }
+
+    // E.g. "marked by me", "marked by another user: 2 of 240 (Tag_A, Tag_B)"; "" when none of it applies.
+    public string Describe()
+    {
+        var parts = new List<string>();
+        if (ByOthers > 0) parts.Add("marked by another user" + Count(ByOthers, ByOthersNames));
+        if (NotUpToDate > 0) parts.Add("not up to date with the server" + Count(NotUpToDate, NotUpToDateNames));
+        if (ByMe > 0) parts.Add("marked by me" + Count(ByMe, null));
+        return string.Join("; ", parts);
+    }
+
+    private string Count(int count, List<string>? names)
+    {
+        if (Objects <= 1) return "";
+        var shown = names == null || names.Count == 0 ? "" : $" ({string.Join(", ", names.Take(5))}{(names.Count > 5 ? ", ..." : "")})";
+        return $": {count} of {Objects}{shown}";
+    }
 }
 
 // One file of an item. An object rather than a bare hash, so that later fields (multiuser state,

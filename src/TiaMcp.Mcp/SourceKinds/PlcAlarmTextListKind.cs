@@ -12,6 +12,7 @@ internal sealed class PlcAlarmTextListKind : ISourceKind
     public DeviceFamily Family => DeviceFamily.Plc;
     public string? FixedName => null;
     public bool XmlNeedsCompile => false;
+    public MarkTarget? MarkTarget => null;
     public IReadOnlyList<string> Formats { get; } = new[] { SourceFormat.Csv };
 
     public async Task<IReadOnlyList<ListedEntry>> List(TiaSession session, string plc) =>

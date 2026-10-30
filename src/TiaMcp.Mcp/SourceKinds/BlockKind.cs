@@ -13,6 +13,7 @@ internal sealed class BlockKind : ISourceKind
     public DeviceFamily Family => DeviceFamily.Plc;
     public string? FixedName => null;
     public bool XmlNeedsCompile => true;
+    public MarkTarget? MarkTarget => Openness.MarkTarget.Block;
     public IReadOnlyList<string> Formats { get; } = new[] { SourceFormat.S7dcl, SourceFormat.GraphIL, SourceFormat.Awl, SourceFormat.Xml };
 
     // A block's own format follows from its language (see TiaConnection.ReadBlock); every block

@@ -30,6 +30,7 @@ internal sealed class HmiClassicKind : ISourceKind
     public DeviceFamily Family => DeviceFamily.HmiClassic;
     public string? FixedName => null;
     public bool XmlNeedsCompile => false;
+    public MarkTarget? MarkTarget => null;
     public IReadOnlyList<string> Formats { get; } = new[] { SourceFormat.Xml };
 
     public async Task<IReadOnlyList<ListedEntry>> List(TiaSession session, string hmi) =>
