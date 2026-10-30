@@ -257,6 +257,11 @@ AGPL-3.0 (see [LICENSE](LICENSE)). Contributions require signing the [CLA](CLA.m
 ## Known limitations
 
 - A block with STL embedded in a mixed FBD/LAD/SCL block can only be written through its raw `.xml`; whole-block STL is fully supported (see the STL section above).
+- TIA Portal V21's `.s7dcl` import gets some blocks wrong without an error. `read_source_tree` warns about each one (`WARNING` line), and `write_source_tree` refuses to write such a `.s7dcl`; the message gives the workaround (often: write the block's `.xml` instead):
+  - an array access inside an index in a LAD/FBD network (`"DB_A".arr["DB_B".structArr[1].idx]`) is mangled into one quoted name;
+  - a project FB or UDT named like a system type (`TON`, `TOF`, `TP`, `TONR`, `CTU`, `CTD`, `CTUD`, `R_TRIG`, `F_TRIG`) is replaced by the system type;
+  - an AT overlay becomes an independent variable (`.s7dcl` has no AT; the read marks the overlay's line with a `// TiaMcp: AT` comment).
+- TIA Portal V21 terminates when it overwrites a block with a textual interface (`S7_EditorMode := "[SCL,TextualInterface]"`) that was exported more than once since the project was opened or the block was last written. `write_source_tree` counts the exports and refuses such a write; save, close and reopen the project (`tia_connect` with `projectPath`) and write right away. After attaching to an already open project the count is unknown, so these writes are refused until the project is reopened through TiaMcp.
 - GRAPH blocks can only be created by cloning an existing one (see the GRAPH section above), not from scratch.
 - Classic WinCC (Comfort/Advanced/RT Advanced): alarms are not reachable through Openness; graphic lists are skipped (export crashes TIA Portal V21); objects can't be renamed or deleted through TiaMcp yet.
 - PLC alarm text lists: only existing user lists can be written; the screen-number check for classic screens exports every screen once per write (about a minute for ~50 screens).
