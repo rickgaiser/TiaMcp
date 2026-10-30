@@ -657,8 +657,20 @@ public sealed partial class TiaConnection : IDisposable
         }
     }
 
-    private ExportResult ReadBlock(PlcSoftware software, PlcBlock block, IReadOnlyCollection<string> formats) =>
-        ReadInFormats(block.Name, formats, capture => ReadBlockOwnFormat(software, block, capture), f => block.Export(f, ExportOptions.WithDefaults));
+    private ExportResult ReadBlock(PlcSoftware software, PlcBlock block, IReadOnlyCollection<string> formats)
+    {
+        // The own-format read of a code block exports the XML anyway (see PatchMissingNetworkTitles):
+        // keep it to mark the AT overlays the .s7dcl can't show.
+        RawXmlCapture? seen = null;
+        var result = ReadInFormats(block.Name, formats, capture => ReadBlockOwnFormat(software, block, seen = capture ?? new RawXmlCapture()), f => block.Export(f, ExportOptions.WithDefaults));
+        if (!result.Success || seen?.Xml is not { } xml) return result;
+        var overlays = S7dclSource.AtOverlays(xml);
+        return overlays.Count == 0 ? result : result with
+        {
+            Documents = result.Documents.Select(d => d.FileName.EndsWith(".s7dcl", StringComparison.OrdinalIgnoreCase)
+                ? new BlockDocument(d.FileName, S7dclSource.WithAtMarkers(d.Content, overlays)) : d).ToList(),
+        };
+    }
 
     // A block's own format: GRAPH is converted from the XML ('.graph.il'), whole-block STL is
     // 'Generate source' text ('.awl'), the rest TIA Portal's document format ('.s7dcl').

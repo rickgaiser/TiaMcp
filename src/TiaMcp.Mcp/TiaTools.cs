@@ -645,6 +645,8 @@ An item that fails to export (e.g. an inconsistent block - GRAPH blocks must be 
             else if (partial) result.AppendLine($"  OK      {Describe(item.Kind, item.GroupPath, item.Name)}: {string.Join(", ", item.Files.Select(f => f.Path))}");
         }
         foreach (var item in gone) result.AppendLine($"  REMOVED {Describe(item.Kind, item.GroupPath, item.Name)} - no longer in the project, its files were deleted");
+        foreach (var item in exported.Where(e => e.Warnings.Count > 0))
+            result.AppendLine($"  WARNING {Describe(item.Kind, item.GroupPath, item.Name)}: write_source_tree refuses to write its .s7dcl as it is - {string.Join(" | ", item.Warnings)}");
         foreach (var note in _exportNotes) result.AppendLine($"  {note}");
         // The conflict check compares a fresh export with the read; a Unified table (csv) of the
         // tree that this read left in the old shape would look changed in TIA Portal.
@@ -663,6 +665,7 @@ An item in more than one format is written from the one format whose files were 
 
 Writing rules per file type:
 - SCL block: the '{ S7_EditorMode := ""SCL"" }' attribute block before FUNCTION/FUNCTION_BLOCK/DATA_BLOCK is required. FBD/LAD: never hand-write NETWORK/RUNG notation from scratch - copy a similar existing block's .s7dcl/.s7res and adapt it.
+- What TIA Portal's .s7dcl import gets wrong is refused, with a workaround: an array access inside an index in a LAD/FBD network, and a project FB or UDT named like a system type (TON, TOF, TP, TONR, CTU, CTD, CTUD, R_TRIG, F_TRIG), and an AT overlay (.s7dcl has no AT: the read marks the overlay's declaration with a '// TiaMcp: AT' comment; the import would make it an independent variable). read_source_tree warns about them.
 - Comments and titles: an { S7_MLC := ""MLC_x"" } attribute (S7_NetworkTitle/S7_NetworkComment for networks) referring to an entry in the .s7res; '//' comments in the source are dropped by TIA Portal. Keep text ids unique within a .s7res.
 - GRAPH ('.graph.il'): step/transition attributes, actions and conditions are writable, steps/transitions can be added or removed, and BRANCHES/CONNECTIONS of a SEQUENCE are rewritten when present; INTERFACE and PREOPERATIONS are read-only. A condition still containing a construct shown as generic 'PartName(args)' is refused. A new GRAPH block is made by cloning an existing GRAPH block of the PLC (picked automatically) and reshaping it. The write recompiles the block and reports errors.
 - Whole-block STL ('.awl'): AWL text as TIA Portal's 'Generate source' produces it, block name in the header unchanged. A block with embedded STL networks can't be written.

@@ -32,7 +32,12 @@ internal sealed class BlockKind : ISourceKind
     public async Task Export(TiaSession session, string plc, Func<string, string, IReadOnlyCollection<string>?> formats, ExportOptions options, List<ExportedItem> items)
     {
         foreach (var (b, result) in await session.ReadAllBlocksAsync(plc, formats))
-            items.Add(ExportedItem.FromDocuments(plc, Name, b.GroupPath, b.Name, result, FormatsOf(b.Language)));
+        {
+            var item = ExportedItem.FromDocuments(plc, Name, b.GroupPath, b.Name, result, FormatsOf(b.Language));
+            foreach (var dcl in result.Documents.Where(d => d.FileName.EndsWith(".s7dcl", StringComparison.OrdinalIgnoreCase)))
+                item.Warnings.AddRange(S7dclSource.FindWriteProblems(dcl.Content));
+            items.Add(item);
+        }
     }
 
     // Global DBs and called FBs before their callers and instance DBs - see DependencyWrites.
@@ -72,6 +77,16 @@ internal sealed class BlockKind : ISourceKind
             if (docs == null)
             {
                 log.Failed.Add($"{label}: {error}");
+                continue;
+            }
+
+            // What TIA Portal's .s7dcl import would get wrong - refused, also in a dry run, so the
+            // file can be worked around first.
+            var problems = docs.Where(d => d.FileName.EndsWith(".s7dcl", StringComparison.OrdinalIgnoreCase))
+                .SelectMany(d => S7dclSource.FindWriteProblems(d.Content)).ToList();
+            if (problems.Count > 0)
+            {
+                log.Failed.Add($"{label}: refused, the .s7dcl import would change it - {string.Join(" | ", problems)}");
                 continue;
             }
 
