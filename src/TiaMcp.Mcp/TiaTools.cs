@@ -922,6 +922,9 @@ Writes '<sourceDirectory>/_import_report.txt' with one CREATED/UPDATED/SKIPPED/F
     // follow from the folder (see ItemDir), the name from the file name.
     private static List<ImportListItem> NewItemsInTree(string root, SourceTreeManifest manifest, Func<string, DeviceFamily?> familyOf)
     {
+        // A file a read put there belongs to its item even when the file name doesn't give the
+        // item name back ('/' in a block name, replaced characters).
+        var readFiles = new HashSet<string>(manifest.Items.SelectMany(i => i.Files.Keys), StringComparer.OrdinalIgnoreCase);
         var found = new List<ImportListItem>();
         foreach (var deviceDir in Directory.GetDirectories(root).Where(d => Path.GetFileName(d) != BaseDirName))
         {
@@ -947,6 +950,7 @@ Writes '<sourceDirectory>/_import_report.txt' with one CREATED/UPDATED/SKIPPED/F
                     var fileName = Path.GetFileName(file);
                     var ext = kind.Formats.Select(SourceFormat.Extension).FirstOrDefault(e => fileName.EndsWith(e, StringComparison.OrdinalIgnoreCase));
                     if (ext == null || SourceTreeManifest.IsReadOnlyCompanion(fileName)) continue;
+                    if (readFiles.Contains(file.Substring(root.Length).TrimStart(Path.DirectorySeparatorChar, '/').Replace(Path.DirectorySeparatorChar, '/'))) continue;
 
                     var stem = fileName.Substring(0, fileName.Length - ext.Length);
                     var relDir = Path.GetDirectoryName(file)!.Substring(sectionDir.Length).Trim(Path.DirectorySeparatorChar).Replace(Path.DirectorySeparatorChar, '/');
