@@ -454,7 +454,8 @@ public sealed partial class TiaConnection : IDisposable
             _project.Author,
             _project.LastModified,
             _project.LastModifiedBy,
-            _project.Version);
+            _project.Version,
+            _localSession == null ? null : GetMultiuserStatus(_localSession));
     }
 
     private void CollectSoftware(DeviceItemComposition items)
@@ -2548,7 +2549,8 @@ public sealed partial class TiaConnection : IDisposable
         }
     }
 
-    public WriteTagsResult WriteTagTable(string plcName, string tableName, IReadOnlyList<TagSpec> tags, bool deleteMissing = false)
+    // dryRun: change nothing, only report per tag what would be Created/Updated/Deleted.
+    public WriteTagsResult WriteTagTable(string plcName, string tableName, IReadOnlyList<TagSpec> tags, bool deleteMissing = false, bool dryRun = false)
     {
         EnsureConnected();
         var software = GetSoftware(plcName);
@@ -2578,6 +2580,7 @@ public sealed partial class TiaConnection : IDisposable
         // Indexed once: looking each tag up by walking table.Tags costs a round trip to TIA per tag
         // walked, which made writing a table quadratic (~0.2 s per tag at a few hundred tags).
         var byName = IndexByName(table.Tags.OfType<PlcTag>(), t => t.Name);
+        if (dryRun) return DryRunTags(tags.Select(t => t.Name), byName.Keys, deleteMissing);
         var messages = new List<string>();
         foreach (var spec in tags)
         {
@@ -2595,7 +2598,9 @@ public sealed partial class TiaConnection : IDisposable
                     tag = table.Tags.Create(spec.Name, spec.DataType, spec.LogicalAddress ?? "");
                     byName[tag.Name] = tag;
                 }
-                if (spec.Comment != null) SetComment(tag.Comment, spec.Comment);
+                // A working copy's CSV is the whole table: an empty cell there clears the comment.
+                var comment = spec.Comment ?? (deleteMissing ? "" : null);
+                if (comment != null) SetComment(tag.Comment, comment);
                 SetExternalFlags(tag, spec);
                 messages.Add(existing != null ? $"Updated '{spec.Name}'." : $"Created '{spec.Name}'.");
             }
@@ -2625,6 +2630,16 @@ public sealed partial class TiaConnection : IDisposable
 
         var success = messages.All(m => !m.StartsWith("FAILED"));
         return new WriteTagsResult(success, messages);
+    }
+
+    // What writing a tag table would do, in the messages a real write gives.
+    private static WriteTagsResult DryRunTags(IEnumerable<string> names, IEnumerable<string> existing, bool deleteMissing)
+    {
+        var existingSet = new HashSet<string>(existing, StringComparer.OrdinalIgnoreCase);
+        var keep = new HashSet<string>(names, StringComparer.OrdinalIgnoreCase);
+        var messages = keep.Select(n => existingSet.Contains(n) ? $"Updated '{n}'." : $"Created '{n}'.").ToList();
+        if (deleteMissing) messages.AddRange(existingSet.Where(n => !keep.Contains(n)).Select(n => $"Deleted '{n}'."));
+        return new WriteTagsResult(true, messages);
     }
 
     // Renames the tag object in place (same as renaming in the GUI), so blocks keep their
@@ -2983,7 +2998,8 @@ public sealed partial class TiaConnection : IDisposable
     private static bool IsStringType(string? dataType) =>
         string.Equals(dataType, "String", StringComparison.OrdinalIgnoreCase) || string.Equals(dataType, "WString", StringComparison.OrdinalIgnoreCase);
 
-    public WriteTagsResult WriteHmiTagTable(string hmiName, string tableName, IReadOnlyList<HmiTagSpec> tags, bool deleteMissing = false)
+    // dryRun: as WriteTagTable.
+    public WriteTagsResult WriteHmiTagTable(string hmiName, string tableName, IReadOnlyList<HmiTagSpec> tags, bool deleteMissing = false, bool dryRun = false)
     {
         EnsureConnected();
         var software = GetHmiSoftware(hmiName);
@@ -3002,9 +3018,23 @@ public sealed partial class TiaConnection : IDisposable
             return new WriteTagsResult(false, errors);
         }
 
+        // A connection that doesn't exist otherwise fails every row bound to it, with TIA's
+        // misleading "The controller tag ... was not found".
+        var connections = software.Connections.Select(c => c.Name).ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var unknown = tags.Where(t => !string.IsNullOrEmpty(t.Connection) && !connections.Contains(t.Connection!))
+            .GroupBy(t => t.Connection!, StringComparer.OrdinalIgnoreCase).ToArray();
+        if (unknown.Length > 0)
+        {
+            var available = connections.Count == 0 ? "it has none" : $"it has: {string.Join(", ", connections.OrderBy(c => c))}";
+            var errors = unknown.Select(g => $"FAILED: connection '{g.Key}' ({g.Count()} tag(s)) does not exist in HMI '{hmiName}' - {available}.").ToList();
+            errors.Add("Nothing was written.");
+            return new WriteTagsResult(false, errors);
+        }
+
         // Indexed once: looking each tag up by walking table.Tags costs a round trip to TIA per tag
         // walked, which made writing a table quadratic (~0.2 s per tag at a few hundred tags).
         var byName = IndexByName(table.Tags.OfType<HmiTag>(), t => t.Name);
+        if (dryRun) return DryRunTags(tags.Select(t => t.Name), byName.Keys, deleteMissing);
         var messages = new List<string>();
         foreach (var spec in tags)
         {
@@ -3043,7 +3073,9 @@ public sealed partial class TiaConnection : IDisposable
                 // not a genuine Openness restriction on struct-typed HMI tags. spec.DataType is
                 // still accepted/required by the tool schema for the bound case (kept so callers
                 // don't need two shapes), but is ignored here.
-                if (spec.Comment != null) SetComment(tag.Comment, spec.Comment);
+                // A working copy's CSV is the whole table: an empty cell there clears the comment.
+                var comment = spec.Comment ?? (deleteMissing ? "" : null);
+                if (comment != null) SetComment(tag.Comment, comment);
                 if (spec.Length != null && tag.MaxLength != spec.Length.Value)
                 {
                     if (!IsStringType(tag.DataType))

@@ -70,6 +70,13 @@ public sealed class TiaSession
         return _sta.InvokeAsync(() => _connection.GetProjectStatus());
     }
 
+    public bool IsMultiuser => _connection.IsMultiuser;
+
+    public Task<IReadOnlyDictionary<string, MarkSummary>?> GetMarkStatesAsync(string device, MarkTarget target, IReadOnlyCollection<string> names)
+    {
+        return _sta.InvokeAsync(() => _connection.GetMarkStates(device, target, names));
+    }
+
     public Task<IReadOnlyList<DeviceSummary>> ListDevicesAsync()
     {
         return _sta.InvokeAsync(() => _connection.ListDevices());
@@ -155,9 +162,9 @@ public sealed class TiaSession
         return _sta.InvokeAsync(() => _connection.WriteBlock(plcName, blockName, documents, stlAtRead));
     }
 
-    public Task<WriteTagsResult> WriteTagTableAsync(string plcName, string tableName, IReadOnlyList<TagSpec> tags, bool deleteMissing = false)
+    public Task<WriteTagsResult> WriteTagTableAsync(string plcName, string tableName, IReadOnlyList<TagSpec> tags, bool deleteMissing = false, bool dryRun = false)
     {
-        return _sta.InvokeAsync(() => _connection.WriteTagTable(plcName, tableName, tags, deleteMissing));
+        return _sta.InvokeAsync(() => _connection.WriteTagTable(plcName, tableName, tags, deleteMissing, dryRun));
     }
 
     public Task<SimpleResult> RenameTagAsync(string plcName, string tagName, string newName)
@@ -360,9 +367,9 @@ public sealed class TiaSession
         return _sta.InvokeAsync(() => _connection.ReadHmiTagTable(hmiName, tableName, readLength));
     }
 
-    public Task<WriteTagsResult> WriteHmiTagTableAsync(string hmiName, string tableName, IReadOnlyList<HmiTagSpec> tags, bool deleteMissing = false)
+    public Task<WriteTagsResult> WriteHmiTagTableAsync(string hmiName, string tableName, IReadOnlyList<HmiTagSpec> tags, bool deleteMissing = false, bool dryRun = false)
     {
-        return _sta.InvokeAsync(() => _connection.WriteHmiTagTable(hmiName, tableName, tags, deleteMissing));
+        return _sta.InvokeAsync(() => _connection.WriteHmiTagTable(hmiName, tableName, tags, deleteMissing, dryRun));
     }
 
     public Task<SimpleResult> RenameHmiTagAsync(string hmiName, string tagName, string newName)

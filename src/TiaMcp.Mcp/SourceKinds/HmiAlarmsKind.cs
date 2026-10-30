@@ -25,6 +25,7 @@ internal sealed class HmiAlarmsKind : ISourceKind
     public DeviceFamily Family => DeviceFamily.HmiUnified;
     public string? FixedName { get; }
     public bool XmlNeedsCompile => false;
+    public MarkTarget? MarkTarget => _alarmType switch { "Discrete" => Openness.MarkTarget.HmiDiscreteAlarms, "Analog" => Openness.MarkTarget.HmiAnalogAlarms, _ => Openness.MarkTarget.HmiAlarmClasses };
     public IReadOnlyList<string> Formats { get; } = new[] { SourceFormat.Csv };
 
     public Task<IReadOnlyList<ListedEntry>> List(TiaSession session, string hmi) =>
@@ -94,6 +95,7 @@ internal sealed class HmiAlarmsKind : ISourceKind
         }
 
         if (!context.DryRun && log.Failed.Count == 0) context.Written.AddRange(items);
+        else if (!context.DryRun && log.Created.Count + log.Updated.Count > 0) context.Touched.AddRange(items);
         return log;
     }
 

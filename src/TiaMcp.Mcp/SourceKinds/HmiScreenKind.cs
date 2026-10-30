@@ -13,6 +13,7 @@ internal sealed class HmiScreenKind : ISourceKind
     public DeviceFamily Family => DeviceFamily.HmiUnified;
     public string? FixedName => null;
     public bool XmlNeedsCompile => false;
+    public MarkTarget? MarkTarget => Openness.MarkTarget.HmiScreen;
     public IReadOnlyList<string> Formats { get; } = new[] { SourceFormat.Json };
 
     public async Task<IReadOnlyList<ListedEntry>> List(TiaSession session, string hmi)
@@ -78,7 +79,8 @@ internal sealed class HmiScreenKind : ISourceKind
             }
             else
             {
-                // Partly applied: the file keeps the edit, so the next write needs force=true.
+                // Partly applied: the file keeps the edit (see WriteContext.Touched).
+                if (!exists || result.Created + result.Updated + result.Deleted > 0) context.Touched.Add(item);
                 var errors = result.Messages.Where(m => m.StartsWith("FAILED") || m.StartsWith("Invalid JSON")).ToList();
                 log.Failed.Add($"{label}{(exists ? "" : " (created)")}: {counts}, but: {string.Join(" | ", errors.Count > 0 ? errors : result.Messages)}");
             }

@@ -1,3 +1,4 @@
+using System.Text.RegularExpressions;
 using System.Text;
 using TiaMcp.Openness;
 
@@ -150,9 +151,54 @@ internal static class SourceTree
         context.Written.Add(item);
     }
 
-    public static string DeletedTags(WriteTagsResult result)
+    // The new and deleted tags of a tag table write (or its dry run), for its report line.
+    public static string TagChanges(WriteTagsResult result, bool dryRun)
     {
+        var created = result.Messages.Count(m => m.StartsWith("Created '"));
         var deleted = result.Messages.Where(m => m.StartsWith("Deleted '")).Select(m => m.Substring("Deleted ".Length).TrimEnd('.')).ToList();
-        return deleted.Count == 0 ? "" : $", deleted {string.Join(", ", deleted)}";
+        return (created == 0 ? "" : $", {created} new") + (deleted.Count == 0 ? "" : $", {(dryRun ? "would delete" : "deleted")} {string.Join(", ", deleted)}");
     }
+
+    // Whether a failed tag table write changed the table anyway (some rows written or deleted).
+    public static bool ChangedTags(WriteTagsResult result) =>
+        result.Messages.Any(m => m.StartsWith("Created '") || m.StartsWith("Updated '") || m.StartsWith("Deleted '"));
+
+    // The errors of a failed tag table write, rows that failed the same way grouped into one: a
+    // table bound to the wrong connection fails every row with the same long Openness message,
+    // differing only in the PLC tag it names - so messages that differ in a word or two group.
+    public static string FailedTags(WriteTagsResult result)
+    {
+        var groups = new List<(string[] Words, List<string> Names)>();
+        var other = new List<string>();
+        foreach (var message in result.Messages)
+        {
+            var match = FailedRow.Match(message);
+            if (!match.Success)
+            {
+                if (!message.StartsWith("Created '") && !message.StartsWith("Updated '")) other.Add(OneLine(message));
+                continue;
+            }
+            var words = OneLine(match.Groups["error"].Value).Split(' ');
+            var group = groups.FirstOrDefault(g => g.Words.Length == words.Length
+                && g.Words.Where((w, i) => w != words[i] && w != Varies).Count() <= 1
+                && g.Words.Where((w, i) => w != words[i] || w == Varies).Count() <= 2);
+            if (group.Words == null) { groups.Add((words, new List<string> { match.Groups["name"].Value })); continue; }
+            for (var i = 0; i < words.Length; i++) if (group.Words[i] != words[i]) group.Words[i] = Varies;
+            group.Names.Add(match.Groups["name"].Value);
+        }
+
+        var parts = groups.Select(g =>
+        {
+            var shown = string.Join(", ", g.Names.Take(5)) + (g.Names.Count > 5 ? $" and {g.Names.Count - 5} more" : "");
+            return $"FAILED {(g.Names.Count == 1 ? shown : $"{g.Names.Count} tags ({shown})")}: {string.Join(" ", g.Words)}";
+        });
+        return string.Join(" | ", parts.Concat(other));
+    }
+
+    // Stands for the word(s) in which grouped error messages differ.
+    private const string Varies = "<...>";
+
+    private static string OneLine(string text) => Regex.Replace(text.Trim(), @"\s+", " ");
+
+    private static readonly Regex FailedRow = new(@"^FAILED (?<name>'.*?'): (?<error>.*)$", RegexOptions.Singleline);
 }

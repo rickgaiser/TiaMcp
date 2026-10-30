@@ -47,7 +47,7 @@ A format is named like its file extension: `s7dcl` (with its `.s7res` and compan
 - An XML export needs a consistent block or UDT (`ISourceKind.XmlNeedsCompile`), so a write compiles the PLC before reading such items back as XML.
 - A `json` file is built from the object model and written property by property, which takes minutes for a large screen. So a read also keeps it as read under `.base/` in the tree, and a write sends only what differs from that copy (`ScreenJson.ChangedSince`). The copy is used only when the project still matches it: the item passed the conflict check (`WriteContext.Baseline`, not with `force`) and the copy's hash matches the manifest. Otherwise everything is written.
 
-`_manifest.json` (version 2): per item `"formats": ["csv", "xml"]` (what it can be read in, as `list_project` shows), and per file an object `{ "hash": "...", "format": "csv" }`, so that later fields (multiuser state, timestamps) can be added without another version. A version 1 manifest (path → bare hash) is still read and saved as version 2.
+`_manifest.json` (version 2): per item `"formats": ["csv", "xml"]` (what it can be read in, as `list_project` shows), and per file an object `{ "hash": "...", "format": "csv" }`, so that later fields (timestamps) can be added without another version. In a Multiuser local session an item also has `"multiuser"`: its mark state as read, summed over the markable objects it is made of (a tag table isn't markable, its tags are). A kind names what its mark state is read of with `ISourceKind.MarkTarget`; null where Openness has none (classic WinCC, PLC alarm text lists). A version 1 manifest (path → bare hash) is still read and saved as version 2.
 
 ## Adding an object type
 

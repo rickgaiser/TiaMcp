@@ -71,8 +71,8 @@ All MCP tools exposed by the server, grouped by area.
 | Tool | Purpose |
 |---|---|
 | `tia_connect` | Attach to an open project or Multiuser local session, or open one by path (`.apXX` or `.alsXX`). With several instances running it picks the one by the project it has open; pass `processId` (from `list_tia_instances`) when that isn't clear. `startPortal: true` starts the TIA Portal GUI when none is running and opens `projectPath` in it |
-| `list_tia_instances` | List running TIA Portal instances with no Openness prompt: PID, open project, GUI or not, and the attached Openness clients |
-| `project_status` | Report unsaved-changes state, author, last-saved info |
+| `list_tia_instances` | List running TIA Portal instances with no Openness prompt: PID, open project, GUI or not, and the attached Openness clients. Warns when the user isn't in the `Siemens TIA Openness` group |
+| `project_status` | Report unsaved-changes state, author, last-saved info; for a Multiuser local session also whether the server has newer changes, and the marked objects. Openness can't refresh a local session: do that in the TIA Portal GUI |
 | `save_project` / `save_project_as` | Save in place, or save a copy to a new folder; for Multiuser local sessions, save is local-only and Save As is unsupported |
 | `close_project` | Close the connected project; closing a Multiuser local session does not commit it to the server |
 | `list_project` | List PLC and HMI software with their blocks (language, consistency), UDTs, tag tables and empty groups — names only, fast; filter by text or software |
@@ -233,7 +233,7 @@ A new `.graph.il` file in the source tree is created by cloning an existing GRAP
 
 A `/` in a group name gives a folder per part (`Valve fwd / rev` → `Valve fwd/ rev/`), and folder names lose trailing spaces and dots, as Windows does. A new file in such a folder goes to the group read into it; the group tools take the name as it is (`groupPath: "Valve fwd / rev/Sub"`).
 
-Read and edit the files with your own file tools, then call `write_source_tree`. It writes back only what changed since the read — edited files, plus new files as new blocks, UDTs, tag tables or Unified screens — in dependency order, and then reads the written items back so the files show what TIA Portal made of them. Removing a row from a tag table CSV deletes that tag; deleting a file does not delete the item (use the `delete_*` tools).
+Read and edit the files with your own file tools, then call `write_source_tree`. It writes back only what changed since the read — edited files, plus new files as new blocks, UDTs, tag tables or Unified screens — in dependency order, and then reads the written items back so the files show what TIA Portal made of them. Removing a row from a tag table CSV deletes that tag (a dry run names the tags it would delete); deleting a file does not delete the item (use the `delete_*` tools). An item whose write failed halfway keeps your edit in its file; fix the cause and write it again. A WinCC Unified tag table bound to a connection the HMI doesn't have is refused as a whole, naming the connections it does have.
 
 WinCC Unified HMI tag tables leave out the length of String/WString tags by default, because reading it costs an Openness call per tag. Read with `hmiTagLength: true` to get a `Length` column; the tree remembers the setting. Only internal tags take a written length; a PLC-bound tag has its PLC tag's.
 
@@ -243,7 +243,9 @@ PLC alarm text lists: one CSV per user list (`From`, `To`, one `Text [language]`
 
 Classic WinCC objects are native Openness XML (the `DocumentInfo` block is left out so an unchanged object reads back identically). They are written in dependency order (text lists, tag tables, templates and pop-ups, screens); a screen whose `<Number>` is already used by another screen is refused before the import, since TIA Portal V21 terminates itself on that. Graphic lists are not exported: exporting one crashed TIA Portal V21 (`InvalidCastException` in `UpdateOpenLinks`); a full read reports them as SKIPPED.
 
-`_manifest.json` (version 2; an older version 1 manifest is still read) records what each item looked like when it was read, and in which formats. An item that was changed in TIA Portal since then is refused rather than overwritten (`force` overrides this). A tree read from one project can also be written in full into another, e.g. to restore it into an empty PLC.
+`_manifest.json` (version 2; an older version 1 manifest is still read) records what each item looked like when it was read, and in which formats. An item that was changed in TIA Portal since then is refused rather than overwritten (`force` overrides this).
+
+In a Multiuser local session, `read_source_tree` also records each item's mark state: marked by me, marked by another user, or not up to date with the server (shown in `_export_summary.txt` and the read result). It costs an Openness call per object, about 35 ms per block, UDT or screen and per tag or alarm of a table: roughly a minute for a project of a few hundred blocks and a thousand tags. `write_source_tree` checks the items it writes again and refuses those marked by another user or not up to date (`force` overrides this). Openness can't refresh a local session: refresh it in the TIA Portal GUI, then read again. A tree read from one project can also be written in full into another, e.g. to restore it into an empty PLC.
 
 ## License
 
