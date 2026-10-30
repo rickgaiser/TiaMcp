@@ -1050,6 +1050,9 @@ public sealed partial class TiaConnection : IDisposable
                 {
                     var resIndex = docs.FindIndex(d => d.FileName.EndsWith(".s7res", StringComparison.OrdinalIgnoreCase));
                     var (dcl, res) = MlcIds.Renumber(docs[dclIndex].Content, resIndex >= 0 ? docs[resIndex].Content : null);
+                    // The relay block is numbered automatically, so TIA Portal left S7_BlockNumber
+                    // out - and writing the .s7dcl back would then renumber the block.
+                    if (!block.AutoNumber) dcl = S7dclSource.WithBlockNumber(dcl, block.Number);
                     docs[dclIndex] = docs[dclIndex] with { Content = dcl };
                     if (resIndex >= 0) docs[resIndex] = docs[resIndex] with { Content = res! };
                 }
