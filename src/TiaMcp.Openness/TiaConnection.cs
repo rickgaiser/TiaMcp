@@ -244,6 +244,7 @@ public sealed partial class TiaConnection : IDisposable
         _softwareByName.Clear();
         _hmiSoftwareByName.Clear();
         _hmiTargetByName.Clear();
+        _screenDefaults.Clear();
         foreach (Device device in project.Devices)
         {
             CollectSoftware(device.DeviceItems);

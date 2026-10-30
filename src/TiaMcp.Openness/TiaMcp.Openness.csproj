@@ -11,6 +11,8 @@
   <ItemGroup>
     <Reference Include="System.IO.Compression" />
     <Reference Include="System.IO.Compression.FileSystem" />
+    <PackageReference Include="System.Text.Json" Version="10.0.10" />
+    <Reference Include="System.Drawing" />
   </ItemGroup>
 
   <ItemGroup>

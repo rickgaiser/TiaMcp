@@ -411,6 +411,71 @@ public sealed class TiaSession
         return _sta.InvokeAsync(() => _connection.DeleteHmiAlarm(hmiName, type, alarmName));
     }
 
+    public Task<IReadOnlyList<HmiScreenSummary>> ListHmiScreensAsync(string hmiName)
+    {
+        return _sta.InvokeAsync(() => _connection.ListHmiScreens(hmiName));
+    }
+
+    public Task<IReadOnlyList<string>> ListHmiScreenGroupsAsync(string hmiName)
+    {
+        return _sta.InvokeAsync(() => _connection.ListHmiScreenGroups(hmiName));
+    }
+
+    public Task<HmiScreenResult> ReadHmiScreenAsync(string hmiName, string screenName, bool includeDefaults = false)
+    {
+        return _sta.InvokeAsync(() => _connection.ReadHmiScreen(hmiName, screenName, includeDefaults));
+    }
+
+    public Task<WriteHmiScreenResult> WriteHmiScreenAsync(string hmiName, string screenName, string json, bool deleteMissing = false, string? baseJson = null)
+    {
+        return _sta.InvokeAsync(() => _connection.WriteHmiScreen(hmiName, screenName, json, deleteMissing, baseJson));
+    }
+
+    public Task<SimpleResult> CreateHmiScreenAsync(string hmiName, string groupPath, string screenName)
+    {
+        return _sta.InvokeAsync(() => _connection.CreateHmiScreen(hmiName, groupPath, screenName));
+    }
+
+    public Task<SimpleResult> DeleteHmiScreenAsync(string hmiName, string screenName)
+    {
+        return _sta.InvokeAsync(() => _connection.DeleteHmiScreen(hmiName, screenName));
+    }
+
+    public Task<SimpleResult> RenameHmiScreenAsync(string hmiName, string screenName, string newName)
+    {
+        return _sta.InvokeAsync(() => _connection.RenameHmiScreen(hmiName, screenName, newName));
+    }
+
+    public Task<bool> HmiScreenGroupExistsAsync(string hmiName, string groupPath)
+    {
+        return _sta.InvokeAsync(() => _connection.HmiScreenGroupExists(hmiName, groupPath));
+    }
+
+    public Task<SimpleResult> CreateHmiScreenGroupAsync(string hmiName, string parentGroupPath, string groupName)
+    {
+        return _sta.InvokeAsync(() => _connection.CreateHmiScreenGroup(hmiName, parentGroupPath, groupName));
+    }
+
+    public Task<SimpleResult> DeleteHmiScreenGroupAsync(string hmiName, string groupPath)
+    {
+        return _sta.InvokeAsync(() => _connection.DeleteHmiScreenGroup(hmiName, groupPath));
+    }
+
+    public Task<SimpleResult> RenameHmiScreenGroupAsync(string hmiName, string groupPath, string newName)
+    {
+        return _sta.InvokeAsync(() => _connection.RenameHmiScreenGroup(hmiName, groupPath, newName));
+    }
+
+    public Task<IReadOnlyList<LibraryTypeSummary>> ListProjectLibraryTypesAsync(string? nameFilter)
+    {
+        return _sta.InvokeAsync(() => _connection.ListProjectLibraryTypes(nameFilter));
+    }
+
+    public Task<FaceplateTypeResult> ReadFaceplateTypeAsync(string hmiName, string containedType)
+    {
+        return _sta.InvokeAsync(() => _connection.ReadFaceplateType(hmiName, containedType));
+    }
+
     public string? ProjectName { get; private set; }
     public string? ProjectPath { get; private set; }
     public bool IsConnected => _connection.IsConnected;
