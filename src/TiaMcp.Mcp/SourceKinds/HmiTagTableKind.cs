@@ -23,14 +23,14 @@ internal sealed class HmiTagTableKind : ISourceKind
         return entries;
     }
 
-    public async Task Export(TiaSession session, string hmi, Func<string, string, IReadOnlyCollection<string>?> formats, List<ExportedItem> items)
+    public async Task Export(TiaSession session, string hmi, Func<string, string, IReadOnlyCollection<string>?> formats, ExportOptions options, List<ExportedItem> items)
     {
         foreach (var table in (await session.ListHmiTagTablesAsync(hmi)).Where(t => formats(t.GroupPath, t.Name) != null))
         {
             try
             {
-                var result = await session.ReadHmiTagTableAsync(hmi, table.Name);
-                items.Add(ExportedItem.FromCsv(hmi, Name, table.GroupPath, table.Name, result.Success ? HmiTagTableCsv.Format(result.Tags) : null, result.Error));
+                var result = await session.ReadHmiTagTableAsync(hmi, table.Name, options.HmiTagLength);
+                items.Add(ExportedItem.FromCsv(hmi, Name, table.GroupPath, table.Name, result.Success ? HmiTagTableCsv.Format(result.Tags, options.HmiTagLength) : null, result.Error));
             }
             catch (Exception ex)
             {

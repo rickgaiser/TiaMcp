@@ -2796,7 +2796,9 @@ public sealed partial class TiaConnection : IDisposable
         return null;
     }
 
-    public HmiTagTableResult ReadHmiTagTable(string hmiName, string tableName)
+    // readLength: also read each String/WString tag's MaxLength - an extra Openness call per tag,
+    // which makes reading a large table noticeably slower.
+    public HmiTagTableResult ReadHmiTagTable(string hmiName, string tableName, bool readLength = false)
     {
         EnsureConnected();
         var software = GetHmiSoftware(hmiName);
@@ -2808,10 +2810,15 @@ public sealed partial class TiaConnection : IDisposable
 
         var tags = table.Tags
             .OfType<HmiTag>()
-            .Select(t => new HmiTagInfo(t.Name, t.DataType, t.Address, t.Connection, t.PlcName, t.PlcTag, ExtractText(t.Comment), t.AcquisitionCycle))
+            .Select(t => new HmiTagInfo(t.Name, t.DataType, t.Address, t.Connection, t.PlcName, t.PlcTag, ExtractText(t.Comment), t.AcquisitionCycle,
+                readLength && IsStringType(t.DataType) ? t.MaxLength : null))
             .ToArray();
         return new HmiTagTableResult(true, tags, null);
     }
+
+    // String and WString are the HMI types with a length (HmiTag.MaxLength).
+    private static bool IsStringType(string? dataType) =>
+        string.Equals(dataType, "String", StringComparison.OrdinalIgnoreCase) || string.Equals(dataType, "WString", StringComparison.OrdinalIgnoreCase);
 
     public WriteTagsResult WriteHmiTagTable(string hmiName, string tableName, IReadOnlyList<HmiTagSpec> tags, bool deleteMissing = false)
     {
@@ -2841,12 +2848,15 @@ public sealed partial class TiaConnection : IDisposable
             try
             {
                 byName.TryGetValue(spec.Name, out var existing);
-                var tag = existing ?? table.Tags.Create(spec.Name);
-                if (existing == null) byName[tag.Name] = tag;
                 // Bound either by this spec or already in the project - a row that only updates,
                 // say, the comment of a bound tag carries no Connection/PlcTag of its own.
                 bool isPlcBound = (!string.IsNullOrEmpty(spec.Connection) && !string.IsNullOrEmpty(spec.PlcTag))
                     || (existing != null && !string.IsNullOrEmpty(existing.PlcTag));
+                // Checked before Create, so a bad row doesn't leave a new tag behind.
+                if (spec.Length != null && !isPlcBound && !IsStringType(spec.DataType))
+                    throw new InvalidOperationException($"Length only applies to String/WString tags, not to {spec.DataType}.");
+                var tag = existing ?? table.Tags.Create(spec.Name);
+                if (existing == null) byName[tag.Name] = tag;
                 if (!isPlcBound && tag.DataType != spec.DataType)
                 {
                     // No PLC binding (an internal tag) - nothing else can tell TIA what type this
@@ -2871,6 +2881,15 @@ public sealed partial class TiaConnection : IDisposable
                 // still accepted/required by the tool schema for the bound case (kept so callers
                 // don't need two shapes), but is ignored here.
                 if (spec.Comment != null) SetComment(tag.Comment, spec.Comment);
+                if (spec.Length != null && tag.MaxLength != spec.Length.Value)
+                {
+                    if (!IsStringType(tag.DataType))
+                        throw new InvalidOperationException($"Length only applies to String/WString tags, not to {tag.DataType}.");
+                    // TIA locks it to the PLC tag's length ("Set is not allowed for disabled fields").
+                    if (isPlcBound)
+                        throw new InvalidOperationException($"The Length of a PLC-bound tag follows its PLC tag ({tag.MaxLength}); change the PLC tag's string length instead.");
+                    tag.MaxLength = spec.Length.Value;
+                }
                 if (spec.AcquisitionCycle != null && tag.AcquisitionCycle != spec.AcquisitionCycle)
                 {
                     // TIA locks the cycle of internal tags (always T1s) and rejects the set with

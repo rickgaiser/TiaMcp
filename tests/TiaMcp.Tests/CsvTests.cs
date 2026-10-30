@@ -84,15 +84,26 @@ public class CsvTests
         {
             new HmiTagInfo("Tank_Level", "Real", null, "HMI_Connection_1", "PLC_1", "Tank.Level", "Level in %", "1 s"),
             new HmiTagInfo("Local", "Bool", null, null, null, null, null, null),
+            new HmiTagInfo("Caption", "WString", null, null, null, null, null, null, 12),
         };
 
-        var specs = HmiTagTableCsv.Parse(HmiTagTableCsv.Format(tags));
+        var specs = HmiTagTableCsv.Parse(HmiTagTableCsv.Format(tags, length: true));
 
         Assert.Equal(new[]
         {
             new HmiTagSpec("Tank_Level", "Real", null, "HMI_Connection_1", "PLC_1", "Tank.Level", "Level in %", "1 s"),
             new HmiTagSpec("Local", "Bool", null, null, null, null, null, null),
+            new HmiTagSpec("Caption", "WString", null, null, null, null, null, null, 12),
         }, specs);
+    }
+
+    [Fact]
+    public void HmiTagTable_WithoutLengthColumn_LeavesLengthUnchanged()
+    {
+        var csv = HmiTagTableCsv.Format(new[] { new HmiTagInfo("Caption", "WString", null, null, null, null, null, null, 12) });
+
+        Assert.DoesNotContain("Length", csv);
+        Assert.Null(HmiTagTableCsv.Parse(csv).Single().Length);
     }
 
     [Fact]

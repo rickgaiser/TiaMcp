@@ -351,9 +351,9 @@ public sealed class TiaSession
         return _sta.InvokeAsync(() => _connection.ListHmiTagTableGroups(hmiName));
     }
 
-    public Task<HmiTagTableResult> ReadHmiTagTableAsync(string hmiName, string tableName)
+    public Task<HmiTagTableResult> ReadHmiTagTableAsync(string hmiName, string tableName, bool readLength = false)
     {
-        return _sta.InvokeAsync(() => _connection.ReadHmiTagTable(hmiName, tableName));
+        return _sta.InvokeAsync(() => _connection.ReadHmiTagTable(hmiName, tableName, readLength));
     }
 
     public Task<WriteTagsResult> WriteHmiTagTableAsync(string hmiName, string tableName, IReadOnlyList<HmiTagSpec> tags, bool deleteMissing = false)

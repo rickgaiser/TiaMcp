@@ -29,7 +29,7 @@ internal sealed class BlockKind : ISourceKind
             .Select(b => new ListedEntry(b.GroupPath, b.Name, $"{Describe(Name, b.GroupPath, b.Name)} [{b.Language}]{(b.Consistent ? "" : " INCONSISTENT")}", FormatsOf(b.Language), inconsistent: !b.Consistent))
             .ToList();
 
-    public async Task Export(TiaSession session, string plc, Func<string, string, IReadOnlyCollection<string>?> formats, List<ExportedItem> items)
+    public async Task Export(TiaSession session, string plc, Func<string, string, IReadOnlyCollection<string>?> formats, ExportOptions options, List<ExportedItem> items)
     {
         foreach (var (b, result) in await session.ReadAllBlocksAsync(plc, formats))
             items.Add(ExportedItem.FromDocuments(plc, Name, b.GroupPath, b.Name, result, FormatsOf(b.Language)));

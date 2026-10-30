@@ -22,7 +22,7 @@ internal sealed class PlcTagTableKind : ISourceKind
         return entries;
     }
 
-    public async Task Export(TiaSession session, string plc, Func<string, string, IReadOnlyCollection<string>?> formats, List<ExportedItem> items)
+    public async Task Export(TiaSession session, string plc, Func<string, string, IReadOnlyCollection<string>?> formats, ExportOptions options, List<ExportedItem> items)
     {
         foreach (var (t, result) in await session.ReadAllTagTablesAsync(plc, formats))
             items.Add(ExportedItem.FromDocuments(plc, Name, t.GroupPath, t.Name, result, Formats));

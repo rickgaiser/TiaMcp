@@ -32,6 +32,9 @@ public sealed class SourceTreeManifest
     public int Version { get; set; } = CurrentVersion;
     public string? Project { get; set; }
     public DateTime? LastRead { get; set; }
+
+    // read_source_tree's hmiTagLength: HMI tag table CSVs have the Length column. Null is off.
+    public bool? HmiTagLength { get; set; }
     public List<SourceTreeItem> Items { get; set; } = new();
 
     public static SourceTreeManifest? Load(string root)

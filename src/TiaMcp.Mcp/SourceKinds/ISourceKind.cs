@@ -40,11 +40,23 @@ internal interface ISourceKind
 
     // Exports the items formats (group path, name) selects into items, in the formats it returns:
     // null skips the item, an empty list means its own format. A failure is per item, not as a whole.
-    Task Export(TiaSession session, string device, Func<string, string, IReadOnlyCollection<string>?> formats, List<ExportedItem> items);
+    // options are the tree's read settings (see ExportOptions).
+    Task Export(TiaSession session, string device, Func<string, string, IReadOnlyCollection<string>?> formats, ExportOptions options, List<ExportedItem> items);
 
     // Writes the given items of one device from their files, each from its ImportListItem.Format;
     // see write_source_tree.
     Task<WriteLog> Write(WriteContext context, IReadOnlyList<ImportListItem> items);
+}
+
+// Read settings of a source tree, kept in its manifest so that every export of an item - the read,
+// the conflict check and the read-back of a write - gives the same files.
+// HmiTagLength: the Length column of HMI tag table CSVs (slow: an Openness call per tag).
+internal sealed class ExportOptions
+{
+    public ExportOptions(bool hmiTagLength) { HmiTagLength = hmiTagLength; }
+    public bool HmiTagLength { get; }
+
+    public static ExportOptions Of(SourceTreeManifest? manifest) => new(manifest?.HmiTagLength == true);
 }
 
 // One line of list_project, with the item's formats (none for a group line). A group line
