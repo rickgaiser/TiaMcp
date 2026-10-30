@@ -313,8 +313,23 @@ public sealed partial class TiaConnection : IDisposable
         catch (Exception ex)
         {
             portal.Dispose();
-            return new ConnectResult(false, null, null, $"Failed to open project at '{projectPath}': {ex.Message}");
+            return new ConnectResult(false, null, null, $"Failed to open project at '{projectPath}': {ex.Message}{MissingGsdHint(fileInfo, ex.Message)}");
         }
+    }
+
+    // TIA Portal names the missing GSD files when it can't open a project; a project usually
+    // carries its own copies in AdditionalFiles\GSD. Openness can't install them.
+    private static string MissingGsdHint(FileInfo project, string error)
+    {
+        if (error.IndexOf("support packages are missing", StringComparison.OrdinalIgnoreCase) < 0) return "";
+        var gsdDir = Path.Combine(project.DirectoryName ?? "", "AdditionalFiles", "GSD");
+        var present = Directory.Exists(gsdDir)
+            ? Directory.GetFiles(gsdDir).Select(Path.GetFileName).Where(f => error.IndexOf(f, StringComparison.OrdinalIgnoreCase) >= 0).ToList()
+            : new List<string>();
+        var install = "Install them in TIA Portal (Options > Manage general station description files (GSD)) - with no other TIA Portal instance running - and call tia_connect again.";
+        return present.Count == 0
+            ? $"\n{install}"
+            : $"\nThe project has {(present.Count == 1 ? "this one" : $"{present.Count} of them")} in {gsdDir}: {string.Join(", ", present)}. {install}";
     }
 
     private static string? GetLocalSessionPath(FileInfo? projectPath)
