@@ -407,9 +407,11 @@ public static class GraphConverter
     //    original (compared as rendered text - see RenderFlgNet above). Unchanged conditions are
     //    left as the original XML, byte-for-byte, zero regeneration risk.
     //  - A changed condition is only regenerated if its parse tree contains no opaque
-    //    function-call node (comparisons, timers, etc. - the same constructs RenderFlgNet's
-    //    fallback produces on read). If it does, the whole write is refused with a clear message
-    //    naming the offending step/transition - never a silent, possibly-wrong regeneration.
+    //    function-call node (timers, moves, etc. - the same constructs RenderFlgNet's fallback
+    //    produces on read). The one exception is a comparison box against a time literal, e.g.
+    //    Ge(#Step100.U, T#1s) - see ComparisonSrcType. Otherwise the whole write is refused with
+    //    a clear message naming the offending step/transition - never a silent, possibly-wrong
+    //    regeneration.
     // ============================================================================================
 
     public static string ILToXml(string ilContent, string originalXmlContent)
@@ -903,7 +905,7 @@ public static class GraphConverter
         if (ContainsOpaque(tree, out var opaqueName))
         {
             throw new InvalidOperationException(
-                $"{location}'s condition uses '{opaqueName}(...)', which this server can't safely regenerate yet (only AND/OR/NOT and tag/constant references can be written) - refusing to guess. Edit this condition in the TIA Portal GUI instead. No changes were made.");
+                $"{location}'s condition uses '{opaqueName}(...)', which this server can't safely regenerate yet (only AND/OR/NOT, tag/constant references and Eq/Ne/Gt/Ge/Lt/Le against a time literal can be written) - refusing to guess. Edit this condition in the TIA Portal GUI instead. No changes were made.");
         }
 
         var newFlgNet = BuildFlgNet(tree, knownConstants, sinkPartName);
@@ -1186,13 +1188,30 @@ public static class GraphConverter
 
     private static bool ContainsOpaque(ExprNode node, out string? name)
     {
-        if (node.Kind == ExprKind.OpaqueCall) { name = node.Text; return true; }
+        if (node.Kind == ExprKind.OpaqueCall && ComparisonSrcType(node) == null) { name = node.Text; return true; }
         foreach (var c in node.Children)
         {
             if (ContainsOpaque(c, out name)) return true;
         }
         name = null;
         return false;
+    }
+
+    private static readonly HashSet<string> ComparisonParts = new() { "Eq", "Ne", "Gt", "Ge", "Lt", "Le" };
+
+    // A comparison box (Part Name="Ge" etc., inputs in1/in2) is only writable when its
+    // SrcType template value - which the IL text doesn't carry - can be told from the
+    // operands: two plain operands, one of them a Time literal (T#1s, the GRAPH step-time
+    // pattern Ge(#Step100.U, T#1s)). Anything else stays opaque and is refused.
+    private static string? ComparisonSrcType(ExprNode node)
+    {
+        if (node.Kind != ExprKind.OpaqueCall || !ComparisonParts.Contains(node.Text) || node.Children.Count != 2) return null;
+        if (node.Children.Any(c => c.Kind is not (ExprKind.LocalAccess or ExprKind.GlobalAccess or ExprKind.Literal))) return null;
+        return node.Children.Any(c => c.Kind == ExprKind.Literal &&
+                                      (c.Text.StartsWith("T#", StringComparison.OrdinalIgnoreCase) ||
+                                       c.Text.StartsWith("TIME#", StringComparison.OrdinalIgnoreCase)))
+            ? "Time"
+            : null;
     }
 
     private static ExprNode ParseExpression(string text)
@@ -1422,6 +1441,25 @@ public static class GraphConverter
         if (node.Kind is ExprKind.And or ExprKind.Or)
         {
             return BuildGate(node, knownConstants, parts, wires, newUId);
+        }
+
+        if (node.Kind == ExprKind.OpaqueCall)
+        {
+            // A comparison (ContainsOpaque refused every other call): operands first, then the
+            // box, as TIA Portal's own export numbers them.
+            var srcType = ComparisonSrcType(node)
+                ?? throw new InvalidOperationException($"Unexpected call '{node.Text}' during regeneration.");
+            var operands = node.Children.Select(c => BuildOperand(c, knownConstants, parts, wires, newUId)).ToList();
+            var cmpUId = newUId();
+            parts.Add(new XElement(GraphNs + "Part", new XAttribute("Name", node.Text), new XAttribute("UId", cmpUId),
+                new XElement(GraphNs + "TemplateValue", new XAttribute("Name", "SrcType"), new XAttribute("Type", "Type"), srcType)));
+            for (var idx = 0; idx < operands.Count; idx++)
+            {
+                wires.Add(new XElement(GraphNs + "Wire", new XAttribute("UId", newUId()),
+                    new XElement(GraphNs + "IdentCon", new XAttribute("UId", operands[idx].uid)),
+                    new XElement(GraphNs + "NameCon", new XAttribute("UId", cmpUId), new XAttribute("Name", "in" + (idx + 1)))));
+            }
+            return (cmpUId, true);
         }
 
         var uid = newUId();

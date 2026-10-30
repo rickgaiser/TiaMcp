@@ -46,12 +46,13 @@ public sealed partial class TiaTools
     }
 
     [McpServerTool(Name = "tia_connect")]
-    [Description("Attach to a running TIA Portal instance. With no arguments, attaches to the single open project or Multiuser local session. If more than one TIA Portal instance is running, this returns an error listing their process ids instead of guessing or attaching to any of them (attaching is what triggers Openness's 'allow connection' dialog, so probing every instance would prompt all of them) - call list_tia_instances first, then call this again with processId set to the one you want. Pass projectPath to open a specific .apXX project or .alsXX local session, or to match that session if already open, in the targeted instance. Call this again if a PLC/device was renamed in the GUI or a tool starts reporting an unknown plcName - the PLC name index is only built at connect time.")]
+    [Description("Attach to a running TIA Portal instance. With no arguments, attaches to the open project or Multiuser local session. With more than one TIA Portal instance running, it picks the instance by the project each one has open: the one that has projectPath open (else the one with no project, to open it in), or without projectPath the only one with a project open. When that isn't clear it lists the instances and their projects instead of attaching to any of them (attaching is what triggers Openness's 'allow connection' dialog) - call it again with processId. Pass projectPath to open a specific .apXX project or .alsXX local session, or to match it if already open. With no TIA Portal running, startPortal=true starts the TIA Portal GUI and opens projectPath in it. Call this again if a PLC/device was renamed in the GUI or a tool starts reporting an unknown plcName - the PLC name index is only built at connect time.")]
     public Task<string> Connect(
         [Description("Optional full path to a .apXX project file or .alsXX Multiuser local session to open. Omit to use whatever project or local session is already open in TIA Portal.")] string? projectPath = null,
-        [Description("Optional process id (PID) of the specific running TIA Portal instance to attach to, from list_tia_instances. Required when more than one TIA Portal instance is running; omit when only one is running.")] int? processId = null) => Safe(async () =>
+        [Description("Optional process id (PID) of the TIA Portal instance to attach to, from list_tia_instances. Only needed when tia_connect can't tell which instance is meant.")] int? processId = null,
+        [Description("Start the TIA Portal GUI when none is running, and open projectPath in it (required then). It runs on its own: it stays open when this server stops. Takes a minute or two. Default false.")] bool startPortal = false) => Safe(async () =>
     {
-        var result = await _session.ConnectAsync(projectPath, processId);
+        var result = await _session.ConnectAsync(projectPath, processId, startPortal);
         if (!result.Success)
         {
             return $"Connect failed: {result.Error}";
@@ -62,15 +63,20 @@ public sealed partial class TiaTools
     });
 
     [McpServerTool(Name = "list_tia_instances")]
-    [Description("List running TIA Portal GUI instances (process id and window title, if visible) without attaching to any of them. Use this before tia_connect when more than one TIA Portal instance is running, to pick the right one via processId without triggering an Openness 'allow connection' prompt on every instance. Window title may be blank for a headless/orphaned instance or one not currently showing a project window - attach to it with tia_connect's processId to see what project (if any) it actually has open.")]
+    [Description("List running TIA Portal instances without attaching to any of them (no Openness 'allow connection' prompt): per process id the project or Multiuser local session it has open, whether it has a GUI, and how many Openness clients (other agent sessions, scripts, this server) are attached to it. Pass a process id to tia_connect's processId when tia_connect can't tell which instance is meant.")]
     public Task<string> ListInstances() => Safe(async () =>
     {
         var instances = await _session.ListInstancesAsync();
         if (instances.Count == 0)
         {
-            return "No running TIA Portal instance found. Open TIA Portal first.";
+            return "No running TIA Portal instance found. Open TIA Portal first, or call tia_connect with startPortal=true and projectPath.";
         }
-        return string.Join("\n", instances.Select(i => $"- PID {i.ProcessId}: {i.WindowTitle ?? "(no window title - headless or not currently showing a project)"}"));
+        return string.Join("\n", instances.Select(i =>
+        {
+            var clients = i.AttachedClients == 0 ? "no Openness clients"
+                : $"{i.AttachedClients} Openness client{(i.AttachedClients == 1 ? "" : "s")}{(i.ThisServer ? ", this server included" : "")}";
+            return $"- PID {i.ProcessId}: {i.ProjectPath ?? "no project open"} ({(i.WithUserInterface ? "GUI" : "no GUI")}, {clients})";
+        }));
     });
 
     [McpServerTool(Name = "save_project_as")]
@@ -582,7 +588,8 @@ An item that fails to export (e.g. an inconsistent block - GRAPH blocks must be 
         [Description("Root directory of the source tree. Created if it doesn't exist; keep using the same one for the project.")] string targetDirectory,
         [Description("Optional: read only these items - 'Name', 'group/path/Name', 'group/path/' for everything below a group, or item lines as list_project shows them, optionally ending with the formats to read, e.g. \"tag table 'Tags' [csv, xml]\" (case-insensitive; for HMI alarms 'DiscreteAlarms', 'AnalogAlarms', 'AlarmClasses' or 'HMI alarms/'). Omit to read everything.")] string[]? items = null,
         [Description("Optional: read only this PLC or HMI software name")] string? deviceName = null,
-        [Description("Read into a tree that has an _export_summary.txt but no _manifest.json (read by an older version, or generated), making it a working copy of the connected project. Default false.")] bool adoptExisting = false) => Safe(async () =>
+        [Description("Read into a tree that has an _export_summary.txt but no _manifest.json (read by an older version, or generated), making it a working copy of the connected project. Default false.")] bool adoptExisting = false,
+        [Description("Give WinCC Unified HMI tag table CSVs a Length column (the maximum length of String/WString tags). SLOW: an extra Openness call per tag. Remembered for the tree; omit to keep the tree's setting (off for a new tree).")] bool? hmiTagLength = null) => Safe(async () =>
     {
         if (!_session.IsConnected) return "Not connected. Call tia_connect first.";
 
@@ -605,11 +612,14 @@ An item that fails to export (e.g. an inconsistent block - GRAPH blocks must be 
                    "Read the whole project (no items/deviceName) to replace it, or use another directory.";
         }
 
+        var manifest = previous ?? new SourceTreeManifest();
+        var lengthChanged = hmiTagLength != null && hmiTagLength != (manifest.HmiTagLength == true);
+        if (hmiTagLength != null) manifest.HmiTagLength = hmiTagLength.Value ? true : null;
+
         var startedAt = DateTime.Now;
-        var (exported, devices) = await ExportItems(selection == null ? null : (_, kind, groupPath, name) => RequestedFormats(selection, kind, groupPath, name), deviceName, previous);
+        var (exported, devices) = await ExportItems(selection == null ? null : (_, kind, groupPath, name) => RequestedFormats(selection, kind, groupPath, name), deviceName, manifest);
         if (devices.Count == 0) return deviceName == null ? "No PLC or HMI devices found." : $"No PLC or HMI software named '{deviceName}'.";
 
-        var manifest = previous ?? new SourceTreeManifest();
         WriteExport(targetDirectory, manifest, exported);
 
         // Items in the part that was read which the project doesn't have (any more).
@@ -635,7 +645,13 @@ An item that fails to export (e.g. an inconsistent block - GRAPH blocks must be 
             else if (partial) result.AppendLine($"  OK      {Describe(item.Kind, item.GroupPath, item.Name)}: {string.Join(", ", item.Files.Select(f => f.Path))}");
         }
         foreach (var item in gone) result.AppendLine($"  REMOVED {Describe(item.Kind, item.GroupPath, item.Name)} - no longer in the project, its files were deleted");
+        foreach (var item in exported.Where(e => e.Warnings.Count > 0))
+            result.AppendLine($"  WARNING {Describe(item.Kind, item.GroupPath, item.Name)}: write_source_tree refuses to write its .s7dcl as it is - {string.Join(" | ", item.Warnings)}");
         foreach (var note in _exportNotes) result.AppendLine($"  {note}");
+        // The conflict check compares a fresh export with the read; a Unified table (csv) of the
+        // tree that this read left in the old shape would look changed in TIA Portal.
+        if (lengthChanged && manifest.Items.Any(i => i.Kind == "HMI tag table" && i.Formats.Contains(SourceFormat.Csv) && !exported.Any(e => i.Is(e.Device, e.Kind, e.Name))))
+            result.AppendLine("  NOTE hmiTagLength changed, but not every HMI tag table in the tree was read: read the other HMI tag tables again before writing them.");
         result.AppendLine($"Full item list: {summaryPath}");
         return result.ToString();
     });
@@ -649,13 +665,15 @@ An item in more than one format is written from the one format whose files were 
 
 Writing rules per file type:
 - SCL block: the '{ S7_EditorMode := ""SCL"" }' attribute block before FUNCTION/FUNCTION_BLOCK/DATA_BLOCK is required. FBD/LAD: never hand-write NETWORK/RUNG notation from scratch - copy a similar existing block's .s7dcl/.s7res and adapt it.
+- A block with a textual interface (S7_EditorMode := ""[SCL,TextualInterface]""): TIA Portal V21 terminates when it overwrites one that was read more than once since the project was opened or the block was last written, so such a write is refused then - every read, change check and read-back counts. After save_project, close_project and tia_connect with projectPath, one write with the change check goes through (don't read the block again first); after that, the next one needs force=true or another reopen.
+- What TIA Portal's .s7dcl import gets wrong is refused, with a workaround: an array access inside an index in a LAD/FBD network, and a project FB or UDT named like a system type (TON, TOF, TP, TONR, CTU, CTD, CTUD, R_TRIG, F_TRIG), and an AT overlay (.s7dcl has no AT: the read marks the overlay's declaration with a '// TiaMcp: AT' comment; the import would make it an independent variable). read_source_tree warns about them.
 - Comments and titles: an { S7_MLC := ""MLC_x"" } attribute (S7_NetworkTitle/S7_NetworkComment for networks) referring to an entry in the .s7res; '//' comments in the source are dropped by TIA Portal. Keep text ids unique within a .s7res.
 - GRAPH ('.graph.il'): step/transition attributes, actions and conditions are writable, steps/transitions can be added or removed, and BRANCHES/CONNECTIONS of a SEQUENCE are rewritten when present; INTERFACE and PREOPERATIONS are read-only. A condition still containing a construct shown as generic 'PartName(args)' is refused. A new GRAPH block is made by cloning an existing GRAPH block of the PLC (picked automatically) and reshaping it. The write recompiles the block and reports errors.
 - Whole-block STL ('.awl'): AWL text as TIA Portal's 'Generate source' produces it, block name in the header unchanged. A block with embedded STL networks can't be written.
 - Instance DB: its .s7dcl ('DATA_BLOCK ""x"" ... : FB_y'); the FB must exist.
 - Raw XML ('<name>.xml' of a block, UDT or PLC tag table): SimaticML as read; replaces the whole object (a table's removed tags go too), or creates it - also GRAPH blocks and blocks with embedded STL networks. Its <Name> must match the file name.
 - PLC tag table CSV: Name, DataType, LogicalAddress, Comment, ExternalAccessible, ExternalVisible, ExternalWritable (True/False). Rows update or add tags; an empty cell leaves that value unchanged; removing a row deletes that tag (not when writing a tree read from another project). Renaming a tag in the CSV deletes it and makes a new one, breaking references - use rename_plc_tag.
-- HMI tag table CSV: Name, DataType, Address, Connection, PlcName, PlcTag, Comment, AcquisitionCycle. Bind to a PLC tag with Connection + PlcTag (dot-qualified for a DB member); DataType then follows from the PLC tag. PlcName is ignored on write. AcquisitionCycle (e.g. T1s) only on PLC-bound tags. Rows and removed rows as for PLC tag tables; rename with rename_hmi_tag.
+- HMI tag table CSV: Name, DataType, Address, Connection, PlcName, PlcTag, Comment, AcquisitionCycle, Length. Bind to a PLC tag with Connection + PlcTag (dot-qualified for a DB member); DataType then follows from the PLC tag. PlcName is ignored on write. AcquisitionCycle (e.g. T1s) only on PLC-bound tags. Length (only in a tree read with hmiTagLength=true; without the column lengths stay unchanged) is the maximum length of a String/WString tag, empty for other types; only writable on internal tags (a PLC-bound tag has its PLC tag's length). Rows and removed rows as for PLC tag tables; rename with rename_hmi_tag.
 - PLC alarm text list CSV ('PLC alarm text lists/<list>.csv'): From, To, Text [language]... Only existing user lists (create a new list in TIA Portal). The write patches a fresh export of all lists and imports it, so other lists are untouched; a removed row deletes that entry (not when writing a tree read from another project); a language column left out stays unchanged. Every list's language must be a project language.
 - Classic WinCC XML (screens, templates, pop-ups, tag tables, text lists): native Openness XML as read; <Name> must match the file name. A new screen needs a <Number> not used by another screen - checked before the import (a duplicate number makes TIA Portal V21 terminate itself).
 - WinCC Unified screen ('.json', built from the Openness object model - there is no export format): the screen's properties plus ""items"", one object per screen item with ""name"", ""type"" (see describe_hmi_item_type) and its properties under their Openness names; parts are nested objects, part lists arrays. Colors '#AARRGGBB', enums by member name, texts plain text in the editing language. Reserved keys: ""dynamizations"" ({""<Property>"": ""<HMI tag>""} or {""type"": ""Script"", ...}), ""events"" ({""<EventType>"": ""<JS code>""}), ""propertyEvents"" ({""<Property>:Change"": ...}). A FaceplateContainer has ""ContainedType"" (see list_library_types) and ""Interface"" (see read_faceplate_type): a plain value is static - a UDT-typed property takes the HMI tag name - and a binding is an object, {""type"": ""Tag"", ""Tag"": ""<HMI tag>""} or a script. Only values that differ from a new item are shown; leaving a property, dynamization or event out of the file doesn't reset it - set the default value, or null to remove a dynamization/script. Items are matched by name: a new name creates the item (appended - Openness has no z-order control), a changed type recreates it, a removed item is deleted (not when writing a tree read from another project). A new screen is created from a new file. Each property is set on its own; failures are reported per property and the rest still applies. SLOW: a screen is written item by item through Openness - a new screen (also a copy of an existing one: Openness can't copy Unified screens) or a forced write takes about 0.2 s per item, close to a minute for a screen of a few hundred items. An edit to a screen read into this tree writes only the changed properties and is fast. The read before and after each write adds a few seconds per screen.
@@ -743,8 +761,13 @@ Writes '<sourceDirectory>/_import_report.txt' with one CREATED/UPDATED/SKIPPED/F
 
         await _session.ClearHmiClassicScreenNumbersAsync();
 
+        // Checked before the change check, which exports the block once more.
+        var checkChanges = workingCopy && !force;
+        refused.AddRange(await ExportedTooOften(sourceDirectory, items, checkChanges, FamilyOf));
+        items = items.Where(i => !refused.Any(r => r.Item == i)).ToList();
+
         var conflicts = new List<(ImportListItem Item, string Reason)>();
-        if (workingCopy && !force && items.Count > 0)
+        if (checkChanges && items.Count > 0)
         {
             conflicts = await FindConflicts(manifest!, items);
             items = items.Where(i => !conflicts.Any(c => c.Item == i)).ToList();
@@ -781,7 +804,7 @@ Writes '<sourceDirectory>/_import_report.txt' with one CREATED/UPDATED/SKIPPED/F
             // Each kind in the registry's write order, which puts what an item references first.
             var kinds = family == null ? new List<ISourceKind>() : SourceKinds.Of(family.Value).ToList();
             var context = new WriteContext(_session, deviceName, sourceDirectory, deviceDir, createMissing, overwriteExisting, dryRun, workingCopy,
-                workingCopy && !force ? manifest : null, written);
+                workingCopy ? manifest : null, workingCopy && !force ? manifest : null, written);
             foreach (var kind in kinds)
             {
                 var kindItems = deviceItems.Where(i => i.Kind == kind.Name).ToList();
@@ -908,6 +931,9 @@ Writes '<sourceDirectory>/_import_report.txt' with one CREATED/UPDATED/SKIPPED/F
     // follow from the folder (see ItemDir), the name from the file name.
     private static List<ImportListItem> NewItemsInTree(string root, SourceTreeManifest manifest, Func<string, DeviceFamily?> familyOf)
     {
+        // A file a read put there belongs to its item even when the file name doesn't give the
+        // item name back ('/' in a block name, replaced characters).
+        var readFiles = new HashSet<string>(manifest.Items.SelectMany(i => i.Files.Keys), StringComparer.OrdinalIgnoreCase);
         var found = new List<ImportListItem>();
         foreach (var deviceDir in Directory.GetDirectories(root).Where(d => Path.GetFileName(d) != BaseDirName))
         {
@@ -933,6 +959,7 @@ Writes '<sourceDirectory>/_import_report.txt' with one CREATED/UPDATED/SKIPPED/F
                     var fileName = Path.GetFileName(file);
                     var ext = kind.Formats.Select(SourceFormat.Extension).FirstOrDefault(e => fileName.EndsWith(e, StringComparison.OrdinalIgnoreCase));
                     if (ext == null || SourceTreeManifest.IsReadOnlyCompanion(fileName)) continue;
+                    if (readFiles.Contains(file.Substring(root.Length).TrimStart(Path.DirectorySeparatorChar, '/').Replace(Path.DirectorySeparatorChar, '/'))) continue;
 
                     var stem = fileName.Substring(0, fileName.Length - ext.Length);
                     var relDir = Path.GetDirectoryName(file)!.Substring(sectionDir.Length).Trim(Path.DirectorySeparatorChar).Replace(Path.DirectorySeparatorChar, '/');
@@ -971,6 +998,40 @@ Writes '<sourceDirectory>/_import_report.txt' with one CREATED/UPDATED/SKIPPED/F
                 conflicts.Add((item, "changed in TIA Portal since read_source_tree. Read it again (read_source_tree with items; this overwrites the file, so keep a copy of your edit), merge, and write again - or pass force=true to overwrite the project's version."));
         }
         return conflicts;
+    }
+
+    // Existing blocks with a textual interface that TIA Portal V21 would terminate on overwriting:
+    // exported more than once since the project was opened or the block last written, counting
+    // the change check's export (see TiaConnection.ExportsSinceImport). Created blocks are fine.
+    private async Task<List<(ImportListItem Item, string Reason)>> ExportedTooOften(string root, List<ImportListItem> items, bool changeCheck, Func<string, DeviceFamily?> familyOf)
+    {
+        var refused = new List<(ImportListItem, string)>();
+        var existing = new Dictionary<string, HashSet<string>>(StringComparer.OrdinalIgnoreCase);
+        foreach (var item in items.Where(i => i.Kind == "block" && familyOf(i.DeviceName) == DeviceFamily.Plc && HasTextualInterface(root, i)))
+        {
+            if (!existing.TryGetValue(item.DeviceName, out var names))
+                existing[item.DeviceName] = names = (await _session.ListBlocksAsync(item.DeviceName)).Select(b => b.Name).ToHashSet(StringComparer.OrdinalIgnoreCase);
+            if (!names.Contains(item.ItemName)) continue;
+
+            var exports = await _session.ExportsSinceImportAsync(item.DeviceName, item.ItemName);
+            if (exports != null && exports + (changeCheck ? 1 : 0) <= 1) continue;
+            var why = exports == null
+                ? "this server attached to a project that was already open, so it can't tell how often the block was exported since"
+                : $"this server exported it {exports} time(s) since{(changeCheck ? ", and the change check would export it once more" : "")}";
+            var orForce = exports == 1 && changeCheck
+                ? "; or, if the block wasn't changed in TIA Portal since it was read, write it with force=true (no change check)"
+                : "";
+            refused.Add((item, $"refused: it has a textual interface, and TIA Portal V21 terminates when it overwrites such a block that was exported (read) more than once since the project was opened or the block was last written - {why}. " +
+                               $"Save the project (save_project), close it (close_project), open it again (tia_connect with projectPath) and write right away{orForce}."));
+        }
+        return refused;
+    }
+
+    // The block's .s7dcl in the tree declares a textual interface (S7_EditorMode := "[SCL,TextualInterface]").
+    private static bool HasTextualInterface(string root, ImportListItem item)
+    {
+        var path = Path.Combine(root, ItemDir(item.DeviceName, item.Kind, item.GroupPath), Sanitize(item.ItemName) + SourceFormat.Extension(SourceFormat.S7dcl));
+        return File.Exists(path) && File.ReadAllText(path).IndexOf("TextualInterface", StringComparison.OrdinalIgnoreCase) >= 0;
     }
 
     // Parses an item list - _export_summary.txt or list_project output, or a trimmed copy/excerpt of
@@ -1022,6 +1083,7 @@ Writes '<sourceDirectory>/_import_report.txt' with one CREATED/UPDATED/SKIPPED/F
     // it in (manifest), else its own format. Formats a kind doesn't have are left out.
     private async Task<(List<ExportedItem> Items, List<string> Devices)> ExportItems(Func<string, string, string, string, IReadOnlyCollection<string>?>? formats, string? deviceName, SourceTreeManifest? manifest)
     {
+        var options = ExportOptions.Of(manifest);
         var items = new List<ExportedItem>();
         var devices = await Devices(deviceName);
         _exportNotes.Clear();
@@ -1037,7 +1099,7 @@ Writes '<sourceDirectory>/_import_report.txt' with one CREATED/UPDATED/SKIPPED/F
                         requested = manifest?.Find(device, kind.Name, name)?.WritableFiles.Select(f => f.Value.Format).Distinct().ToList() ?? new List<string>();
                     return requested.Where(kind.Formats.Contains).ToList();
                 }
-                await kind.Export(_session, device, Formats, items);
+                await kind.Export(_session, device, Formats, options, items);
             }
 
             if (family == DeviceFamily.HmiClassic && formats == null)

@@ -52,6 +52,9 @@ internal sealed class ExportedItem
     public IReadOnlyList<string> Formats { get; }
     public bool Ok => Error == null;
 
+    // What would go wrong writing the item back as read; read_source_tree reports these.
+    public List<string> Warnings { get; } = new();
+
     // The documents a read returns, one or more per format (.s7dcl/.s7res, .graph.il, .awl, .csv,
     // .xml, companions); formats as in the constructor.
     public static ExportedItem FromDocuments(string device, string kind, string groupPath, string name, ExportResult result, IReadOnlyList<string>? formats = null)

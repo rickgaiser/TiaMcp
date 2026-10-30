@@ -59,6 +59,26 @@ public class GraphConverterTests
     }
 
     [Fact]
+    public void ChangedConditionWithTimeComparison_IsWritten()
+    {
+        var il = GraphConverter.XmlToIL(SampleXml).Replace("(#Start AND NOT #Ready)", "(#Start AND Ge(#Idle.T, T#1s))");
+        Assert.Contains("(#Start AND Ge(#Idle.T, T#1s))", il);
+
+        var xml = GraphConverter.ILToXml(il, SampleXml);
+
+        Assert.Contains("<TemplateValue Name=\"SrcType\" Type=\"Type\">Time</TemplateValue>", xml);
+        Assert.Equal(il, GraphConverter.XmlToIL(xml));
+    }
+
+    [Fact]
+    public void ChangedConditionWithUntypedComparison_IsRefused()
+    {
+        var il = GraphConverter.XmlToIL(SampleXml).Replace("(#Start AND NOT #Ready)", "(#Start AND Ge(#Count, 5))");
+
+        Assert.Throws<InvalidOperationException>(() => GraphConverter.ILToXml(il, SampleXml));
+    }
+
+    [Fact]
     public void NonGraphXml_IsRejected()
     {
         Assert.Throws<InvalidOperationException>(() => GraphConverter.XmlToIL("<Document><Other /></Document>"));

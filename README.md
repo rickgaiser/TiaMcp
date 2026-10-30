@@ -70,8 +70,8 @@ All MCP tools exposed by the server, grouped by area.
 
 | Tool | Purpose |
 |---|---|
-| `tia_connect` | Attach to an open project or Multiuser local session, or open one by path (`.apXX` or `.alsXX`); pass `processId` (from `list_tia_instances`) when more than one instance is running |
-| `list_tia_instances` | List running TIA Portal instances (PID + window title) with no Openness prompt, to pick a `processId` for `tia_connect` |
+| `tia_connect` | Attach to an open project or Multiuser local session, or open one by path (`.apXX` or `.alsXX`). With several instances running it picks the one by the project it has open; pass `processId` (from `list_tia_instances`) when that isn't clear. `startPortal: true` starts the TIA Portal GUI when none is running and opens `projectPath` in it |
+| `list_tia_instances` | List running TIA Portal instances with no Openness prompt: PID, open project, GUI or not, and the attached Openness clients |
 | `project_status` | Report unsaved-changes state, author, last-saved info |
 | `save_project` / `save_project_as` | Save in place, or save a copy to a new folder; for Multiuser local sessions, save is local-only and Save As is unsupported |
 | `close_project` | Close the connected project; closing a Multiuser local session does not commit it to the server |
@@ -235,6 +235,10 @@ A `/` in a group name gives a folder per part (`Valve fwd / rev` → `Valve fwd/
 
 Read and edit the files with your own file tools, then call `write_source_tree`. It writes back only what changed since the read — edited files, plus new files as new blocks, UDTs, tag tables or Unified screens — in dependency order, and then reads the written items back so the files show what TIA Portal made of them. Removing a row from a tag table CSV deletes that tag; deleting a file does not delete the item (use the `delete_*` tools).
 
+WinCC Unified HMI tag tables leave out the length of String/WString tags by default, because reading it costs an Openness call per tag. Read with `hmiTagLength: true` to get a `Length` column; the tree remembers the setting. Only internal tags take a written length; a PLC-bound tag has its PLC tag's.
+
+An open HMI tag editor in TIA Portal (e.g. "Show all tags") slows every Openness call on that HMI down, a read or write of its tag tables about eight times. Close it while working through TiaMcp.
+
 PLC alarm text lists: one CSV per user list (`From`, `To`, one `Text [language]` column per project language). TIA Portal's Excel import replaces whole lists, so a write starts from a fresh export, changes only the lists being written and imports that; removing a row deletes that entry (not when writing a tree read from another project). Lists can't be created through Openness - create a new list in TIA Portal first. System lists (`SYSTEM_*`) are not exported.
 
 Classic WinCC objects are native Openness XML (the `DocumentInfo` block is left out so an unchanged object reads back identically). They are written in dependency order (text lists, tag tables, templates and pop-ups, screens); a screen whose `<Number>` is already used by another screen is refused before the import, since TIA Portal V21 terminates itself on that. Graphic lists are not exported: exporting one crashed TIA Portal V21 (`InvalidCastException` in `UpdateOpenLinks`); a full read reports them as SKIPPED.
@@ -253,6 +257,11 @@ AGPL-3.0 (see [LICENSE](LICENSE)). Contributions require signing the [CLA](CLA.m
 ## Known limitations
 
 - A block with STL embedded in a mixed FBD/LAD/SCL block can only be written through its raw `.xml`; whole-block STL is fully supported (see the STL section above).
+- TIA Portal V21's `.s7dcl` import gets some blocks wrong without an error. `read_source_tree` warns about each one (`WARNING` line), and `write_source_tree` refuses to write such a `.s7dcl`; the message gives the workaround (often: write the block's `.xml` instead):
+  - an array access inside an index in a LAD/FBD network (`"DB_A".arr["DB_B".structArr[1].idx]`) is mangled into one quoted name;
+  - a project FB or UDT named like a system type (`TON`, `TOF`, `TP`, `TONR`, `CTU`, `CTD`, `CTUD`, `R_TRIG`, `F_TRIG`) is replaced by the system type;
+  - an AT overlay becomes an independent variable (`.s7dcl` has no AT; the read marks the overlay's line with a `// TiaMcp: AT` comment).
+- TIA Portal V21 terminates when it overwrites a block with a textual interface (`S7_EditorMode := "[SCL,TextualInterface]"`) that was exported more than once since the project was opened or the block was last written. `write_source_tree` counts the exports and refuses such a write; save, close and reopen the project (`tia_connect` with `projectPath`) and write right away. After attaching to an already open project the count is unknown, so these writes are refused until the project is reopened through TiaMcp.
 - GRAPH blocks can only be created by cloning an existing one (see the GRAPH section above), not from scratch.
 - Classic WinCC (Comfort/Advanced/RT Advanced): alarms are not reachable through Openness; graphic lists are skipped (export crashes TIA Portal V21); objects can't be renamed or deleted through TiaMcp yet.
 - PLC alarm text lists: only existing user lists can be written; the screen-number check for classic screens exports every screen once per write (about a minute for ~50 screens).

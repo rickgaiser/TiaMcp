@@ -16,9 +16,9 @@ public sealed class TiaSession
     private readonly StaDispatcher _sta = new();
     private readonly TiaConnection _connection = new();
 
-    public async Task<ConnectResult> ConnectAsync(string? projectPath = null, int? processId = null)
+    public async Task<ConnectResult> ConnectAsync(string? projectPath = null, int? processId = null, bool startPortal = false)
     {
-        var result = await _sta.InvokeAsync(() => _connection.Connect(projectPath, processId));
+        var result = await _sta.InvokeAsync(() => _connection.Connect(projectPath, processId, startPortal));
         if (result.Success)
         {
             ProjectName = result.ProjectName;
@@ -27,11 +27,10 @@ public sealed class TiaSession
         return result;
     }
 
-    // Plain OS process enumeration, not an Openness call - doesn't need the STA/Openness
-    // dispatcher, and deliberately doesn't attach to anything (see TiaConnection.ListRunningInstances).
+    // Doesn't attach to anything (see TiaConnection.ListRunningInstances).
     public Task<IReadOnlyList<TiaInstanceInfo>> ListInstancesAsync()
     {
-        return Task.FromResult(TiaConnection.ListRunningInstances());
+        return _sta.InvokeAsync(() => _connection.ListRunningInstances());
     }
 
     public async Task<ConnectResult> SaveProjectAsAsync(string targetDirectory)
@@ -146,9 +145,14 @@ public sealed class TiaSession
         return _sta.InvokeAsync(() => _connection.ListTagTableGroups(plcName));
     }
 
-    public Task<ImportResult> WriteBlockAsync(string plcName, string blockName, IReadOnlyList<BlockDocument> documents)
+    public Task<int?> ExportsSinceImportAsync(string plcName, string blockName)
     {
-        return _sta.InvokeAsync(() => _connection.WriteBlock(plcName, blockName, documents));
+        return _sta.InvokeAsync(() => _connection.ExportsSinceImport(plcName, blockName));
+    }
+
+    public Task<ImportResult> WriteBlockAsync(string plcName, string blockName, IReadOnlyList<BlockDocument> documents, bool stlAtRead = false)
+    {
+        return _sta.InvokeAsync(() => _connection.WriteBlock(plcName, blockName, documents, stlAtRead));
     }
 
     public Task<WriteTagsResult> WriteTagTableAsync(string plcName, string tableName, IReadOnlyList<TagSpec> tags, bool deleteMissing = false)
@@ -351,9 +355,9 @@ public sealed class TiaSession
         return _sta.InvokeAsync(() => _connection.ListHmiTagTableGroups(hmiName));
     }
 
-    public Task<HmiTagTableResult> ReadHmiTagTableAsync(string hmiName, string tableName)
+    public Task<HmiTagTableResult> ReadHmiTagTableAsync(string hmiName, string tableName, bool readLength = false)
     {
-        return _sta.InvokeAsync(() => _connection.ReadHmiTagTable(hmiName, tableName));
+        return _sta.InvokeAsync(() => _connection.ReadHmiTagTable(hmiName, tableName, readLength));
     }
 
     public Task<WriteTagsResult> WriteHmiTagTableAsync(string hmiName, string tableName, IReadOnlyList<HmiTagSpec> tags, bool deleteMissing = false)

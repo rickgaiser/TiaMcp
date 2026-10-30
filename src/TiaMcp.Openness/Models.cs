@@ -17,7 +17,9 @@ public sealed record CompileResult(string State, int ErrorCount, int WarningCoun
 
 public sealed record ConnectResult(bool Success, string? ProjectName, string? ProjectPath, string? Error);
 
-public sealed record TiaInstanceInfo(int ProcessId, string? WindowTitle);
+// ProjectPath: the project or local session (.alsXX) the process has open, null for none.
+// AttachedClients: Openness clients attached to it, this server included (ThisServer).
+public sealed record TiaInstanceInfo(int ProcessId, string? ProjectPath, bool WithUserInterface, int AttachedClients, bool ThisServer);
 
 public sealed record TagTableSummary(string PlcName, string GroupPath, string Name);
 

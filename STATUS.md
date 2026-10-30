@@ -10,7 +10,7 @@ For object types TiaMcp doesn't support yet, the notes say what the Openness API
 
 | Object | List | Create | Read | Update | Rename | Delete | Notes |
 |---|---|---|---|---|---|---|---|
-| Block: SCL / FBD / LAD / global DB | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | `.s7dcl` / `.s7res`, or `.xml` (every block) |
+| Block: SCL / FBD / LAD / global DB | ✅ | ✅ | ✅ | ⚠️ | ✅ | ✅ | `.s7dcl` / `.s7res`, or `.xml` (every block). A `.s7dcl` the import would get wrong (nested index in LAD/FBD, project type named like a system type, AT overlay) is refused; so is overwriting a textual-interface block exported more than once since the project was opened (TIA Portal terminates) - see README, Known limitations |
 | Block: GRAPH | ✅ | ⚠️ | ✅ | ⚠️ | ✅ | ✅ | `.graph.il`; create clones an existing GRAPH block as template; topology editing is limited |
 | Block: STL (whole block) | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | `.awl` |
 | Block: embedded STL networks | ✅ | ⚠️ | ✅ | ⚠️ | ✅ | ✅ | Read-only sidecar (`.stl-networks.awl`); the block is writable through its `.xml` only; rename/delete act on the whole block |
@@ -68,8 +68,8 @@ For object types TiaMcp doesn't support yet, the notes say what the Openness API
 
 | Object | List | Create | Read | Update | Rename | Delete | Notes |
 |---|---|---|---|---|---|---|---|
-| TIA Portal instance | ✅ | — | — | — | — | — | |
-| Project | — | ❌ | ✅ | ✅ | ❌ | ❌ | Open/close, status, save, save as |
+| TIA Portal instance | ✅ | ✅ | — | — | — | — | Create: start the GUI (`tia_connect` `startPortal`) |
+| Project | — | ❌ | ✅ | ✅ | ❌ | ❌ | Open/close, status, save, save as. Protected projects (user management) can't be opened through Openness yet |
 | Source tree | — | — | ✅ | ✅ | — | — | All source is read and written through it; partial reads; writes back only changes, refuses items changed in TIA Portal since the read; never deletes items |
 
 ## Hardware & library

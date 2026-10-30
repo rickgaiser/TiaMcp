@@ -30,7 +30,7 @@ internal sealed class HmiAlarmsKind : ISourceKind
     public Task<IReadOnlyList<ListedEntry>> List(TiaSession session, string hmi) =>
         Task.FromResult<IReadOnlyList<ListedEntry>>(new[] { new ListedEntry(Section, FixedName!, Name, Formats) });
 
-    public async Task Export(TiaSession session, string hmi, Func<string, string, IReadOnlyCollection<string>?> formats, List<ExportedItem> items)
+    public async Task Export(TiaSession session, string hmi, Func<string, string, IReadOnlyCollection<string>?> formats, ExportOptions options, List<ExportedItem> items)
     {
         if (formats("", "") == null) return;
         try

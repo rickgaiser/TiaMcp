@@ -39,41 +39,55 @@ public sealed partial class TiaConnection : IDisposable
 
     public bool IsConnected => _project != null;
 
-    // Lists running TIA Portal GUI processes WITHOUT calling TiaPortalProcess.Attach() on any of
-    // them - Attach() is what triggers Openness's interactive "allow external connection" dialog
-    // in the TIA Portal GUI, so scanning every running instance just to disambiguate (as Connect()
-    // briefly did) meant that dialog popped up on every single one of them every time, even though
-    // only one instance was ever actually wanted. This uses plain OS process enumeration instead -
-    // matching by executable name only, no Openness/COM involved - so it never prompts anything.
-    // MainWindowTitle is the only identifying detail available this way; it's blank for a headless
-    // orphan instance or one not currently showing a project window, in which case the caller has
-    // to attach (via Connect's processId) to find out what's actually open in it.
-    public static IReadOnlyList<TiaInstanceInfo> ListRunningInstances()
+    // Lists running TIA Portal processes WITHOUT calling TiaPortalProcess.Attach() on any of them -
+    // Attach() is what triggers Openness's interactive "allow external connection" dialog in the
+    // TIA Portal GUI. TiaPortalProcess tells the open project, the mode and the attached clients
+    // without attaching.
+    public IReadOnlyList<TiaInstanceInfo> ListRunningInstances()
     {
+        int? ownId = null;
+        try { ownId = _tiaPortal?.GetCurrentProcess().Id; }
+        catch { /* the attached instance is gone */ }
+
         var result = new List<TiaInstanceInfo>();
-        foreach (var proc in System.Diagnostics.Process.GetProcessesByName("Siemens.Automation.Portal"))
+        foreach (var proc in TiaPortal.GetProcesses())
         {
-            try
-            {
-                string? title;
-                try { title = string.IsNullOrEmpty(proc.MainWindowTitle) ? null : proc.MainWindowTitle; }
-                catch { title = null; }
-                result.Add(new TiaInstanceInfo(proc.Id, title));
-            }
-            finally
-            {
-                proc.Dispose();
-            }
+            int clients;
+            try { clients = proc.AttachedSessions.Count; }
+            catch { clients = 0; }
+            bool withUserInterface;
+            try { withUserInterface = proc.Mode == TiaPortalMode.WithUserInterface; }
+            catch { withUserInterface = true; }
+            result.Add(new TiaInstanceInfo(proc.Id, OpenProjectPath(proc), withUserInterface, clients, proc.Id == ownId));
         }
         return result;
     }
 
-    public ConnectResult Connect(string? projectPath = null, int? processId = null)
+    // The project or Multiuser local session (.alsXX) a TIA Portal process has open, as the
+    // process reports it - also a project the GUI has open that Openness can't get at.
+    private static string? OpenProjectPath(TiaPortalProcess proc)
+    {
+        try
+        {
+            var path = proc.ProjectPath;
+            return path == null ? null : GetLocalSessionPath(path) ?? path.FullName;
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    public ConnectResult Connect(string? projectPath = null, int? processId = null, bool startPortal = false)
     {
         var processes = TiaPortal.GetProcesses().ToList();
         if (processes.Count == 0)
         {
-            return new ConnectResult(false, null, null, "No running TIA Portal instance found. Open TIA Portal first (with or without a project loaded).");
+            if (!startPortal)
+                return new ConnectResult(false, null, null, "No running TIA Portal instance found. Open TIA Portal first, or call tia_connect with startPortal=true and projectPath to start one.");
+            if (string.IsNullOrWhiteSpace(projectPath))
+                return new ConnectResult(false, null, null, "startPortal needs projectPath: the project to open in the TIA Portal it starts.");
+            return StartPortal(projectPath!);
         }
 
         if (processId.HasValue)
@@ -81,21 +95,92 @@ public sealed partial class TiaConnection : IDisposable
             return ConnectToSpecificProcess(processes, processId.Value, projectPath);
         }
 
-        // TiaPortal.GetProcesses() has no notion of which running instance the caller means - its
-        // order reflects OS process enumeration, not launch order or anything project-aware.
-        // Picking .First() blindly could silently attach to the wrong instance; attaching to
-        // every instance to figure out which one is right is correct but triggers Openness's
-        // "allow connection" dialog on every single running instance, every time. With more than
-        // one instance running, refuse to guess or scan: send the caller to ListRunningInstances
-        // (zero-prompt) to pick a processId first.
-        if (processes.Count > 1)
+        // Attaching to every instance to find the right one would pop Openness's "allow
+        // connection" dialog on each of them; the open project each process reports (no attach
+        // needed) picks it when that is unambiguous, otherwise the caller picks a processId.
+        var chosen = PickProcess(processes, projectPath);
+        if (chosen == null)
         {
-            var pids = string.Join(", ", processes.Select(p => p.Id));
+            var list = string.Join("\n", processes.Select(p => $"- PID {p.Id}: {OpenProjectPath(p) ?? "no project open"}"));
             return new ConnectResult(false, null, null,
-                $"{processes.Count} TIA Portal instances are running (PIDs: {pids}). Call list_tia_instances first, then call tia_connect again with processId set to the one you want - connecting without it would otherwise prompt every running instance for Openness access.");
+                $"{processes.Count} TIA Portal instances are running and it is not clear which one to use:\n{list}\nCall tia_connect again with processId set to the one you want.");
+        }
+        return ConnectToSpecificProcess(processes, chosen.Id, projectPath);
+    }
+
+    // The one instance that has projectPath open, else the one with no project open (to open it
+    // in); without projectPath the one instance that has a project open. Null when not unambiguous.
+    private static TiaPortalProcess? PickProcess(List<TiaPortalProcess> processes, string? projectPath)
+    {
+        if (processes.Count == 1) return processes[0];
+        var open = processes.ToDictionary(p => p.Id, OpenProjectPath);
+        if (string.IsNullOrWhiteSpace(projectPath))
+        {
+            var withProject = processes.Where(p => open[p.Id] != null).ToList();
+            return withProject.Count == 1 ? withProject[0] : null;
         }
 
-        return ConnectToSpecificProcess(processes, processes[0].Id, projectPath);
+        string fullPath;
+        try { fullPath = Path.GetFullPath(projectPath); }
+        catch { return null; }
+        var withIt = processes.Where(p => string.Equals(open[p.Id], fullPath, StringComparison.OrdinalIgnoreCase)).ToList();
+        if (withIt.Count == 1) return withIt[0];
+        if (withIt.Count > 1) return null;
+        var empty = processes.Where(p => open[p.Id] == null).ToList();
+        return empty.Count == 1 ? empty[0] : null;
+    }
+
+    // Starts the TIA Portal GUI as a process of its own - not through new TiaPortal(), whose
+    // instance belongs to this server and would close, unsaved work and all, when the server
+    // stops - then attaches to it once it accepts that and opens projectPath.
+    private ConnectResult StartPortal(string projectPath)
+    {
+        if (!File.Exists(projectPath))
+            return new ConnectResult(false, null, null, $"Project file not found: {projectPath}");
+        var exe = Path.Combine(PortalInstallPath(), "Bin", "Siemens.Automation.Portal.exe");
+        if (!File.Exists(exe))
+            return new ConnectResult(false, null, null, $"TIA Portal not found at {exe}. Start TIA Portal yourself, then call tia_connect.");
+
+        using var started = System.Diagnostics.Process.Start(exe);
+        var deadline = DateTime.UtcNow.AddMinutes(5);
+        Exception? lastError = null;
+        while (DateTime.UtcNow < deadline)
+        {
+            System.Threading.Thread.Sleep(2000);
+            if (started.HasExited)
+                return new ConnectResult(false, null, null, $"TIA Portal (process {started.Id}) exited right after starting, with exit code {started.ExitCode}.");
+            var proc = TiaPortal.GetProcesses().FirstOrDefault(p => p.Id == started.Id);
+            if (proc == null) continue;
+            TiaPortal portal;
+            try
+            {
+                portal = proc.Attach();
+            }
+            catch (Exception ex)
+            {
+                // Still starting up.
+                lastError = ex;
+                continue;
+            }
+            return ConnectAttached(portal, proc, projectPath);
+        }
+        return new ConnectResult(false, null, null,
+            $"Started TIA Portal (process {started.Id}), but could not attach to it within 5 minutes{(lastError == null ? "" : $": {lastError.Message}")}. Call tia_connect again once it is up.");
+    }
+
+    // TIA Portal V21's install folder, from the registry; the default folder when it isn't there.
+    private static string PortalInstallPath()
+    {
+        try
+        {
+            using var key = Microsoft.Win32.Registry.LocalMachine.OpenSubKey(@"SOFTWARE\Siemens\Automation\_InstalledSW\TIAP21\Global");
+            if (key?.GetValue("Path") is string path && Directory.Exists(path)) return path;
+        }
+        catch
+        {
+            // Fall through to the default.
+        }
+        return @"C:\Program Files\Siemens\Automation\Portal V21";
     }
 
     // Attaches to exactly one, caller-chosen running instance - the only Attach() call this makes,
@@ -119,7 +204,12 @@ public sealed partial class TiaConnection : IDisposable
         {
             return new ConnectResult(false, null, null, $"Could not attach to TIA Portal process {processId}: {ex.Message}");
         }
+        return ConnectAttached(portal, proc, projectPath);
+    }
 
+    private ConnectResult ConnectAttached(TiaPortal portal, TiaPortalProcess proc, string? projectPath)
+    {
+        var processId = proc.Id;
         ProjectBase? existing;
         LocalSession? existingSession = null;
         try
@@ -157,6 +247,17 @@ public sealed partial class TiaConnection : IDisposable
             portal.Dispose();
             return new ConnectResult(false, null, null,
                 $"Attached to TIA Portal process {processId}, but could not inspect its open projects: {ex.GetType().Name}: {ex.Message}");
+        }
+
+        // The process reports a project, but Openness gets none: opening it any other way fails
+        // with an opaque "Another project is already open".
+        var hiddenProject = existing == null ? OpenProjectPath(proc) : null;
+        if (hiddenProject != null)
+        {
+            portal.Dispose();
+            return new ConnectResult(false, null, null,
+                $"TIA Portal process {processId} has '{hiddenProject}' open, but TIA Portal doesn't give it to Openness. It may still be opening or waiting on a dialog, be missing support packages (e.g. GSD files), or be protected by user management. " +
+                "Close the project in TIA Portal and call tia_connect with projectPath: TIA Portal then reports why it can't be opened.");
         }
 
         if (string.IsNullOrWhiteSpace(projectPath))
@@ -203,17 +304,32 @@ public sealed partial class TiaConnection : IDisposable
             if (isLocalSessionFile)
             {
                 var session = portal.LocalSessions.Open(fileInfo);
-                return FinalizeConnect(portal, session.Project, session, fileInfo.FullName);
+                return FinalizeConnect(portal, session.Project, session, fileInfo.FullName, openedHere: true);
             }
 
             var opened = portal.Projects.Open(fileInfo);
-            return FinalizeConnect(portal, opened);
+            return FinalizeConnect(portal, opened, openedHere: true);
         }
         catch (Exception ex)
         {
             portal.Dispose();
-            return new ConnectResult(false, null, null, $"Failed to open project at '{projectPath}': {ex.Message}");
+            return new ConnectResult(false, null, null, $"Failed to open project at '{projectPath}': {ex.Message}{MissingGsdHint(fileInfo, ex.Message)}");
         }
+    }
+
+    // TIA Portal names the missing GSD files when it can't open a project; a project usually
+    // carries its own copies in AdditionalFiles\GSD. Openness can't install them.
+    private static string MissingGsdHint(FileInfo project, string error)
+    {
+        if (error.IndexOf("support packages are missing", StringComparison.OrdinalIgnoreCase) < 0) return "";
+        var gsdDir = Path.Combine(project.DirectoryName ?? "", "AdditionalFiles", "GSD");
+        var present = Directory.Exists(gsdDir)
+            ? Directory.GetFiles(gsdDir).Select(Path.GetFileName).Where(f => error.IndexOf(f, StringComparison.OrdinalIgnoreCase) >= 0).ToList()
+            : new List<string>();
+        var install = "Install them in TIA Portal (Options > Manage general station description files (GSD)) - with no other TIA Portal instance running - and call tia_connect again.";
+        return present.Count == 0
+            ? $"\n{install}"
+            : $"\nThe project has {(present.Count == 1 ? "this one" : $"{present.Count} of them")} in {gsdDir}: {string.Join(", ", present)}. {install}";
     }
 
     private static string? GetLocalSessionPath(FileInfo? projectPath)
@@ -236,11 +352,14 @@ public sealed partial class TiaConnection : IDisposable
         return string.Equals(GetLocalSessionPath(session.Project.Path), sessionFile.FullName, StringComparison.OrdinalIgnoreCase);
     }
 
-    private ConnectResult FinalizeConnect(TiaPortal portal, ProjectBase project, LocalSession? localSession = null, string? localSessionPath = null)
+    // openedHere: this server opened the project, rather than attaching to one already open.
+    private ConnectResult FinalizeConnect(TiaPortal portal, ProjectBase project, LocalSession? localSession = null, string? localSessionPath = null, bool openedHere = false)
     {
         _tiaPortal = portal;
         _project = project;
         _localSession = localSession;
+        _openedHere = openedHere;
+        _exportsSinceImport.Clear();
         _softwareByName.Clear();
         _hmiSoftwareByName.Clear();
         _hmiTargetByName.Clear();
@@ -541,8 +660,47 @@ public sealed partial class TiaConnection : IDisposable
         }
     }
 
-    private ExportResult ReadBlock(PlcSoftware software, PlcBlock block, IReadOnlyCollection<string> formats) =>
-        ReadInFormats(block.Name, formats, capture => ReadBlockOwnFormat(software, block, capture), f => block.Export(f, ExportOptions.WithDefaults));
+    private ExportResult ReadBlock(PlcSoftware software, PlcBlock block, IReadOnlyCollection<string> formats)
+    {
+        CountExport(software.Name, block.Name);
+        // The own-format read of a code block exports the XML anyway (see PatchMissingNetworkTitles):
+        // keep it to mark the AT overlays the .s7dcl can't show.
+        RawXmlCapture? seen = null;
+        var result = ReadInFormats(block.Name, formats, capture => ReadBlockOwnFormat(software, block, seen = capture ?? new RawXmlCapture()), f => block.Export(f, ExportOptions.WithDefaults));
+        if (!result.Success || seen?.Xml is not { } xml) return result;
+        var overlays = S7dclSource.AtOverlays(xml);
+        return overlays.Count == 0 ? result : result with
+        {
+            Documents = result.Documents.Select(d => d.FileName.EndsWith(".s7dcl", StringComparison.OrdinalIgnoreCase)
+                ? new BlockDocument(d.FileName, S7dclSource.WithAtMarkers(d.Content, overlays)) : d).ToList(),
+        };
+    }
+
+    // TIA Portal V21 terminates (DeclInstanceProvider.RemoveAndRelease) when it overwrites a block
+    // with a textual interface that was exported more than once since the project was opened or
+    // the block was last imported - waiting or a compile doesn't help, reopening the project does.
+    // So this counts the reads of each block ("plc/block"); write_source_tree checks the count.
+    private readonly Dictionary<string, int> _exportsSinceImport = new(StringComparer.OrdinalIgnoreCase);
+
+    // This server opened the project: a block without a count wasn't exported since.
+    private bool _openedHere;
+
+    // How often this server read the block since the project was opened or the block last
+    // imported; null when it can't tell (it attached to a project that was already open, and
+    // hasn't imported the block since).
+    public int? ExportsSinceImport(string plcName, string blockName) =>
+        _exportsSinceImport.TryGetValue($"{plcName}/{blockName}", out var count) ? count : _openedHere ? 0 : null;
+
+    private void CountExport(string plcName, string blockName)
+    {
+        if (ExportsSinceImport(plcName, blockName) is { } count) _exportsSinceImport[$"{plcName}/{blockName}"] = count + 1;
+    }
+
+    private ImportResult Imported(string plcName, string blockName, ImportResult result)
+    {
+        if (result.Success) _exportsSinceImport[$"{plcName}/{blockName}"] = 0;
+        return result;
+    }
 
     // A block's own format: GRAPH is converted from the XML ('.graph.il'), whole-block STL is
     // 'Generate source' text ('.awl'), the rest TIA Portal's document format ('.s7dcl').
@@ -934,6 +1092,9 @@ public sealed partial class TiaConnection : IDisposable
                 {
                     var resIndex = docs.FindIndex(d => d.FileName.EndsWith(".s7res", StringComparison.OrdinalIgnoreCase));
                     var (dcl, res) = MlcIds.Renumber(docs[dclIndex].Content, resIndex >= 0 ? docs[resIndex].Content : null);
+                    // The relay block is numbered automatically, so TIA Portal left S7_BlockNumber
+                    // out - and writing the .s7dcl back would then renumber the block.
+                    if (!block.AutoNumber) dcl = S7dclSource.WithBlockNumber(dcl, block.Number);
                     docs[dclIndex] = docs[dclIndex] with { Content = dcl };
                     if (resIndex >= 0) docs[resIndex] = docs[resIndex] with { Content = res! };
                 }
@@ -1431,7 +1592,8 @@ public sealed partial class TiaConnection : IDisposable
         }
     }
 
-    public ImportResult WriteBlock(string plcName, string blockName, IReadOnlyList<BlockDocument> documents)
+    // stlAtRead: the block had embedded STL networks when it was read into the tree.
+    public ImportResult WriteBlock(string plcName, string blockName, IReadOnlyList<BlockDocument> documents, bool stlAtRead = false)
     {
         EnsureConnected();
         var software = GetSoftware(plcName);
@@ -1461,8 +1623,10 @@ public sealed partial class TiaConnection : IDisposable
         // SILENTLY DELETES the STL network(s) from the real block. Whole-block STL is handled
         // above via WriteStlBlock; a mixed FBD/LAD/SCL block with one or more embedded STL
         // networks has no such route yet (there's no per-network import API either) - refuse
-        // outright here rather than risk a silent, destructive partial overwrite.
-        if (IsStlInvolved(block))
+        // outright here rather than risk a silent, destructive partial overwrite. Told from the
+        // read and the documents, not by exporting the block: an export right before the override
+        // import below makes TIA Portal V21 terminate for a block with a textual interface.
+        if (stlAtRead || documents.Any(d => d.FileName.EndsWith(".s7dcl", StringComparison.OrdinalIgnoreCase) && StlPlaceholder.IsMatch(d.Content)))
         {
             return new ImportResult(false, new[]
             {
@@ -1471,30 +1635,29 @@ public sealed partial class TiaConnection : IDisposable
             });
         }
 
-        return ImportBlockDocuments(owner, blockName, documents, ImportDocumentOptions.Override);
+        return Imported(plcName, blockName, ImportBlockDocuments(owner, blockName, documents, ImportDocumentOptions.Override));
     }
 
-    private static bool IsStlInvolved(PlcBlock block)
+    // After a failed call: a message when the TIA Portal process is gone - an Openness error then
+    // only says which method failed. Null while it still runs.
+    private string? PortalStopped()
     {
-        if (block.ProgrammingLanguage == ProgrammingLanguage.STL) return true;
-
-        var probeDir = new DirectoryInfo(Path.Combine(Path.GetTempPath(), "TiaMcp", "stl-probe", Guid.NewGuid().ToString("N")));
-        probeDir.Create();
         try
         {
-            var result = block.ExportAsDocuments(probeDir, FileStem(block.Name));
-            return result.State == DocumentResultState.Failure
-                && result.Messages.Any(m => m.Message.Contains("cannot be exported to or imported from SIMATIC SD"));
+            if (_tiaPortal == null) return null;
+            using var process = System.Diagnostics.Process.GetProcessById(_tiaPortal.GetCurrentProcess().Id);
+            if (!process.HasExited) return null;
         }
-        catch (Exception ex)
+        catch
         {
-            return ex.Message.Contains("cannot be exported to or imported from SIMATIC SD");
+            // Gone: Openness or GetProcessById threw.
         }
-        finally
-        {
-            try { probeDir.Delete(true); } catch { /* best effort cleanup */ }
-        }
+        return "TIA Portal stopped during the import (unsaved changes in the project are lost). Its crash report is under " +
+               @"C:\ProgramData\Siemens\Automation\Portal V21\Diagnostics. Start TIA Portal again and call tia_connect.";
     }
+
+    // The placeholder NETWORK ReadMixedStlBlock leaves at each embedded STL network.
+    private static readonly Regex StlPlaceholder = new(@"S7_Language\s*:=\s*""STL""");
 
     // GRAPH write, mirroring ReadGraphBlock's use of the separate PlcBlock.Export/
     // PlcBlockComposition.Import XML API (not ImportFromDocuments). Conservative by design -
@@ -1695,7 +1858,7 @@ public sealed partial class TiaConnection : IDisposable
             return new ImportResult(false, new[] { $"Group '{groupPath}' not found in PLC '{plcName}'. Use create_group first, or pass an empty groupPath for the root." });
         }
 
-        return ImportBlockDocuments(resolved.Value.Blocks, blockName, documents, ImportDocumentOptions.None);
+        return Imported(plcName, blockName, ImportBlockDocuments(resolved.Value.Blocks, blockName, documents, ImportDocumentOptions.None));
     }
 
     // Creating a brand-new GRAPH block from nothing isn't possible through Openness:
@@ -1857,7 +2020,7 @@ public sealed partial class TiaConnection : IDisposable
         }
         catch (Exception ex)
         {
-            return new ImportResult(false, new[] { ex.Message });
+            return new ImportResult(false, new[] { PortalStopped() ?? ex.Message });
         }
         finally
         {
@@ -2796,7 +2959,9 @@ public sealed partial class TiaConnection : IDisposable
         return null;
     }
 
-    public HmiTagTableResult ReadHmiTagTable(string hmiName, string tableName)
+    // readLength: also read each String/WString tag's MaxLength - an extra Openness call per tag,
+    // which makes reading a large table noticeably slower.
+    public HmiTagTableResult ReadHmiTagTable(string hmiName, string tableName, bool readLength = false)
     {
         EnsureConnected();
         var software = GetHmiSoftware(hmiName);
@@ -2808,10 +2973,15 @@ public sealed partial class TiaConnection : IDisposable
 
         var tags = table.Tags
             .OfType<HmiTag>()
-            .Select(t => new HmiTagInfo(t.Name, t.DataType, t.Address, t.Connection, t.PlcName, t.PlcTag, ExtractText(t.Comment), t.AcquisitionCycle))
+            .Select(t => new HmiTagInfo(t.Name, t.DataType, t.Address, t.Connection, t.PlcName, t.PlcTag, ExtractText(t.Comment), t.AcquisitionCycle,
+                readLength && IsStringType(t.DataType) ? t.MaxLength : null))
             .ToArray();
         return new HmiTagTableResult(true, tags, null);
     }
+
+    // String and WString are the HMI types with a length (HmiTag.MaxLength).
+    private static bool IsStringType(string? dataType) =>
+        string.Equals(dataType, "String", StringComparison.OrdinalIgnoreCase) || string.Equals(dataType, "WString", StringComparison.OrdinalIgnoreCase);
 
     public WriteTagsResult WriteHmiTagTable(string hmiName, string tableName, IReadOnlyList<HmiTagSpec> tags, bool deleteMissing = false)
     {
@@ -2841,12 +3011,15 @@ public sealed partial class TiaConnection : IDisposable
             try
             {
                 byName.TryGetValue(spec.Name, out var existing);
-                var tag = existing ?? table.Tags.Create(spec.Name);
-                if (existing == null) byName[tag.Name] = tag;
                 // Bound either by this spec or already in the project - a row that only updates,
                 // say, the comment of a bound tag carries no Connection/PlcTag of its own.
                 bool isPlcBound = (!string.IsNullOrEmpty(spec.Connection) && !string.IsNullOrEmpty(spec.PlcTag))
                     || (existing != null && !string.IsNullOrEmpty(existing.PlcTag));
+                // Checked before Create, so a bad row doesn't leave a new tag behind.
+                if (spec.Length != null && !isPlcBound && !IsStringType(spec.DataType))
+                    throw new InvalidOperationException($"Length only applies to String/WString tags, not to {spec.DataType}.");
+                var tag = existing ?? table.Tags.Create(spec.Name);
+                if (existing == null) byName[tag.Name] = tag;
                 if (!isPlcBound && tag.DataType != spec.DataType)
                 {
                     // No PLC binding (an internal tag) - nothing else can tell TIA what type this
@@ -2871,6 +3044,15 @@ public sealed partial class TiaConnection : IDisposable
                 // still accepted/required by the tool schema for the bound case (kept so callers
                 // don't need two shapes), but is ignored here.
                 if (spec.Comment != null) SetComment(tag.Comment, spec.Comment);
+                if (spec.Length != null && tag.MaxLength != spec.Length.Value)
+                {
+                    if (!IsStringType(tag.DataType))
+                        throw new InvalidOperationException($"Length only applies to String/WString tags, not to {tag.DataType}.");
+                    // TIA locks it to the PLC tag's length ("Set is not allowed for disabled fields").
+                    if (isPlcBound)
+                        throw new InvalidOperationException($"The Length of a PLC-bound tag follows its PLC tag ({tag.MaxLength}); change the PLC tag's string length instead.");
+                    tag.MaxLength = spec.Length.Value;
+                }
                 if (spec.AcquisitionCycle != null && tag.AcquisitionCycle != spec.AcquisitionCycle)
                 {
                     // TIA locks the cycle of internal tags (always T1s) and rejects the set with
@@ -3338,8 +3520,27 @@ public sealed partial class TiaConnection : IDisposable
         var software = GetSoftware(plcName);
         var compilable = software.GetService<ICompilable>();
         var result = compilable.Compile();
-        var messages = result.Messages.Cast<CompilerResultMessage>().Select(m => $"[{m.State}] {m.Description}").ToArray();
+        // The top-level messages are only the summary; the errors and warnings
+        // are nested per object (block > network > message). Report every
+        // error/warning leaf with the path of the objects above it.
+        var messages = new List<string>();
+        CollectCompileMessages(result.Messages, "", messages);
+        const int maxMessages = 100;
+        if (messages.Count > maxMessages)
+            messages = messages.Take(maxMessages).Append($"... {messages.Count - maxMessages} more").ToList();
         return new CompileResult(result.State.ToString(), result.ErrorCount, result.WarningCount, messages);
+    }
+
+    private static void CollectCompileMessages(CompilerResultMessageComposition messages, string path, List<string> output)
+    {
+        foreach (CompilerResultMessage m in messages)
+        {
+            var here = string.IsNullOrEmpty(m.Path) ? path : string.IsNullOrEmpty(path) ? m.Path : $"{path} > {m.Path}";
+            if (m.Messages.Count > 0)
+                CollectCompileMessages(m.Messages, here, output);
+            else if (m.State is CompilerResultState.Error or CompilerResultState.Warning && !string.IsNullOrWhiteSpace(m.Description))
+                output.Add($"[{m.State}] {(string.IsNullOrEmpty(here) ? "" : here + ": ")}{m.Description}");
+        }
     }
 
     // Block names are unique per-PLC regardless of group (enforced by TIA Portal itself, and

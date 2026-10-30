@@ -24,7 +24,7 @@ internal sealed class HmiScreenKind : ISourceKind
         return entries;
     }
 
-    public async Task Export(TiaSession session, string hmi, Func<string, string, IReadOnlyCollection<string>?> formats, List<ExportedItem> items)
+    public async Task Export(TiaSession session, string hmi, Func<string, string, IReadOnlyCollection<string>?> formats, ExportOptions options, List<ExportedItem> items)
     {
         foreach (var screen in (await session.ListHmiScreensAsync(hmi)).Where(s => formats(s.GroupPath, s.Name) != null))
         {

@@ -40,11 +40,23 @@ internal interface ISourceKind
 
     // Exports the items formats (group path, name) selects into items, in the formats it returns:
     // null skips the item, an empty list means its own format. A failure is per item, not as a whole.
-    Task Export(TiaSession session, string device, Func<string, string, IReadOnlyCollection<string>?> formats, List<ExportedItem> items);
+    // options are the tree's read settings (see ExportOptions).
+    Task Export(TiaSession session, string device, Func<string, string, IReadOnlyCollection<string>?> formats, ExportOptions options, List<ExportedItem> items);
 
     // Writes the given items of one device from their files, each from its ImportListItem.Format;
     // see write_source_tree.
     Task<WriteLog> Write(WriteContext context, IReadOnlyList<ImportListItem> items);
+}
+
+// Read settings of a source tree, kept in its manifest so that every export of an item - the read,
+// the conflict check and the read-back of a write - gives the same files.
+// HmiTagLength: the Length column of HMI tag table CSVs (slow: an Openness call per tag).
+internal sealed class ExportOptions
+{
+    public ExportOptions(bool hmiTagLength) { HmiTagLength = hmiTagLength; }
+    public bool HmiTagLength { get; }
+
+    public static ExportOptions Of(SourceTreeManifest? manifest) => new(manifest?.HmiTagLength == true);
 }
 
 // One line of list_project, with the item's formats (none for a group line). A group line
@@ -68,10 +80,10 @@ internal sealed class ListedEntry
 internal sealed class WriteContext
 {
     public WriteContext(TiaSession session, string device, string root, string deviceDir, bool createMissing, bool overwriteExisting, bool dryRun, bool workingCopy,
-        SourceTreeManifest? baseline, List<ImportListItem> written)
+        SourceTreeManifest? tree, SourceTreeManifest? baseline, List<ImportListItem> written)
     {
         Session = session; Device = device; Root = root; DeviceDir = deviceDir; CreateMissing = createMissing;
-        OverwriteExisting = overwriteExisting; DryRun = dryRun; WorkingCopy = workingCopy; Baseline = baseline; Written = written;
+        OverwriteExisting = overwriteExisting; DryRun = dryRun; WorkingCopy = workingCopy; Tree = tree; Baseline = baseline; Written = written;
     }
     public TiaSession Session { get; }
     public string Device { get; }
@@ -86,6 +98,9 @@ internal sealed class WriteContext
     // The tree is a working copy of this project: its table files are whole tables as read, so a
     // removed row means a deleted row.
     public bool WorkingCopy { get; }
+
+    // The tree's manifest when it is a working copy: what the last read found. Null otherwise.
+    public SourceTreeManifest? Tree { get; }
 
     // The manifest when the items being written were checked to be unchanged in TIA Portal since
     // the read (a working copy, without force): the project then still matches the tree as read

@@ -19,7 +19,7 @@ public sealed partial class TiaConnection
         var group = ResolveGroup(GetSoftware(plcName), groupPath);
         return group == null
             ? NotFound(groupPath)
-            : ImportXml(xml, "SW.Blocks.", "a block", blockName, file => group.Value.Blocks.Import(file, ImportOptions.Override));
+            : Imported(plcName, blockName, ImportXml(xml, "SW.Blocks.", "a block", blockName, file => group.Value.Blocks.Import(file, ImportOptions.Override)));
     }
 
     public ImportResult ImportUdtXml(string plcName, string groupPath, string typeName, string xml)

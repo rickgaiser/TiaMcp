@@ -29,10 +29,15 @@ internal sealed class BlockKind : ISourceKind
             .Select(b => new ListedEntry(b.GroupPath, b.Name, $"{Describe(Name, b.GroupPath, b.Name)} [{b.Language}]{(b.Consistent ? "" : " INCONSISTENT")}", FormatsOf(b.Language), inconsistent: !b.Consistent))
             .ToList();
 
-    public async Task Export(TiaSession session, string plc, Func<string, string, IReadOnlyCollection<string>?> formats, List<ExportedItem> items)
+    public async Task Export(TiaSession session, string plc, Func<string, string, IReadOnlyCollection<string>?> formats, ExportOptions options, List<ExportedItem> items)
     {
         foreach (var (b, result) in await session.ReadAllBlocksAsync(plc, formats))
-            items.Add(ExportedItem.FromDocuments(plc, Name, b.GroupPath, b.Name, result, FormatsOf(b.Language)));
+        {
+            var item = ExportedItem.FromDocuments(plc, Name, b.GroupPath, b.Name, result, FormatsOf(b.Language));
+            foreach (var dcl in result.Documents.Where(d => d.FileName.EndsWith(".s7dcl", StringComparison.OrdinalIgnoreCase)))
+                item.Warnings.AddRange(S7dclSource.FindWriteProblems(dcl.Content));
+            items.Add(item);
+        }
     }
 
     // Global DBs and called FBs before their callers and instance DBs - see DependencyWrites.
@@ -75,13 +80,25 @@ internal sealed class BlockKind : ISourceKind
                 continue;
             }
 
+            // What TIA Portal's .s7dcl import would get wrong - refused, also in a dry run, so the
+            // file can be worked around first.
+            var problems = docs.Where(d => d.FileName.EndsWith(".s7dcl", StringComparison.OrdinalIgnoreCase))
+                .SelectMany(d => S7dclSource.FindWriteProblems(d.Content)).ToList();
+            if (problems.Count > 0)
+            {
+                log.Failed.Add($"{label}: refused, the .s7dcl import would change it - {string.Join(" | ", problems)}");
+                continue;
+            }
+
             if (existingBlocks.Contains(item.ItemName))
             {
                 if (!context.OverwriteExisting) { log.Skipped.Add($"{label} - already exists, overwriteExisting=false"); continue; }
                 if (context.DryRun) { log.Updated.Add($"{label} (dry run)"); continue; }
 
                 var name = item.ItemName;
-                writes.Add(new PendingWrite(item, label, docs, false, () => session.WriteBlockAsync(plc, name, docs)));
+                // The read wrote an .stl-networks companion: the block has embedded STL networks.
+                var stlAtRead = context.Tree?.Find(plc, Name, name)?.Files.Keys.Any(k => k.IndexOf(".stl-networks.", StringComparison.OrdinalIgnoreCase) >= 0) == true;
+                writes.Add(new PendingWrite(item, label, docs, false, () => session.WriteBlockAsync(plc, name, docs, stlAtRead)));
                 continue;
             }
 
