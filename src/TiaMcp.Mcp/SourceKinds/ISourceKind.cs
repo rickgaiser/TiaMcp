@@ -44,8 +44,9 @@ internal interface ISourceKind
 
     // Exports the items formats (group path, name) selects into items, in the formats it returns:
     // null skips the item, an empty list means its own format. A failure is per item, not as a whole.
-    // options are the tree's read settings (see ExportOptions).
-    Task Export(TiaSession session, string device, Func<string, string, IReadOnlyCollection<string>?> formats, ExportOptions options, List<ExportedItem> items);
+    // options are the tree's read settings (see ExportOptions). exporting is told each item right
+    // before its export, with how many this kind exports in all.
+    Task Export(TiaSession session, string device, Func<string, string, IReadOnlyCollection<string>?> formats, ExportOptions options, List<ExportedItem> items, ExportingItem? exporting);
 
     // Writes the given items of one device from their files, each from its ImportListItem.Format;
     // see write_source_tree.
@@ -84,10 +85,11 @@ internal sealed class ListedEntry
 internal sealed class WriteContext
 {
     public WriteContext(TiaSession session, string device, string root, string deviceDir, bool createMissing, bool overwriteExisting, bool dryRun, bool workingCopy,
-        SourceTreeManifest? tree, SourceTreeManifest? baseline, List<ImportListItem> written)
+        SourceTreeManifest? tree, SourceTreeManifest? baseline, List<ImportListItem> written, ProgressLog progress)
     {
         Session = session; Device = device; Root = root; DeviceDir = deviceDir; CreateMissing = createMissing;
         OverwriteExisting = overwriteExisting; DryRun = dryRun; WorkingCopy = workingCopy; Tree = tree; Baseline = baseline; Written = written;
+        Progress = progress;
     }
     public TiaSession Session { get; }
     public string Device { get; }
@@ -113,6 +115,10 @@ internal sealed class WriteContext
 
     // Items written successfully; they are read back into the tree afterward.
     public List<ImportListItem> Written { get; }
+
+    // Where a slow handler reports each item it writes; once Cancelled, it starts no new writes
+    // and reports the rest SKIPPED (see ProgressLog).
+    public ProgressLog Progress { get; }
 
     // Items whose write failed, but changed them in the project all the same (some rows or screen
     // items written). Their files keep the edit; only the tree's record of the project is brought

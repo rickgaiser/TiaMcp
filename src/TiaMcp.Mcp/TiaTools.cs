@@ -6,7 +6,9 @@ using System.Linq;
 using System.Security.Principal;
 using System.Text;
 using System.Text.RegularExpressions;
+using System.Threading;
 using System.Threading.Tasks;
+using ModelContextProtocol;
 using ModelContextProtocol.Server;
 using TiaMcp.Openness;
 using static TiaMcp.Mcp.SourceTree;
@@ -39,6 +41,11 @@ public sealed partial class TiaTools
         try
         {
             return await action();
+        }
+        catch (OperationCanceledException ex) when (ex.CancellationToken.IsCancellationRequested)
+        {
+            // See ProgressLog: a call is only stopped before it changes the project or the tree.
+            return "Cancelled - nothing was changed.";
         }
         catch (Exception ex)
         {
@@ -606,7 +613,7 @@ Without filter or deviceName, a project of more than 200 items only gets counts 
     // Multiuser: the mark state of the given items, as TIA Portal has it now - an Openness call per
     // object they are made of (~35 ms; a tag table costs one per tag). Items of a kind without a mark
     // state, or not in the project, are left out. Empty outside a Multiuser local session.
-    private async Task<Dictionary<(string Device, string Kind, string Name), SourceTreeMarks>> MarkStates(IReadOnlyCollection<(string Device, string Kind, string Name)> items)
+    private async Task<Dictionary<(string Device, string Kind, string Name), SourceTreeMarks>> MarkStates(IReadOnlyCollection<(string Device, string Kind, string Name)> items, ProgressLog? progress = null)
     {
         var result = new Dictionary<(string, string, string), SourceTreeMarks>();
         if (!_session.IsMultiuser || items.Count == 0) return result;
@@ -615,6 +622,7 @@ Without filter or deviceName, a project of more than 200 items only gets counts 
             var family = (await Devices(group.Key.Device)).Select(d => (DeviceFamily?)d.Family).FirstOrDefault();
             var target = family == null ? null : SourceKinds.All.FirstOrDefault(k => k.Name == group.Key.Kind && k.Family == family)?.MarkTarget;
             if (target == null) continue;
+            progress?.Item($"{group.Key.Device}: {(SourceKinds.All.Any(k => k.Name == group.Key.Kind && k.FixedName != null) ? group.Key.Kind : $"{group.Count()} {group.Key.Kind}(s)")}");
             var states = await _session.GetMarkStatesAsync(group.Key.Device, target.Value, group.Select(i => i.Name).ToList());
             if (states == null) continue;
             foreach (var item in group)
@@ -632,10 +640,11 @@ Without filter or deviceName, a project of more than 200 items only gets counts 
     }
 
     // Records the items' mark state in the manifest (see MarkStates).
-    private async Task RecordMarks(SourceTreeManifest manifest, IReadOnlyCollection<(string Device, string Kind, string Name)> items)
+    private async Task RecordMarks(SourceTreeManifest manifest, IReadOnlyCollection<(string Device, string Kind, string Name)> items, ProgressLog? progress = null)
     {
         if (!_session.IsMultiuser) return;
-        var marks = await MarkStates(items);
+        progress?.Phase("Multiuser marks");
+        var marks = await MarkStates(items, progress);
         foreach (var item in items)
         {
             var entry = manifest.Find(item.Device, item.Kind, item.Name);
@@ -652,7 +661,7 @@ Files per item: blocks and UDTs keep TIA Portal's own document format (.s7dcl, p
 
 Formats: blocks, UDTs and PLC tag tables can also be read as their raw Openness XML ('<name>.xml', SimaticML): complete where a converted format leaves something out, and writable too. An item is read in the formats it already has in the tree, else its own format; pass its list line with formats (""tag table 'Tags' [csv, xml]"", ""block 'Main' [xml]"") to choose. The XML costs no extra export where the own format is made from it (tag tables, GRAPH and code blocks); for data blocks, UDTs and whole-STL blocks it does. _manifest.json records each item's formats and each file's format.
 
-An item that fails to export (e.g. an inconsistent block - GRAPH blocks must be compiled first) is reported, and files from an earlier read of it are renamed with a '.stale' suffix rather than left looking current. '_export_summary.txt' lists every item in the tree, with the formats it has there (list_project shows the formats it can be read in); '_manifest.json' and the '.base' folder are write_source_tree's bookkeeping - don't edit them. Returns counts, failures, the items that read back different from the last read into this tree (changed in TIA Portal, or rendered differently by a newer TiaMcp), and for a partial read each item's files.
+An item that fails to export (e.g. an inconsistent block - GRAPH blocks must be compiled first) is reported, and files from an earlier read of it are renamed with a '.stale' suffix rather than left looking current. '_export_summary.txt' lists every item in the tree, with the formats it has there (list_project shows the formats it can be read in); '_manifest.json' and the '.base' folder are write_source_tree's bookkeeping - don't edit them. '_progress.log' shows what the read is doing while it runs (also sent as MCP progress notifications); a cancel during the export leaves the tree unchanged. Returns counts, failures, the items that read back different from the last read into this tree (changed in TIA Portal, or rendered differently by a newer TiaMcp), the time per phase, and for a partial read each item's files.
 
 In a Multiuser local session the read also checks each item's mark state (about 35 ms per block, UDT or screen, and per tag or alarm of a table - roughly a minute for a medium-sized project): items marked by another user or not up to date with the server are listed in the result, and every marked item in _export_summary.txt, e.g. ""(marked by another user: 2 of 240 (Tag_A, Tag_B))"". write_source_tree refuses to write those.")]
     public Task<string> ReadSourceTree(
@@ -660,7 +669,9 @@ In a Multiuser local session the read also checks each item's mark state (about 
         [Description("Optional: read only these items - 'Name', 'group/path/Name', 'group/path/' for everything below a group, or item lines as list_project shows them, optionally ending with the formats to read, e.g. \"tag table 'Tags' [csv, xml]\" (case-insensitive; for HMI alarms 'DiscreteAlarms', 'AnalogAlarms', 'AlarmClasses' or 'HMI alarms/'). Omit to read everything.")] string[]? items = null,
         [Description("Optional: read only this PLC or HMI software name")] string? deviceName = null,
         [Description("Read into a tree that has an _export_summary.txt but no _manifest.json (read by an older version, or generated), making it a working copy of the connected project. Default false.")] bool adoptExisting = false,
-        [Description("Give WinCC Unified HMI tag table CSVs a Length column (the maximum length of String/WString tags). SLOW: an extra Openness call per tag. Remembered for the tree; omit to keep the tree's setting (off for a new tree).")] bool? hmiTagLength = null) => Safe(async () =>
+        [Description("Give WinCC Unified HMI tag table CSVs a Length column (the maximum length of String/WString tags). SLOW: an extra Openness call per tag. Remembered for the tree; omit to keep the tree's setting (off for a new tree).")] bool? hmiTagLength = null,
+        IProgress<ProgressNotificationValue>? progress = null,
+        CancellationToken cancellationToken = default) => Safe(async () =>
     {
         if (!_session.IsConnected) return "Not connected. Call tia_connect first.";
 
@@ -691,8 +702,13 @@ In a Multiuser local session the read also checks each item's mark state (about 
         if (hmiTagLength != null) manifest.HmiTagLength = hmiTagLength.Value ? true : null;
 
         var startedAt = DateTime.Now;
-        var (exported, devices) = await ExportItems(selection == null ? null : (_, kind, groupPath, name) => RequestedFormats(selection, kind, groupPath, name), deviceName, manifest);
+        using var progressLog = new ProgressLog(targetDirectory, $"read_source_tree {(partial ? "(partial) " : "")}- project {_session.ProjectName}", progress, cancellationToken);
+        progressLog.Phase("export", cancellable: true);
+        var (exported, devices) = await ExportItems(selection == null ? null : (_, kind, groupPath, name) => RequestedFormats(selection, kind, groupPath, name), deviceName, manifest, progressLog);
         if (devices.Count == 0) return deviceName == null ? "No PLC or HMI devices found." : $"No PLC or HMI software named '{deviceName}'.";
+
+        // From here on the tree changes: a cancel no longer stops the read halfway.
+        progressLog.Phase("write files");
 
         // What reads back different from the last read: changed in TIA Portal (by anyone), or
         // rendered differently by a newer TiaMcp. Only formats both reads have are compared.
@@ -708,10 +724,8 @@ In a Multiuser local session the read also checks each item's mark state (about 
         foreach (var item in gone) RemoveFromTree(targetDirectory, manifest, item);
 
         // Multiuser: what this user can edit without conflicts, known before editing.
-        var marksStartedAt = DateTime.Now;
         var read = exported.Where(e => e.Ok).Select(e => (e.Device, e.Kind, e.Name)).ToList();
-        await RecordMarks(manifest, read);
-        var marksSeconds = (DateTime.Now - marksStartedAt).TotalSeconds;
+        await RecordMarks(manifest, read, progressLog);
 
         manifest.Project = _session.ProjectName;
         manifest.LastRead = startedAt;
@@ -748,7 +762,7 @@ In a Multiuser local session the read also checks each item's mark state (about 
         {
             var marked = read.Select(r => manifest.Find(r.Device, r.Kind, r.Name)).Where(e => e?.Multiuser != null).Select(e => e!).ToList();
             var blocked = marked.Where(e => e.Multiuser!.ByOthers > 0 || e.Multiuser.NotUpToDate > 0).ToList();
-            result.AppendLine($"  Multiuser ({marksSeconds:0} s): {marked.Count(e => e.Multiuser!.ByOthers > 0)} item(s) marked by another user, " +
+            result.AppendLine($"  Multiuser: {marked.Count(e => e.Multiuser!.ByOthers > 0)} item(s) marked by another user, " +
                               $"{marked.Count(e => e.Multiuser!.NotUpToDate > 0)} not up to date with the server, {marked.Count(e => e.Multiuser!.ByMe > 0)} marked by me" +
                               (blocked.Count == 0 ? "." : " - write_source_tree refuses the first two unless force=true:"));
             foreach (var e in blocked.Take(MaxFailedLines)) result.AppendLine($"    {Describe(e.Kind, e.GroupPath, e.Name)}: {e.Multiuser!.Describe()}");
@@ -758,6 +772,7 @@ In a Multiuser local session the read also checks each item's mark state (about 
         // tree that this read left in the old shape would look changed in TIA Portal.
         if (lengthChanged && manifest.Items.Any(i => i.Kind == "HMI tag table" && i.Formats.Contains(SourceFormat.Csv) && !exported.Any(e => i.Is(e.Device, e.Kind, e.Name))))
             result.AppendLine("  NOTE hmiTagLength changed, but not every HMI tag table in the tree was read: read the other HMI tag tables again before writing them.");
+        result.AppendLine($"Time: {progressLog.Timings}.");
         result.AppendLine($"Full item list: {summaryPath}");
         return result.ToString();
     });
@@ -794,7 +809,7 @@ In a Multiuser local session, an item another user has marked, or that the serve
 
 An item whose write FAILED but changed the project anyway (some tag rows or screen items written) keeps its edited file, and can be written again after fixing the cause without force=true.
 
-Writes '<sourceDirectory>/_import_report.txt' with one CREATED/UPDATED/SKIPPED/FAILED line per item (per row for alarms). Returns that report for a small write; for a larger one, the counts per software plus every SKIPPED line and the first FAILED lines. Tag rows that fail the same way are reported as one line.")]
+Writes '<sourceDirectory>/_import_report.txt' with one CREATED/UPDATED/SKIPPED/FAILED line per item (per row for alarms). Returns that report for a small write; for a larger one, the counts per software plus every SKIPPED line and the first FAILED lines. Tag rows that fail the same way are reported as one line. Both end with the time per phase. '_progress.log' shows what the write is doing while it runs (also sent as MCP progress notifications). A cancel before the first item is written changes nothing; after that, the items not written yet are SKIPPED and what was written is read back.")]
     public Task<string> WriteSourceTree(
         [Description("Root directory of the source tree, as passed to read_source_tree.")] string sourceDirectory,
         [Description("Optional: consider only these items - lines from list_project or _export_summary.txt, as a file path or inline. Omit to consider the whole tree, including new files.")] string? itemList = null,
@@ -802,9 +817,14 @@ Writes '<sourceDirectory>/_import_report.txt' with one CREATED/UPDATED/SKIPPED/F
         [Description("Create items that don't yet exist in the connected project. Default true.")] bool createMissing = true,
         [Description("Overwrite items that already exist in the connected project. Default true.")] bool overwriteExisting = true,
         [Description("Also overwrite items that were changed in TIA Portal since read_source_tree, discarding those changes. Default false.")] bool force = false,
-        [Description("Preview only - report what would happen without writing any changes.")] bool dryRun = false) => Safe(async () =>
+        [Description("Preview only - report what would happen without writing any changes.")] bool dryRun = false,
+        IProgress<ProgressNotificationValue>? progress = null,
+        CancellationToken cancellationToken = default) => Safe(async () =>
     {
         if (!_session.IsConnected) return "Not connected. Call tia_connect first.";
+
+        using var progressLog = new ProgressLog(Directory.Exists(sourceDirectory) ? sourceDirectory : null, $"write_source_tree{(dryRun ? " (dry run)" : "")} - project {_session.ProjectName}", progress, cancellationToken);
+        progressLog.Phase("check files", cancellable: true);
 
         var manifest = SourceTreeManifest.Load(sourceDirectory);
         // A tree read from another project (e.g. restoring into an emptied copy) isn't a working
@@ -912,7 +932,7 @@ Writes '<sourceDirectory>/_import_report.txt' with one CREATED/UPDATED/SKIPPED/F
         var conflicts = new List<(ImportListItem Item, string Reason)>();
         if (checkChanges && items.Count > 0)
         {
-            conflicts = await FindConflicts(manifest!, items);
+            conflicts = await FindConflicts(manifest!, items, progressLog);
             items = items.Where(i => !conflicts.Any(c => c.Item == i)).ToList();
         }
         conflicts.AddRange(refused);
@@ -921,7 +941,8 @@ Writes '<sourceDirectory>/_import_report.txt' with one CREATED/UPDATED/SKIPPED/F
         // would conflict on commit - checked again now, the read's mark state may be old.
         if (_session.IsMultiuser && !force && items.Count > 0)
         {
-            var marks = await MarkStates(items.Select(i => (i.DeviceName, i.Kind, i.ItemName)).ToList());
+            progressLog.Phase("Multiuser marks", cancellable: true);
+            var marks = await MarkStates(items.Select(i => (i.DeviceName, i.Kind, i.ItemName)).ToList(), progressLog);
             foreach (var item in items)
             {
                 if (!marks.TryGetValue((item.DeviceName, item.Kind, item.ItemName), out var m)) continue;
@@ -964,11 +985,23 @@ Writes '<sourceDirectory>/_import_report.txt' with one CREATED/UPDATED/SKIPPED/F
             // Each kind in the registry's write order, which puts what an item references first.
             var kinds = family == null ? new List<ISourceKind>() : SourceKinds.Of(family.Value).ToList();
             var context = new WriteContext(_session, deviceName, sourceDirectory, deviceDir, createMissing, overwriteExisting, dryRun, workingCopy,
-                workingCopy ? manifest : null, workingCopy && !force ? manifest : null, written);
+                workingCopy ? manifest : null, workingCopy && !force ? manifest : null, written, progressLog);
+            // From here on the project changes: a cancel stops starting new writes, and what was
+            // written is still read back.
+            progressLog.Phase("write");
             foreach (var kind in kinds)
             {
                 var kindItems = deviceItems.Where(i => i.Kind == kind.Name).ToList();
-                if (kindItems.Count > 0) logs.Add(await kind.Write(context, kindItems));
+                if (kindItems.Count == 0) continue;
+                if (progressLog.Cancelled)
+                {
+                    var cancelled = new WriteLog();
+                    cancelled.Skipped.AddRange(kindItems.Select(i => $"{Describe(i.Kind, i.GroupPath, i.ItemName)} - not written, the call was cancelled"));
+                    logs.Add(cancelled);
+                    continue;
+                }
+                progressLog.Note($"{deviceName}: {(kind.FixedName != null ? kind.Name : $"{kindItems.Count} {kind.Name}(s)")}");
+                logs.Add(await kind.Write(context, kindItems));
             }
             touched.AddRange(context.Touched);
 
@@ -983,6 +1016,8 @@ Writes '<sourceDirectory>/_import_report.txt' with one CREATED/UPDATED/SKIPPED/F
                     && kinds.Any(k => k.Name == w.Kind && k.XmlNeedsCompile)
                     && (w.Format == SourceFormat.Xml || manifest!.Find(w.DeviceName, w.Kind, w.ItemName)?.WritableFiles.Any(f => f.Value.Format == SourceFormat.Xml) == true)))
             {
+                progressLog.Phase("compile");
+                progressLog.Item(deviceName);
                 var compile = await _session.CompileAsync(deviceName);
                 notes.Add($"Compiled '{deviceName}' so the written items can be read back as XML: {compile.State}, {compile.ErrorCount} error(s), {compile.WarningCount} warning(s).");
             }
@@ -1016,9 +1051,10 @@ Writes '<sourceDirectory>/_import_report.txt' with one CREATED/UPDATED/SKIPPED/F
 
         // What TIA Portal made of the written items (it normalizes e.g. quoting) becomes the tree's
         // new baseline, so the next write sees them as unchanged.
+        if (workingCopy && written.Count + touched.Count > 0) progressLog.Phase("read back", total: written.Count + touched.Count);
         if (workingCopy && written.Count > 0)
         {
-            var (exported, _) = await ExportItems((device, kind, _, name) => written.Any(w => w.Is(device, kind, name)) ? Array.Empty<string>() : null, null, manifest);
+            var (exported, _) = await ExportItems((device, kind, _, name) => written.Any(w => w.Is(device, kind, name)) ? Array.Empty<string>() : null, null, manifest, progressLog);
             WriteExport(sourceDirectory, manifest!, exported);
             notes.Add($"Refreshed the {exported.Count(e => e.Ok)} written item(s) in the tree from the project.");
         }
@@ -1026,21 +1062,23 @@ Writes '<sourceDirectory>/_import_report.txt' with one CREATED/UPDATED/SKIPPED/F
         // like a change made in TIA Portal and make the next write of these items refuse.
         if (workingCopy && touched.Count > 0)
         {
-            var (exported, _) = await ExportItems((device, kind, _, name) => touched.Any(t => t.Is(device, kind, name)) ? Array.Empty<string>() : null, null, manifest);
+            var (exported, _) = await ExportItems((device, kind, _, name) => touched.Any(t => t.Is(device, kind, name)) ? Array.Empty<string>() : null, null, manifest, progressLog);
             RecordProjectState(sourceDirectory, manifest!, exported);
             notes.Add($"{exported.Count(e => e.Ok)} FAILED item(s) were partly written to the project. Their files still hold your edit; fix the cause and write them again (no force=true needed).");
         }
         if (workingCopy && written.Count + touched.Count > 0)
         {
-            await RecordMarks(manifest!, written.Concat(touched).Select(i => (i.DeviceName, i.Kind, i.ItemName)).ToList());
+            await RecordMarks(manifest!, written.Concat(touched).Select(i => (i.DeviceName, i.Kind, i.ItemName)).ToList(), progressLog);
             manifest!.Save(sourceDirectory);
             File.WriteAllText(Path.Combine(sourceDirectory, "_export_summary.txt"), FormatSummary(sourceDirectory, manifest));
         }
 
         var footer = new StringBuilder();
+        if (progressLog.Cancelled) notes.Add("Cancelled: the items not written yet are SKIPPED; what was written was read back into the tree.");
         foreach (var note in notes) footer.AppendLine(note);
         if (totalCreated + totalUpdated + totalFailed + totalSkipped == 0 && !dryRun) footer.AppendLine("Nothing to write.");
         footer.AppendLine($"Done: {totalCreated} created, {totalUpdated} updated, {totalSkipped} skipped, {totalFailed} failed. Finished {DateTime.Now:yyyy-MM-dd HH:mm:ss} (started {startedAt:HH:mm:ss}).");
+        footer.AppendLine($"Time: {progressLog.Timings}.");
 
         var summaryText = summary.Append(footer).ToString();
         var reportPath = Path.Combine(sourceDirectory, "_import_report.txt");
@@ -1152,9 +1190,10 @@ Writes '<sourceDirectory>/_import_report.txt' with one CREATED/UPDATED/SKIPPED/F
     // Items to write that were changed in TIA Portal since read_source_tree - their export now
     // differs from what the manifest recorded - or that are new in the tree but already exist in
     // the project. Writing them would discard what was done in TIA Portal.
-    private async Task<List<(ImportListItem Item, string Reason)>> FindConflicts(SourceTreeManifest manifest, List<ImportListItem> items)
+    private async Task<List<(ImportListItem Item, string Reason)>> FindConflicts(SourceTreeManifest manifest, List<ImportListItem> items, ProgressLog progress)
     {
-        var (current, _) = await ExportItems((device, kind, _, name) => items.Any(i => i.Is(device, kind, name)) ? Array.Empty<string>() : null, null, manifest);
+        progress.Phase("change check", cancellable: true, total: items.Count);
+        var (current, _) = await ExportItems((device, kind, _, name) => items.Any(i => i.Is(device, kind, name)) ? Array.Empty<string>() : null, null, manifest, progress);
         var conflicts = new List<(ImportListItem, string)>();
         foreach (var exported in current.Where(e => e.Ok))
         {
@@ -1257,7 +1296,8 @@ Writes '<sourceDirectory>/_import_report.txt' with one CREATED/UPDATED/SKIPPED/F
     // formats (device, kind, group path, name) returns null to skip an item, or the formats to
     // read it in; an empty list (and no formats function) means the formats the tree already has
     // it in (manifest), else its own format. Formats a kind doesn't have are left out.
-    private async Task<(List<ExportedItem> Items, List<string> Devices)> ExportItems(Func<string, string, string, string, IReadOnlyCollection<string>?>? formats, string? deviceName, SourceTreeManifest? manifest)
+    // progress gets each item right before its export, counted per kind.
+    private async Task<(List<ExportedItem> Items, List<string> Devices)> ExportItems(Func<string, string, string, string, IReadOnlyCollection<string>?>? formats, string? deviceName, SourceTreeManifest? manifest, ProgressLog? progress = null)
     {
         var options = ExportOptions.Of(manifest);
         var items = new List<ExportedItem>();
@@ -1275,7 +1315,8 @@ Writes '<sourceDirectory>/_import_report.txt' with one CREATED/UPDATED/SKIPPED/F
                         requested = manifest?.Find(device, kind.Name, name)?.WritableFiles.Select(f => f.Value.Format).Distinct().ToList() ?? new List<string>();
                     return requested.Where(kind.Formats.Contains).ToList();
                 }
-                await kind.Export(_session, device, Formats, options, items);
+                await kind.Export(_session, device, Formats, options, items, progress == null ? null
+                    : (index, count, groupPath, name) => progress.Item($"{device}: {kind.Name}", index, count, name == "" ? kind.Name : Label(groupPath, name)));
             }
 
             if (family == DeviceFamily.HmiClassic && formats == null)

@@ -10,6 +10,10 @@ public sealed record BlockDocument(string FileName, string Content);
 
 public sealed record ExportResult(bool Success, IReadOnlyList<BlockDocument> Documents, string? Error);
 
+// Told by a bulk read right before it exports an object: its place (1-based) among the count
+// objects the read exports, and its group path and name. For progress reporting.
+public delegate void ExportingItem(int index, int count, string groupPath, string name);
+
 public sealed record ImportResult(bool Success, IReadOnlyList<string> Messages);
 
 public sealed record CompileResult(string State, int ErrorCount, int WarningCount, IReadOnlyList<string> Messages);

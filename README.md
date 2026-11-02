@@ -228,6 +228,7 @@ A new `.graph.il` file in the source tree is created by cloning an existing GRAP
       States.xml
   _export_summary.txt
   _manifest.json
+  _progress.log                                   (what the last read or write did, live)
   .base/                                          (Unified screens as last read)
 ```
 
@@ -248,6 +249,12 @@ Classic WinCC objects are native Openness XML (the `DocumentInfo` block is left 
 `_manifest.json` (version 2; an older version 1 manifest is still read) records what each item looked like when it was read, and in which formats. An item that was changed in TIA Portal since then is refused rather than overwritten (`force` overrides this).
 
 In a Multiuser local session, `read_source_tree` also records each item's mark state: marked by me, marked by another user, or not up to date with the server (shown in `_export_summary.txt` and the read result). It costs an Openness call per object, about 35 ms per block, UDT or screen and per tag or alarm of a table: roughly a minute for a project of a few hundred blocks and a thousand tags. `write_source_tree` checks the items it writes again and refuses those marked by another user or not up to date (`force` overrides this). Openness can't refresh a local session: refresh it in the TIA Portal GUI, then read again. A tree read from one project can also be written in full into another, e.g. to restore it into an empty PLC.
+
+### Progress and cancelling
+
+A read or write that takes longer than 1.5 s opens a small window at the bottom right of the primary screen: phase, item, a bar per kind (`export - PLC_1: block`, `37 of 120`) and the elapsed time, with a **Cancel** button. It is on by default; to turn it off, add `"env": { "TIAMCP_PROGRESS_WINDOW": "0" }` to the server in `.mcp.json`. The same progress goes to `_progress.log` in the tree (follow it with `Get-Content _progress.log -Wait`) and as MCP progress notifications; the result ends with the time per phase.
+
+Cancel stops a read during its export, and a write before it changes anything: nothing is changed. During a write it finishes the current item, reports the rest SKIPPED and reads back what it wrote.
 
 ## License
 

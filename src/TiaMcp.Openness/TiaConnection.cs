@@ -572,22 +572,33 @@ public sealed partial class TiaConnection : IDisposable
     // formats (group path, name) selects which blocks are read and in which SourceFormats: null
     // skips the block, an empty list reads its own format; the walk itself is cheap. Without it
     // every block is read in its own format.
-    public IReadOnlyList<(BlockSummary Block, ExportResult Result)> ReadAllBlocks(string plcName, Func<string, string, IReadOnlyCollection<string>?>? formats = null)
+    public IReadOnlyList<(BlockSummary Block, ExportResult Result)> ReadAllBlocks(string plcName, Func<string, string, IReadOnlyCollection<string>?>? formats = null, ExportingItem? exporting = null)
     {
         EnsureConnected();
         var software = GetSoftware(plcName);
         var summaries = new List<BlockSummary>();
         var objects = new List<PlcBlock>();
         WalkBlocks(plcName, software.BlockGroup.Blocks, software.BlockGroup.Groups, "", summaries, objects);
-        return Selected(summaries, objects, formats, s => (s.GroupPath, s.Name))
+        return Selected(summaries, objects, formats, s => (s.GroupPath, s.Name), exporting)
             .Select(x => (x.Summary, ReadSafely(() => ReadBlock(software, x.Object, x.Formats)))).ToList();
     }
 
+    // The objects formats selects, all of them first; then, lazily, each one after telling
+    // exporting it is next - so the caller's read of it follows right away.
     private static IEnumerable<(TSummary Summary, TObject Object, IReadOnlyCollection<string> Formats)> Selected<TSummary, TObject>(
-        List<TSummary> summaries, List<TObject> objects, Func<string, string, IReadOnlyCollection<string>?>? formats, Func<TSummary, (string GroupPath, string Name)> key) =>
-        summaries.Select((s, i) => (Summary: s, Object: objects[i], Formats: formats == null ? Array.Empty<string>() : formats(key(s).GroupPath, key(s).Name)))
+        List<TSummary> summaries, List<TObject> objects, Func<string, string, IReadOnlyCollection<string>?>? formats, Func<TSummary, (string GroupPath, string Name)> key,
+        ExportingItem? exporting)
+    {
+        var selected = summaries.Select((s, i) => (Summary: s, Object: objects[i], Formats: formats == null ? Array.Empty<string>() : formats(key(s).GroupPath, key(s).Name)))
             .Where(x => x.Formats != null)
-            .Select(x => (x.Summary, x.Object, (IReadOnlyCollection<string>)x.Formats!));
+            .ToList();
+        for (var i = 0; i < selected.Count; i++)
+        {
+            var (groupPath, name) = key(selected[i].Summary);
+            exporting?.Invoke(i + 1, selected.Count, groupPath, name);
+            yield return (selected[i].Summary, selected[i].Object, selected[i].Formats!);
+        }
+    }
 
     // Reads an object in the requested formats - its own format (any format but "xml", or an empty
     // list) and/or the raw XML - with one Openness XML export at most: readOwn gets a capture that
@@ -1557,14 +1568,14 @@ public sealed partial class TiaConnection : IDisposable
     }
 
     // Bulk ListPlcTypes + ReadUdt for read_source_tree - see ReadAllBlocks.
-    public IReadOnlyList<(TypeSummary Type, ExportResult Result)> ReadAllUdts(string plcName, Func<string, string, IReadOnlyCollection<string>?>? formats = null)
+    public IReadOnlyList<(TypeSummary Type, ExportResult Result)> ReadAllUdts(string plcName, Func<string, string, IReadOnlyCollection<string>?>? formats = null, ExportingItem? exporting = null)
     {
         EnsureConnected();
         var software = GetSoftware(plcName);
         var summaries = new List<TypeSummary>();
         var objects = new List<PlcType>();
         WalkTypes(plcName, software.TypeGroup.Types, software.TypeGroup.Groups, "", summaries, objects);
-        return Selected(summaries, objects, formats, s => (s.GroupPath, s.Name))
+        return Selected(summaries, objects, formats, s => (s.GroupPath, s.Name), exporting)
             .Select(x => (x.Summary, ReadSafely(() => ReadInFormats(x.Object.Name, x.Formats, _ => ReadUdt(x.Object), f => x.Object.Export(f, ExportOptions.WithDefaults))))).ToList();
     }
 
@@ -2494,14 +2505,14 @@ public sealed partial class TiaConnection : IDisposable
 
     // Bulk ListTagTables + ReadTagTable for read_source_tree - see ReadAllBlocks.
     // Each table as '<name>.csv' (see TagTableCsv) and/or '<name>.xml' - see ReadAllBlocks.
-    public IReadOnlyList<(TagTableSummary Table, ExportResult Result)> ReadAllTagTables(string plcName, Func<string, string, IReadOnlyCollection<string>?>? formats = null)
+    public IReadOnlyList<(TagTableSummary Table, ExportResult Result)> ReadAllTagTables(string plcName, Func<string, string, IReadOnlyCollection<string>?>? formats = null, ExportingItem? exporting = null)
     {
         EnsureConnected();
         var software = GetSoftware(plcName);
         var summaries = new List<TagTableSummary>();
         var objects = new List<PlcTagTable>();
         WalkTagTables(plcName, software.TagTableGroup.TagTables, software.TagTableGroup.Groups, "", summaries, objects);
-        return Selected(summaries, objects, formats, s => (s.GroupPath, s.Name))
+        return Selected(summaries, objects, formats, s => (s.GroupPath, s.Name), exporting)
             .Select(x => (x.Summary, ReadSafely(() => ReadInFormats(x.Object.Name, x.Formats,
                 capture => new ExportResult(true, new[] { new BlockDocument(x.Object.Name + SourceFormat.Extension(SourceFormat.Csv), TagTableCsv.Format(ReadTags(x.Object, capture))) }, null),
                 f => x.Object.Export(f, ExportOptions.WithDefaults))))).ToList();

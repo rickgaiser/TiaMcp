@@ -34,11 +34,19 @@ internal static class DependencyWrites
         var lastError = new Dictionary<PendingWrite, string>();
         var retry = new List<PendingWrite>();
         var layers = Layers(writes);
+        var kind = writes.Count == 0 ? "" : writes[0].Item.Kind;
+        var done = 0;
         for (var i = 0; i < layers.Count; i++)
         {
-            if (i > 0 && compileBetweenLayers) await context.Session.CompileAsync(context.Device);
+            if (i > 0 && compileBetweenLayers && !context.Progress.Cancelled)
+            {
+                context.Progress.Note($"{context.Device}: compiling before layer {i + 1} of {layers.Count}");
+                await context.Session.CompileAsync(context.Device);
+            }
             foreach (var write in layers[i])
             {
+                if (context.Progress.Cancelled) { log.Skipped.Add($"{write.Label} - not written, the call was cancelled"); continue; }
+                context.Progress.Item($"{context.Device}: {kind}", ++done, writes.Count, write.Label);
                 var result = await write.Write();
                 if (result.Success) { (write.IsCreate ? log.Created : log.Updated).Add(write.Label); context.Written.Add(write.Item); }
                 else if (write.IsCreate) { retry.Add(write); lastError[write] = string.Join(" | ", result.Messages); }
@@ -46,12 +54,15 @@ internal static class DependencyWrites
             }
         }
 
-        while (retry.Count > 0)
+        while (retry.Count > 0 && !context.Progress.Cancelled)
         {
+            context.Progress.Note($"{context.Device}: compiling to retry {retry.Count} failed create(s)");
             await context.Session.CompileAsync(context.Device);
             var stillFailing = new List<PendingWrite>();
             foreach (var write in retry)
             {
+                if (context.Progress.Cancelled) { stillFailing.Add(write); continue; }
+                context.Progress.Note($"{context.Device}: {write.Label} (retry)");
                 var result = await write.Write();
                 if (result.Success) { log.Created.Add(write.Label); context.Written.Add(write.Item); }
                 else { stillFailing.Add(write); lastError[write] = string.Join(" | ", result.Messages); }
@@ -59,7 +70,11 @@ internal static class DependencyWrites
             if (stillFailing.Count == retry.Count) break;
             retry = stillFailing;
         }
-        foreach (var write in retry) log.Failed.Add($"{write.Label}: {lastError[write]}");
+        foreach (var write in retry)
+        {
+            if (context.Progress.Cancelled) log.Skipped.Add($"{write.Label} - not created, the call was cancelled (last attempt: {lastError[write]})");
+            else log.Failed.Add($"{write.Label}: {lastError[write]}");
+        }
     }
 
     private static readonly Regex IdentifierToken = new("\"([^\"]+)\"|[A-Za-z_][A-Za-z0-9_]*", RegexOptions.Compiled);

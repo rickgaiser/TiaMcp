@@ -87,19 +87,19 @@ public sealed class TiaSession
         return _sta.InvokeAsync(() => _connection.ListBlocks(plcName));
     }
 
-    public Task<IReadOnlyList<(BlockSummary Block, ExportResult Result)>> ReadAllBlocksAsync(string plcName, Func<string, string, IReadOnlyCollection<string>?>? formats = null)
+    public Task<IReadOnlyList<(BlockSummary Block, ExportResult Result)>> ReadAllBlocksAsync(string plcName, Func<string, string, IReadOnlyCollection<string>?>? formats = null, ExportingItem? exporting = null)
     {
-        return _sta.InvokeAsync(() => _connection.ReadAllBlocks(plcName, formats));
+        return _sta.InvokeAsync(() => _connection.ReadAllBlocks(plcName, formats, exporting));
     }
 
-    public Task<IReadOnlyList<(TypeSummary Type, ExportResult Result)>> ReadAllUdtsAsync(string plcName, Func<string, string, IReadOnlyCollection<string>?>? formats = null)
+    public Task<IReadOnlyList<(TypeSummary Type, ExportResult Result)>> ReadAllUdtsAsync(string plcName, Func<string, string, IReadOnlyCollection<string>?>? formats = null, ExportingItem? exporting = null)
     {
-        return _sta.InvokeAsync(() => _connection.ReadAllUdts(plcName, formats));
+        return _sta.InvokeAsync(() => _connection.ReadAllUdts(plcName, formats, exporting));
     }
 
-    public Task<IReadOnlyList<(TagTableSummary Table, ExportResult Result)>> ReadAllTagTablesAsync(string plcName, Func<string, string, IReadOnlyCollection<string>?>? formats = null)
+    public Task<IReadOnlyList<(TagTableSummary Table, ExportResult Result)>> ReadAllTagTablesAsync(string plcName, Func<string, string, IReadOnlyCollection<string>?>? formats = null, ExportingItem? exporting = null)
     {
-        return _sta.InvokeAsync(() => _connection.ReadAllTagTables(plcName, formats));
+        return _sta.InvokeAsync(() => _connection.ReadAllTagTables(plcName, formats, exporting));
     }
 
     public Task<ImportResult> ImportBlockXmlAsync(string plcName, string groupPath, string blockName, string xml)
@@ -307,9 +307,9 @@ public sealed class TiaSession
         return _sta.InvokeAsync(() => _connection.ListHmiClassicObjects(hmiName));
     }
 
-    public Task<IReadOnlyList<HmiClassicObjectXml>> ReadHmiClassicObjectsAsync(string hmiName, Func<string, string, string, bool>? include)
+    public Task<IReadOnlyList<HmiClassicObjectXml>> ReadHmiClassicObjectsAsync(string hmiName, Func<string, string, string, bool>? include, ExportingItem? exporting = null)
     {
-        return _sta.InvokeAsync(() => _connection.ReadHmiClassicObjects(hmiName, include));
+        return _sta.InvokeAsync(() => _connection.ReadHmiClassicObjects(hmiName, include, exporting));
     }
 
     public Task<int> CountHmiClassicGraphicListsAsync(string hmiName)

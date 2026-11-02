@@ -202,7 +202,7 @@ public sealed partial class TiaConnection
     /// Graphic lists are never exported: in TIA Portal V21 that crashed the whole TIA Portal
     /// process (InvalidCastException String -> HmiOpenLink in UpdateOpenLinks).
     /// </summary>
-    public IReadOnlyList<HmiClassicObjectXml> ReadHmiClassicObjects(string hmiName, Func<string, string, string, bool>? include)
+    public IReadOnlyList<HmiClassicObjectXml> ReadHmiClassicObjects(string hmiName, Func<string, string, string, bool>? include, ExportingItem? exporting = null)
     {
         EnsureConnected();
         var target = GetHmiTarget(hmiName);
@@ -211,28 +211,32 @@ public sealed partial class TiaConnection
         Directory.CreateDirectory(tempDir);
         try
         {
-            var index = 0;
+            // Everything to export first, so exporting gets the count.
+            var selected = new List<(string Kind, string Path, ClassicItem Item)>();
             foreach (var kind in HmiClassicKinds.All.Where(k => k != HmiClassicKinds.GraphicList))
             {
                 WalkClassic(GetClassicRoot(target, kind), "", (path, folder) =>
                 {
                     foreach (var item in folder.Items())
-                    {
-                        if (include != null && !include(kind, path, item.Name)) continue;
-                        var file = new FileInfo(Path.Combine(tempDir, $"{index++}.xml"));
-                        try
-                        {
-                            item.Export(file);
-                            var doc = XDocument.Load(file.FullName);
-                            doc.Root?.Element("DocumentInfo")?.Remove();
-                            result.Add(new HmiClassicObjectXml(kind, path, item.Name, doc.ToString(), null));
-                        }
-                        catch (Exception ex)
-                        {
-                            result.Add(new HmiClassicObjectXml(kind, path, item.Name, null, DescribeException(ex)));
-                        }
-                    }
+                        if (include == null || include(kind, path, item.Name)) selected.Add((kind, path, item));
                 });
+            }
+            for (var index = 0; index < selected.Count; index++)
+            {
+                var (kind, path, item) = selected[index];
+                exporting?.Invoke(index + 1, selected.Count, path, item.Name);
+                var file = new FileInfo(Path.Combine(tempDir, $"{index}.xml"));
+                try
+                {
+                    item.Export(file);
+                    var doc = XDocument.Load(file.FullName);
+                    doc.Root?.Element("DocumentInfo")?.Remove();
+                    result.Add(new HmiClassicObjectXml(kind, path, item.Name, doc.ToString(), null));
+                }
+                catch (Exception ex)
+                {
+                    result.Add(new HmiClassicObjectXml(kind, path, item.Name, null, DescribeException(ex)));
+                }
             }
         }
         finally
