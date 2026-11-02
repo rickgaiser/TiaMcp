@@ -983,8 +983,9 @@ public sealed partial class TiaConnection : IDisposable
             }
             catch (Exception ex)
             {
-                return new ExportResult(false, Array.Empty<BlockDocument>(),
-                    $"Could not export the block via the XML route to relay around its embedded STL network(s): {ex.Message}");
+                return new ExportResult(false, Array.Empty<BlockDocument>(), !block.IsConsistent
+                    ? $"Block '{block.Name}' is not consistent - compile the PLC (compile), then read it again."
+                    : $"Could not export the block via the XML route to relay around its embedded STL network(s): {ex.Message}");
             }
             capture?.Take(xmlFile);
 

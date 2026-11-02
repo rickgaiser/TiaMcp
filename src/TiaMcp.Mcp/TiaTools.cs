@@ -537,13 +537,14 @@ public sealed partial class TiaTools
 
 Without filter or deviceName, a project of more than 200 items only gets counts per software back; pass targetDirectory to write the full list to '<targetDirectory>/_project_list.txt'.")]
     public Task<string> ListProject(
-        [Description("Optional: only items whose group path or name contains this text (case-insensitive)")] string? filter = null,
+        [Description("Optional: only items whose list line contains this text (case-insensitive): a name or group path, a language such as \"[SCL]\", or \"INCONSISTENT\" for the blocks that need a compile")] string? filter = null,
         [Description("Optional: only this PLC or HMI software name")] string? deviceName = null,
         [Description("Optional: directory (e.g. the source tree root) to write the full list to as _project_list.txt")] string? targetDirectory = null) => Safe(async () =>
     {
         if (!_session.IsConnected) return "Not connected. Call tia_connect first.";
 
-        bool Matches(string groupPath, string name) => filter == null || Label(groupPath, name).IndexOf(filter, StringComparison.OrdinalIgnoreCase) >= 0;
+        // On the whole list line, so a filter can also pick a language ("[SCL]") or "INCONSISTENT".
+        bool Matches(ListedEntry e) => filter == null || e.Text.IndexOf(filter, StringComparison.OrdinalIgnoreCase) >= 0;
         var list = new StringBuilder();
         var counts = new StringBuilder();
         var total = 0;
@@ -552,7 +553,7 @@ Without filter or deviceName, a project of more than 200 items only gets counts 
         {
             var kinds = new List<(ISourceKind Kind, List<ListedEntry> Entries)>();
             foreach (var kind in SourceKinds.Of(family).OrderBy(k => SourceKinds.ListIndex(k.Name)))
-                kinds.Add((kind, (await kind.List(_session, device)).Where(e => Matches(e.GroupPath, e.Name)).ToList()));
+                kinds.Add((kind, (await kind.List(_session, device)).Where(Matches).ToList()));
 
             var found = kinds.Sum(k => k.Entries.Count);
             total += found;
@@ -651,7 +652,7 @@ Files per item: blocks and UDTs keep TIA Portal's own document format (.s7dcl, p
 
 Formats: blocks, UDTs and PLC tag tables can also be read as their raw Openness XML ('<name>.xml', SimaticML): complete where a converted format leaves something out, and writable too. An item is read in the formats it already has in the tree, else its own format; pass its list line with formats (""tag table 'Tags' [csv, xml]"", ""block 'Main' [xml]"") to choose. The XML costs no extra export where the own format is made from it (tag tables, GRAPH and code blocks); for data blocks, UDTs and whole-STL blocks it does. _manifest.json records each item's formats and each file's format.
 
-An item that fails to export (e.g. an inconsistent block - GRAPH blocks must be compiled first) is reported, and files from an earlier read of it are renamed with a '.stale' suffix rather than left looking current. '_export_summary.txt' lists every item in the tree, with the formats it has there (list_project shows the formats it can be read in); '_manifest.json' and the '.base' folder are write_source_tree's bookkeeping - don't edit them. Returns counts, failures, and for a partial read each item's files.
+An item that fails to export (e.g. an inconsistent block - GRAPH blocks must be compiled first) is reported, and files from an earlier read of it are renamed with a '.stale' suffix rather than left looking current. '_export_summary.txt' lists every item in the tree, with the formats it has there (list_project shows the formats it can be read in); '_manifest.json' and the '.base' folder are write_source_tree's bookkeeping - don't edit them. Returns counts, failures, the items that read back different from the last read into this tree (changed in TIA Portal, or rendered differently by a newer TiaMcp), and for a partial read each item's files.
 
 In a Multiuser local session the read also checks each item's mark state (about 35 ms per block, UDT or screen, and per tag or alarm of a table - roughly a minute for a medium-sized project): items marked by another user or not up to date with the server are listed in the result, and every marked item in _export_summary.txt, e.g. ""(marked by another user: 2 of 240 (Tag_A, Tag_B))"". write_source_tree refuses to write those.")]
     public Task<string> ReadSourceTree(
@@ -693,6 +694,9 @@ In a Multiuser local session the read also checks each item's mark state (about 
         var (exported, devices) = await ExportItems(selection == null ? null : (_, kind, groupPath, name) => RequestedFormats(selection, kind, groupPath, name), deviceName, manifest);
         if (devices.Count == 0) return deviceName == null ? "No PLC or HMI devices found." : $"No PLC or HMI software named '{deviceName}'.";
 
+        // What reads back different from the last read: changed in TIA Portal (by anyone), or
+        // rendered differently by a newer TiaMcp. Only formats both reads have are compared.
+        var changed = exported.Where(e => e.Ok && manifest.Find(e.Device, e.Kind, e.Name) is { Ok: true } before && Differs(before, e)).ToList();
         WriteExport(targetDirectory, manifest, exported);
 
         // Items in the part that was read which the project doesn't have (any more).
@@ -718,6 +722,12 @@ In a Multiuser local session the read also checks each item's mark state (about 
         var result = new StringBuilder();
         result.AppendLine($"Read {exported.Count} item(s) into {targetDirectory} in {(DateTime.Now - startedAt).TotalSeconds:0} s: " +
                           $"{exported.Count(e => e.Ok)} ok, {exported.Count(e => !e.Ok)} failed, {gone.Count} removed.");
+        if (changed.Count > 0)
+        {
+            result.AppendLine($"  {changed.Count} item(s) read back different from the last read (changed in TIA Portal, or rendered differently by a newer TiaMcp):");
+            foreach (var item in changed.Take(MaxFailedLines)) result.AppendLine($"    CHANGED {Describe(item.Kind, item.GroupPath, item.Name)}");
+            if (changed.Count > MaxFailedLines) result.AppendLine($"    ... and {changed.Count - MaxFailedLines} more");
+        }
         foreach (var item in exported)
         {
             if (!item.Ok) result.AppendLine($"  FAILED  {Describe(item.Kind, item.GroupPath, item.Name)}: {item.Error}");
@@ -857,6 +867,11 @@ Writes '<sourceDirectory>/_import_report.txt' with one CREATED/UPDATED/SKIPPED/F
             notes.Add("No _manifest.json in the tree (generated, or read by an older version): every listed item is written, without change or conflict checks, and nothing is read back into the tree.");
         else if (!workingCopy)
             notes.Add($"The tree was read from project '{manifest.Project}', not the connected '{_session.ProjectName}': every listed item is written, and nothing is compared with or refreshed from this project.");
+        // Not moved (see MoveToProjectTreeNames), but worth knowing: a read names these folders differently.
+        if (!workingCopy)
+            foreach (var s in software.Where(s => !string.Equals(DirName(s.SoftwareName), DirName(s.Name), StringComparison.OrdinalIgnoreCase)
+                    && items.Any(i => string.Equals(i.DeviceName, s.SoftwareName, StringComparison.OrdinalIgnoreCase))))
+                notes.Add($"'{DirName(s.SoftwareName)}/' is named after the software; read_source_tree names it '{DirName(s.Name)}/', as TIA Portal's project tree shows it. Both work here; rename the folder (and a generator's output path) to match a read tree.");
 
         // The format each item is written from; unchanged items are left out unless all is set.
         var toWrite = new List<ImportListItem>();
@@ -1308,6 +1323,15 @@ Writes '<sourceDirectory>/_import_report.txt' with one CREATED/UPDATED/SKIPPED/F
             File.WriteAllText(Path.Combine(root, "_export_summary.txt"), FormatSummary(root, manifest));
         }
         return notes;
+    }
+
+    // Whether an export differs from the item as the manifest recorded it, in the formats both have.
+    private static bool Differs(SourceTreeItem before, ExportedItem now)
+    {
+        var formats = before.Files.Values.Select(f => f.Format).Intersect(now.Files.Select(f => SourceTreeManifest.FormatOf(f.Path))).ToHashSet();
+        var then = before.Files.Where(f => formats.Contains(f.Value.Format)).ToDictionary(f => f.Key, f => f.Value.Hash, StringComparer.OrdinalIgnoreCase);
+        var after = now.Files.Where(f => formats.Contains(SourceTreeManifest.FormatOf(f.Path))).ToDictionary(f => f.Path, f => SourceTreeManifest.Hash(f.Content), StringComparer.OrdinalIgnoreCase);
+        return then.Count != after.Count || then.Any(f => !after.TryGetValue(f.Key, out var hash) || hash != f.Value);
     }
 
     // FAILED lines per software in write_source_tree's tool result; the full report has them all.
