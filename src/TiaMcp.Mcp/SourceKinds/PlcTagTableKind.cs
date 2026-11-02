@@ -11,6 +11,7 @@ internal sealed class PlcTagTableKind : ISourceKind
     public DeviceFamily Family => DeviceFamily.Plc;
     public string? FixedName => null;
     public bool XmlNeedsCompile => false;
+    public MarkTarget? MarkTarget => Openness.MarkTarget.TagTable;
     public IReadOnlyList<string> Formats { get; } = new[] { SourceFormat.Csv, SourceFormat.Xml };
 
     public async Task<IReadOnlyList<ListedEntry>> List(TiaSession session, string plc)
@@ -61,11 +62,19 @@ internal sealed class PlcTagTableKind : ISourceKind
             if (existingTables.Contains(item.ItemName))
             {
                 if (!context.OverwriteExisting) { log.Skipped.Add($"{label} - already exists, overwriteExisting=false"); continue; }
-                if (context.DryRun) { log.Updated.Add($"{label} (dry run, {tags.Length} tag(s))"); continue; }
 
-                var result = await session.WriteTagTableAsync(plc, item.ItemName, tags, context.WorkingCopy);
-                if (result.Success) { log.Updated.Add($"{label} ({tags.Length} tag(s){DeletedTags(result)})"); context.Written.Add(item); }
-                else log.Failed.Add($"{label}: {string.Join(" | ", result.Messages)}");
+                var result = await session.WriteTagTableAsync(plc, item.ItemName, tags, context.WorkingCopy, context.DryRun);
+                var dryRun = context.DryRun ? "dry run, " : "";
+                if (result.Success)
+                {
+                    log.Updated.Add($"{label} ({dryRun}{tags.Length} tag(s){TagChanges(result, context.DryRun)})");
+                    if (!context.DryRun) context.Written.Add(item);
+                }
+                else
+                {
+                    log.Failed.Add($"{label}: {FailedTags(result)}");
+                    if (ChangedTags(result)) context.Touched.Add(item);
+                }
             }
             else
             {
@@ -78,7 +87,11 @@ internal sealed class PlcTagTableKind : ISourceKind
 
                 var writeResult = await session.WriteTagTableAsync(plc, item.ItemName, tags);
                 if (writeResult.Success) { log.Created.Add($"{label} ({tags.Length} tag(s))"); context.Written.Add(item); }
-                else log.Failed.Add($"{label}: created empty, but writing tags failed: {string.Join(" | ", writeResult.Messages)}");
+                else
+                {
+                    log.Failed.Add($"{label}: created, but writing tags failed: {FailedTags(writeResult)}");
+                    context.Touched.Add(item);
+                }
             }
         }
 
