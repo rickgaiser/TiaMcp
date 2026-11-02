@@ -85,7 +85,7 @@ All MCP tools exposed by the server, grouped by area.
 | `delete_plc_block` | Delete a single block by name (any language, including GRAPH and instance-DBs) — recovery path for a block stuck INCONSISTENT |
 | `rename_plc_block` | Rename an existing block (any language, including instance-DBs) in place — safe even with real dependents |
 | `create_plc_group` / `delete_plc_group` / `rename_plc_group` | Manage block group folders |
-| `compile_plc` | Compile a PLC's software, report structured errors/warnings |
+| `compile` | Compile a PLC's or an HMI's software (WinCC Unified or classic), report errors/warnings with their path (block > network, screen > item > property) |
 
 ### PLC tag tables
 
@@ -127,7 +127,6 @@ Screen content is read and written through the source tree; these tools manage s
 |---|---|
 | `delete_hmi_screen` / `rename_hmi_screen` | Delete or rename a screen |
 | `create_hmi_screen_group` / `delete_hmi_screen_group` / `rename_hmi_screen_group` | Manage screen group folders |
-| `compile_hmi` | Compile an HMI's software (WinCC Unified or classic), report errors/warnings with their path (screen > item > property) |
 | `describe_hmi_item_type` | Properties, events and dynamization options per screen item type |
 | `list_library_types` / `read_faceplate_type` | Project library types and versions / a faceplate's interface |
 
@@ -202,7 +201,7 @@ A new `.graph.il` file in the source tree is created by cloning an existing GRAP
 
 ```
 <targetDirectory>/
-  <PlcName>/
+  <PlcName>/                                      (as the project tree shows it, see below)
     Program blocks/<group path>/
       Main.s7dcl
       Main.s7res
@@ -231,6 +230,8 @@ A new `.graph.il` file in the source tree is created by cloning an existing GRAP
   _manifest.json
   .base/                                          (Unified screens as last read)
 ```
+
+Each PLC and HMI is named as TIA Portal's project tree shows it: a PLC by its CPU (the S7 station above it isn't shown), an HMI on a PC station or panel by that station (`PC_1`, not its `HMI_RT_1`). A station holding more than one software (an HMI and a software PLC) keeps the software names. These names are the folders and the `=== ... ===` headers; every tool also accepts the software's own name. A tree read by an older TiaMcp has its folders moved to the new names on the next read or write. `project_status` lists both names per software.
 
 A `/` in a group name gives a folder per part (`Valve fwd / rev` → `Valve fwd/ rev/`), and folder names lose trailing spaces and dots, as Windows does. A new file in such a folder goes to the group read into it; the group tools take the name as it is (`groupPath: "Valve fwd / rev/Sub"`).
 

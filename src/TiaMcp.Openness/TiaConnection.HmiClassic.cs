@@ -54,14 +54,6 @@ public sealed partial class TiaConnection
 {
     private readonly Dictionary<string, HmiTarget> _hmiTargetByName = new(StringComparer.OrdinalIgnoreCase);
 
-    private void IndexHmiClassic(SoftwareContainer? container)
-    {
-        if (container?.Software is HmiTarget hmiTarget)
-        {
-            _hmiTargetByName[hmiTarget.Name] = hmiTarget;
-        }
-    }
-
     private HmiTarget GetHmiTarget(string hmiName)
     {
         if (!_hmiTargetByName.TryGetValue(hmiName, out var target))
@@ -187,12 +179,6 @@ public sealed partial class TiaConnection
     private static string NormalizeFolderPath(string? folderPath) => string.Join("/", SplitFolderPath(folderPath));
 
     // ---- source tree support (read_source_tree / write_source_tree / list_project) ----
-
-    public IReadOnlyList<string> ListHmiClassicNames()
-    {
-        EnsureConnected();
-        return _hmiTargetByName.Keys.OrderBy(n => n, StringComparer.OrdinalIgnoreCase).ToList();
-    }
 
     /// <summary>Every object of the given kinds (graphic lists excluded, see ReadHmiClassicObjects) with its folder path.</summary>
     public IReadOnlyList<HmiClassicObjectSummary> ListHmiClassicObjects(string hmiName)

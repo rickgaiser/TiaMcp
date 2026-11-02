@@ -3,7 +3,6 @@ using System.Collections.Generic;
 
 namespace TiaMcp.Openness;
 
-public sealed record DeviceSummary(string DeviceName, string ItemName, string? PlcSoftwareName);
 
 public sealed record BlockSummary(string PlcName, string GroupPath, string Name, string Language, bool Consistent);
 
@@ -36,6 +35,13 @@ public sealed record ProjectStatus(string Name, string? Path, bool IsModified, s
 // Marked: the names of the marked objects that have one (MarkedCount counts them all).
 public sealed record MultiuserStatus(bool? UpToDate, int? MarkedCount, IReadOnlyList<string>? Marked, int? Conflicted, string? Error);
 
+public enum SoftwareKind { Plc, HmiUnified, HmiClassic }
+
+// A PLC or HMI software. Name: what TIA Portal's project tree shows for it, used for the source
+// tree's folders and headers; SoftwareName: its own name (often the same). Tools take either.
+// Device: the station it sits on; Group: its device group path, "" for none.
+public sealed record ProjectSoftware(string Name, string SoftwareName, SoftwareKind Kind, string Device, string Group);
+
 // What TiaConnection.GetMarkStates checks the mark state of: one item kind of the source tree.
 public enum MarkTarget { Block, Udt, TagTable, HmiTagTable, HmiScreen, HmiAlarmClasses, HmiDiscreteAlarms, HmiAnalogAlarms }
 
@@ -44,7 +50,6 @@ public enum MarkTarget { Block, Udt, TagTable, HmiTagTable, HmiScreen, HmiAlarmC
 // up to date with the server - with the names of the latter two.
 public sealed record MarkSummary(int Objects, int ByMe, int ByOthers, int NotUpToDate, IReadOnlyList<string> ByOthersNames, IReadOnlyList<string> NotUpToDateNames);
 
-public sealed record HmiDeviceSummary(string DeviceName, string ItemName, string HmiSoftwareName);
 
 public sealed record HmiTagTableSummary(string HmiName, string GroupPath, string Name);
 

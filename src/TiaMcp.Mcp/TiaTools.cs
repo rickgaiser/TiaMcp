@@ -141,7 +141,11 @@ public sealed partial class TiaTools
                    $"\nMultiuser server: {(mu.UpToDate switch { true => "local session is up to date", false => "the server has newer changes - refresh the local session in the TIA Portal GUI", _ => "unknown" })}" +
                    (mu.MarkedCount is not { } count || mu.Marked == null ? "" :
                        $"\nMarked objects: {(count == 0 ? "none" : $"{count}{(mu.Marked.Count == 0 ? "" : $", e.g. {string.Join(", ", mu.Marked.Take(20))}{(mu.Marked.Count > 20 ? ", ..." : "")}")}")}{(mu.Conflicted > 0 ? $", {mu.Conflicted} in conflict" : "")}") +
-                   (mu.Error == null ? "" : $"\nCould not read: {mu.Error}"));
+                   (mu.Error == null ? "" : $"\nCould not read: {mu.Error}")) +
+               "\nSoftware (as the project tree names it):" +
+               string.Concat((await _session.ListSoftwareAsync()).Select(l =>
+                   $"\n  {l.Name}: {l.Kind switch { SoftwareKind.Plc => "PLC", SoftwareKind.HmiUnified => "WinCC Unified HMI", _ => "classic WinCC HMI" }}" +
+                   $"{(string.Equals(l.Name, l.SoftwareName, StringComparison.OrdinalIgnoreCase) ? "" : $" '{l.SoftwareName}'")}, device '{l.Device}'{(l.Group == "" ? "" : $" in group '{l.Group}'")}"));
     });
 
     [McpServerTool(Name = "delete_plc_udt")]
@@ -155,7 +159,7 @@ public sealed partial class TiaTools
     });
 
     [McpServerTool(Name = "rename_plc_udt")]
-    [Description("Rename an existing UDT (PLC data type) in place. Fails if a UDT with the new name already exists (names are unique per-PLC). Does not auto-compile - call compile_plc afterward, since a UDT rename can affect every block that references it.")]
+    [Description("Rename an existing UDT (PLC data type) in place. Fails if a UDT with the new name already exists (names are unique per-PLC). Does not auto-compile - call compile afterward, since a UDT rename can affect every block that references it.")]
     public Task<string> RenameUdt(
         [Description("PLC software name, from list_project")] string plcName,
         [Description("UDT name to rename, from list_project")] string typeName,
@@ -198,7 +202,7 @@ public sealed partial class TiaTools
     });
 
     [McpServerTool(Name = "create_plc_instance_db")]
-    [Description("Create an instance-DB bound to a specific FB type (e.g. instantiate a Typical FB from a library for one piece of equipment). Unlike adding its .s7dcl to the source tree, this needs no source text. Does not auto-compile - call compile_plc afterward.")]
+    [Description("Create an instance-DB bound to a specific FB type (e.g. instantiate a Typical FB from a library for one piece of equipment). Unlike adding its .s7dcl to the source tree, this needs no source text. Does not auto-compile - call compile afterward.")]
     public Task<string> CreateInstanceDb(
         [Description("PLC software name, from list_project")] string plcName,
         [Description("Group path to create the DB in, e.g. 'Instances'; empty string for the root")] string groupPath,
@@ -252,7 +256,7 @@ public sealed partial class TiaTools
     });
 
     [McpServerTool(Name = "rename_plc_block")]
-    [Description("Rename an existing block (any language, including a GRAPH block or an instance-DB) in place. Fails if a block with the new name already exists (names are unique per-PLC). Safe even on a block with real dependents (callers, a bound instance-DB): TIA resolves block/DB references by internal object identity, not by name text, so callers automatically follow the rename. The block and its dependents go temporarily INCONSISTENT, same as any block edit - call compile_plc afterward to resolve that.")]
+    [Description("Rename an existing block (any language, including a GRAPH block or an instance-DB) in place. Fails if a block with the new name already exists (names are unique per-PLC). Safe even on a block with real dependents (callers, a bound instance-DB): TIA resolves block/DB references by internal object identity, not by name text, so callers automatically follow the rename. The block and its dependents go temporarily INCONSISTENT, same as any block edit - call compile afterward to resolve that.")]
     public Task<string> RenamePlcBlock(
         [Description("PLC software name, from list_project")] string plcName,
         [Description("Block name to rename, from list_project")] string blockName,
@@ -263,7 +267,7 @@ public sealed partial class TiaTools
     });
 
     [McpServerTool(Name = "rename_plc_tag")]
-    [Description("Rename a single PLC tag in place, in whichever tag table it lives. Unlike changing the name in a tag table CSV in the source tree (which makes a new tag), this keeps references to the tag in blocks intact; blocks show the new name only after compile_plc. Fails if a tag with the new name already exists (names are unique per-PLC).")]
+    [Description("Rename a single PLC tag in place, in whichever tag table it lives. Unlike changing the name in a tag table CSV in the source tree (which makes a new tag), this keeps references to the tag in blocks intact; blocks show the new name only after compile. Fails if a tag with the new name already exists (names are unique per-PLC).")]
     public Task<string> RenameTag(
         [Description("PLC software name, from list_project")] string plcName,
         [Description("Current tag name")] string tagName,
@@ -519,26 +523,17 @@ public sealed partial class TiaTools
         return $"ContainedType: {result.ContainedType}\nEvents: {string.Join(", ", result.Events)}\nInterface:\n{csv}";
     });
 
-    [McpServerTool(Name = "compile_plc")]
-    [Description("Compile a PLC's software and report errors/warnings. On a Multiuser local session this compiles locally, can mark the session modified, and does not commit results to the server.")]
-    public Task<string> Compile([Description("PLC software name, from list_project")] string plcName) => Safe(async () =>
+    [McpServerTool(Name = "compile")]
+    [Description("Compile a PLC's or an HMI's software (WinCC Unified or classic WinCC) and report errors/warnings with their path (block > network, or screen > item > property for an HMI: e.g. screen items or alarms bound to tags that don't exist). An HMI can take minutes. On a Multiuser local session this compiles locally, can mark the session modified, and does not commit results to the server.")]
+    public Task<string> Compile([Description("PLC or HMI software name, from list_project")] string softwareName) => Safe(async () =>
     {
-        var result = await _session.CompileAsync(plcName);
-        var messages = string.Join("\n", result.Messages);
-        return $"State: {result.State}  Errors: {result.ErrorCount}  Warnings: {result.WarningCount}\n{messages}";
-    });
-
-    [McpServerTool(Name = "compile_hmi")]
-    [Description("Compile an HMI's software (WinCC Unified or classic WinCC) and report errors/warnings with their path (e.g. screen > item > property): screen items or alarms bound to tags that don't exist, broken faceplate interfaces. Can take minutes for a large HMI. On a Multiuser local session this compiles locally and does not commit to the server.")]
-    public Task<string> CompileHmi([Description("HMI software name, from list_project")] string hmiName) => Safe(async () =>
-    {
-        var result = await _session.CompileHmiAsync(hmiName);
+        var result = await _session.CompileAsync(softwareName);
         var messages = string.Join("\n", result.Messages);
         return $"State: {result.State}  Errors: {result.ErrorCount}  Warnings: {result.WarningCount}\n{messages}";
     });
 
     [McpServerTool(Name = "list_project")]
-    [Description(@"List what the connected project has, per PLC and HMI software ('=== name ===' - the plcName/hmiName other tools take): blocks with their language (INCONSISTENT: needs compile_plc, e.g. before a GRAPH or STL block can be read), UDTs, tag tables, empty tag table groups and alarm text lists; for WinCC Unified the HMI tag tables, screens and alarm files, for classic WinCC the tag tables, text lists, screen templates, pop-up screens and screens. Fast: names only, no source - read_source_tree reads the source. Each item line ends with the formats it can be read in, its own first, e.g. ""tag table 'Tags' [csv, xml]"" (""xml"" is the raw Openness export). Item lines are in _export_summary.txt's format and can be passed to read_source_tree's items as they are.
+    [Description(@"List what the connected project has, per PLC and HMI software ('=== name ===' - the plcName/hmiName other tools take): blocks with their language (INCONSISTENT: needs compile, e.g. before a GRAPH or STL block can be read), UDTs, tag tables, empty tag table groups and alarm text lists; for WinCC Unified the HMI tag tables, screens and alarm files, for classic WinCC the tag tables, text lists, screen templates, pop-up screens and screens. Fast: names only, no source - read_source_tree reads the source. Each item line ends with the formats it can be read in, its own first, e.g. ""tag table 'Tags' [csv, xml]"" (""xml"" is the raw Openness export). Item lines are in _export_summary.txt's format and can be passed to read_source_tree's items as they are.
 
 Without filter or deviceName, a project of more than 200 items only gets counts per software back; pass targetDirectory to write the full list to '<targetDirectory>/_project_list.txt'.")]
     public Task<string> ListProject(
@@ -595,15 +590,16 @@ Without filter or deviceName, a project of more than 200 items only gets counts 
     private static string Header(DeviceFamily family, string device) =>
         family == DeviceFamily.Plc ? $"=== {device} ===" : $"=== {device} (HMI) ===";
 
-    // Every PLC and HMI software of the project, or only deviceName's, with its family.
+    // Every PLC and HMI software of the project, or only deviceName's (by either of its names), with
+    // its family - named as TIA Portal's project tree shows it (see ProjectSoftware).
     private async Task<List<(DeviceFamily Family, string Name)>> Devices(string? deviceName)
     {
-        bool IsSelected(string device) => deviceName == null || string.Equals(device, deviceName, StringComparison.OrdinalIgnoreCase);
-        var devices = new List<(DeviceFamily, string)>();
-        devices.AddRange((await _session.ListDevicesAsync()).Select(d => d.PlcSoftwareName).OfType<string>().Where(IsSelected).Select(n => (DeviceFamily.Plc, n)));
-        devices.AddRange((await _session.ListHmiDevicesAsync()).Select(h => h.HmiSoftwareName).Where(IsSelected).Select(n => (DeviceFamily.HmiUnified, n)));
-        devices.AddRange((await _session.ListHmiClassicNamesAsync()).Where(IsSelected).Select(n => (DeviceFamily.HmiClassic, n)));
-        return devices;
+        bool IsSelected(ProjectSoftware s) => deviceName == null
+            || string.Equals(s.Name, deviceName, StringComparison.OrdinalIgnoreCase) || string.Equals(s.SoftwareName, deviceName, StringComparison.OrdinalIgnoreCase);
+        return (await _session.ListSoftwareAsync()).Where(IsSelected)
+            .OrderBy(s => s.Kind)
+            .Select(s => (s.Kind switch { SoftwareKind.Plc => DeviceFamily.Plc, SoftwareKind.HmiUnified => DeviceFamily.HmiUnified, _ => DeviceFamily.HmiClassic }, s.Name))
+            .ToList();
     }
 
     // Multiuser: the mark state of the given items, as TIA Portal has it now - an Openness call per
@@ -613,10 +609,9 @@ Without filter or deviceName, a project of more than 200 items only gets counts 
     {
         var result = new Dictionary<(string, string, string), SourceTreeMarks>();
         if (!_session.IsMultiuser || items.Count == 0) return result;
-        var devices = await Devices(null);
         foreach (var group in items.GroupBy(i => (i.Device, i.Kind)))
         {
-            var family = devices.Where(d => string.Equals(d.Name, group.Key.Device, StringComparison.OrdinalIgnoreCase)).Select(d => (DeviceFamily?)d.Family).FirstOrDefault();
+            var family = (await Devices(group.Key.Device)).Select(d => (DeviceFamily?)d.Family).FirstOrDefault();
             var target = family == null ? null : SourceKinds.All.FirstOrDefault(k => k.Name == group.Key.Kind && k.Family == family)?.MarkTarget;
             if (target == null) continue;
             var states = await _session.GetMarkStatesAsync(group.Key.Device, target.Value, group.Select(i => i.Name).ToList());
@@ -648,7 +643,7 @@ Without filter or deviceName, a project of more than 200 items only gets counts 
     }
 
     [McpServerTool(Name = "read_source_tree")]
-    [Description(@"Export project source to disk, into folders that mirror the TIA Portal project tree: <targetDirectory>/<PlcName>/Program blocks/<group path>/..., .../PLC tags/..., .../PLC data types/..., and .../PLC alarm text lists/<list>.csv; <targetDirectory>/<HmiSoftwareName>/HMI tags/..., .../Screens/<group path>/<screen>.json (WinCC Unified) and .../HMI alarms/ (DiscreteAlarms.csv, AnalogAlarms.csv, AlarmClasses.csv - fixed files, alarms have no groups in Openness); for a classic WinCC HMI .../HMI tags/, Screens/, Screen templates/, Pop-up screens/ (each with its folders) and Text lists/, as native Openness XML. Classic graphic lists are skipped (exporting one crashes TIA Portal V21). Read the files with your file tools; edit them and call write_source_tree to write the changes back.
+    [Description(@"Export project source to disk, into folders that mirror the TIA Portal project tree: <targetDirectory>/<PLC>/Program blocks/<group path>/..., .../PLC tags/..., .../PLC data types/..., and .../PLC alarm text lists/<list>.csv; <targetDirectory>/<HMI>/HMI tags/..., .../Screens/<group path>/<screen>.json (WinCC Unified) and .../HMI alarms/ (DiscreteAlarms.csv, AnalogAlarms.csv, AlarmClasses.csv - fixed files, alarms have no groups in Openness); for a classic WinCC HMI .../HMI tags/, Screens/, Screen templates/, Pop-up screens/ (each with its folders) and Text lists/, as native Openness XML. Classic graphic lists are skipped (exporting one crashes TIA Portal V21). <PLC> and <HMI> are the names TIA Portal's project tree shows (an HMI on a PC station by the station's name; project_status lists them), as in the '=== name ===' headers; tools also take the software's own name. Read the files with your file tools; edit them and call write_source_tree to write the changes back.
 
 Pass items to read only part of the project (much faster than a full read): e.g. one block to look at or refresh, or a group. A read overwrites the selected items' files, including unsaved edits to them. An item that no longer exists in the project (deleted or renamed in TIA Portal) has its files deleted.
 
@@ -688,6 +683,9 @@ In a Multiuser local session the read also checks each item's mark state (about 
         }
 
         var manifest = previous ?? new SourceTreeManifest();
+        var renamed = previous == null || previous.Project == _session.ProjectName
+            ? MoveToProjectTreeNames(targetDirectory, manifest, await _session.ListSoftwareAsync())
+            : new List<string>();
         var lengthChanged = hmiTagLength != null && hmiTagLength != (manifest.HmiTagLength == true);
         if (hmiTagLength != null) manifest.HmiTagLength = hmiTagLength.Value ? true : null;
 
@@ -735,6 +733,7 @@ In a Multiuser local session the read also checks each item's mark state (about 
             foreach (var name in names) result.AppendLine($"    {name}");
         }
         foreach (var note in _exportNotes) result.AppendLine($"  {note}");
+        foreach (var note in renamed) result.AppendLine($"  {note}");
         if (_session.IsMultiuser)
         {
             var marked = read.Select(r => manifest.Find(r.Device, r.Kind, r.Name)).Where(e => e?.Multiuser != null).Select(e => e!).ToList();
@@ -754,7 +753,7 @@ In a Multiuser local session the read also checks each item's mark state (about 
     });
 
     [McpServerTool(Name = "write_source_tree")]
-    [Description(@"Write a source tree from read_source_tree back into the connected project: every item whose files were edited since the last read, and every new file - a new block, UDT, tag table or WinCC Unified screen is created by adding its file in the right folder (the folder gives the group, the file name the item's name; for a new block or UDT start from an existing file of the same kind). Written items are read back into the tree afterward, so their files show what TIA Portal made of them. Not compiled - call compile_plc afterward, and after an FB interface change read the instance DBs again - except that a PLC whose written items have an .xml in the tree is compiled before they are read back (an XML export needs a consistent object). Deleting a file does not delete the item in the project (use the delete_* tools).
+    [Description(@"Write a source tree from read_source_tree back into the connected project: every item whose files were edited since the last read, and every new file - a new block, UDT, tag table or WinCC Unified screen is created by adding its file in the right folder (the folder gives the group, the file name the item's name; for a new block or UDT start from an existing file of the same kind). Written items are read back into the tree afterward, so their files show what TIA Portal made of them. Not compiled - call compile afterward, and after an FB interface change read the instance DBs again - except that a PLC whose written items have an .xml in the tree is compiled before they are read back (an XML export needs a consistent object). Deleting a file does not delete the item in the project (use the delete_* tools).
 
 Refuses (FAILED, nothing written for that item) to overwrite an item that was changed in TIA Portal since it was read, or that exists in the project but was never read into the tree; force=true overwrites anyway. A tree read from another project (e.g. to restore it into an emptied copy) is written in full, without these checks. So is a tree without _manifest.json, such as one a generator script writes: everything its _export_summary.txt (or itemList) lists is written, and nothing is read back into it.
 
@@ -801,10 +800,14 @@ Writes '<sourceDirectory>/_import_report.txt' with one CREATED/UPDATED/SKIPPED/F
         // A tree read from another project (e.g. restoring into an emptied copy) isn't a working
         // copy of this one: all of it is written, and nothing is compared with or refreshed from it.
         var workingCopy = manifest != null && manifest.Project == _session.ProjectName;
-        var notes = new List<string>();
+        var software = await _session.ListSoftwareAsync();
+        var notes = workingCopy ? MoveToProjectTreeNames(sourceDirectory, manifest!, software) : new List<string>();
         var projectDevices = await Devices(null);
+        // By either name: a tree without a manifest (generated, or from another project) keeps the
+        // folder names it was made with.
         DeviceFamily? FamilyOf(string device) =>
-            projectDevices.Where(d => string.Equals(d.Name, device, StringComparison.OrdinalIgnoreCase)).Select(d => (DeviceFamily?)d.Family).FirstOrDefault();
+            software.Where(s => string.Equals(s.Name, device, StringComparison.OrdinalIgnoreCase) || string.Equals(s.SoftwareName, device, StringComparison.OrdinalIgnoreCase))
+                .Select(s => (DeviceFamily?)projectDevices.First(d => d.Name == s.Name).Family).FirstOrDefault();
 
         List<ImportListItem> items;
         var invalidCount = 0;
@@ -826,6 +829,12 @@ Writes '<sourceDirectory>/_import_report.txt' with one CREATED/UPDATED/SKIPPED/F
                     return $"{Describe(item.Kind, item.GroupPath, item.ItemName)} has no software header above it, and the project has {(candidates.Count == 0 ? "no software" : $"more than one software ({string.Join(", ", candidates)})")} it can belong to. {ItemListExample}";
                 allItems[i] = new ImportListItem(candidates[0], item.Kind, item.GroupPath, item.ItemName, item.Ok);
             }
+            // A working copy's folders are under the project-tree name; a line may still use the
+            // software name (an itemList from before the move).
+            if (workingCopy)
+                allItems = allItems.Select(i => software.FirstOrDefault(s => string.Equals(s.SoftwareName, i.DeviceName, StringComparison.OrdinalIgnoreCase)) is { } s && s.Name != i.DeviceName
+                    ? new ImportListItem(s.Name, i.Kind, i.GroupPath, i.ItemName, i.Ok)
+                    : i).ToList();
             // A label is split at its last '/', but an item name can hold a '/' itself
             // ("Group/Pump 1/2"): the manifest knows where the group path ends.
             if (manifest != null)
@@ -855,6 +864,14 @@ Writes '<sourceDirectory>/_import_report.txt' with one CREATED/UPDATED/SKIPPED/F
         var unchanged = 0;
         foreach (var item in items)
         {
+            // A working copy is checked against the project under the project-tree names; files
+            // left in a folder of the software name (one that couldn't be moved) would skip that check.
+            if (workingCopy && software.FirstOrDefault(s => string.Equals(s.SoftwareName, item.DeviceName, StringComparison.OrdinalIgnoreCase)
+                    && !string.Equals(s.Name, item.DeviceName, StringComparison.OrdinalIgnoreCase)) is { } renamed)
+            {
+                refused.Add((item, $"is in '{DirName(item.DeviceName)}/', but this tree has '{renamed.SoftwareName}' under the name TIA Portal's project tree shows, '{DirName(renamed.Name)}/'. Move its files there (or remove them), and write again."));
+                continue;
+            }
             var entry = workingCopy ? manifest!.Find(item.DeviceName, item.Kind, item.ItemName) : null;
             var (format, state, error) = WriteFormat(sourceDirectory, item, SourceKinds.Find(item.Kind, FamilyOf(item.DeviceName))!, entry, workingCopy);
             if (error != null) { refused.Add((item, error)); continue; }
@@ -1255,6 +1272,42 @@ Writes '<sourceDirectory>/_import_report.txt' with one CREATED/UPDATED/SKIPPED/F
         }
 
         return (items, devices.Select(d => d.Name).ToList());
+    }
+
+    // A tree read before software was named as TIA Portal's project tree shows it has its folders
+    // under the software name ('HMI_RT_1' instead of its PC station 'PC_1'): those folders (and
+    // their .base copies) and the manifest's entries move to the new name. A folder whose new name
+    // is taken already is left where it is, with a note.
+    private static List<string> MoveToProjectTreeNames(string root, SourceTreeManifest manifest, IReadOnlyList<ProjectSoftware> software)
+    {
+        var notes = new List<string>();
+        foreach (var s in software)
+        {
+            var (from, to) = (DirName(s.SoftwareName), DirName(s.Name));
+            if (string.Equals(from, to, StringComparison.OrdinalIgnoreCase)) continue;
+            var dirs = new[] { root, Path.Combine(root, BaseDirName) }.Select(d => (From: Path.Combine(d, from), To: Path.Combine(d, to))).Where(d => Directory.Exists(d.From)).ToList();
+            var entries = manifest.Items.Where(i => string.Equals(i.Device, s.SoftwareName, StringComparison.OrdinalIgnoreCase)).ToList();
+            if (dirs.Count == 0 && entries.Count == 0) continue;
+            if (dirs.Any(d => Directory.Exists(d.To)) || manifest.Items.Any(i => string.Equals(i.Device, s.Name, StringComparison.OrdinalIgnoreCase)))
+            {
+                notes.Add($"NOTE '{from}/' holds '{s.SoftwareName}', which TIA Portal's project tree names '{s.Name}' - but '{to}/' exists too, so it was left as it is. Merge or remove one of them.");
+                continue;
+            }
+            foreach (var d in dirs) Directory.Move(d.From, d.To);
+            foreach (var entry in entries)
+            {
+                entry.Device = s.Name;
+                entry.Files = entry.Files.ToDictionary(f => f.Key.StartsWith(from + "/", StringComparison.OrdinalIgnoreCase) ? to + f.Key.Substring(from.Length) : f.Key, f => f.Value);
+            }
+            notes.Add($"Moved '{from}/' to '{to}/': software '{s.SoftwareName}' is now named as TIA Portal's project tree shows it.");
+        }
+        // Saved right away: the folders have moved, whatever happens next.
+        if (notes.Count > 0 && manifest.Project != null)
+        {
+            manifest.Save(root);
+            File.WriteAllText(Path.Combine(root, "_export_summary.txt"), FormatSummary(root, manifest));
+        }
+        return notes;
     }
 
     // FAILED lines per software in write_source_tree's tool result; the full report has them all.

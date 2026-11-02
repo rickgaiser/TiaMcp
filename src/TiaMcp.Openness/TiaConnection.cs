@@ -16,6 +16,7 @@ using Siemens.Engineering.SW.Blocks.Interface;
 using Siemens.Engineering.SW.ExternalSources;
 using Siemens.Engineering.SW.Tags;
 using Siemens.Engineering.SW.Types;
+using Siemens.Engineering.Hmi;
 using Siemens.Engineering.HmiUnified;
 using Siemens.Engineering.HmiUnified.HmiTags;
 using Siemens.Engineering.HmiUnified.HmiAlarm;
@@ -36,7 +37,8 @@ public sealed partial class TiaConnection : IDisposable
     private LocalSession? _localSession;
     private readonly Dictionary<string, PlcSoftware> _softwareByName = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, HmiSoftware> _hmiSoftwareByName = new(StringComparer.OrdinalIgnoreCase);
-    // The device item holding each Unified HMI's software: where compile_hmi looks for a compiler.
+    private readonly List<ProjectSoftware> _software = new();
+    // The device item holding each Unified HMI's software: where compile looks for a compiler.
     private readonly Dictionary<string, DeviceItem> _hmiDeviceItemByName = new(StringComparer.OrdinalIgnoreCase);
 
     public bool IsConnected => _project != null;
@@ -366,11 +368,9 @@ public sealed partial class TiaConnection : IDisposable
         _hmiSoftwareByName.Clear();
         _hmiDeviceItemByName.Clear();
         _hmiTargetByName.Clear();
+        _software.Clear();
         _screenDefaults.Clear();
-        foreach (Device device in project.Devices)
-        {
-            CollectSoftware(device.DeviceItems);
-        }
+        IndexSoftware("", project.Devices, project.DeviceGroups);
 
         var projectPath = localSession == null
             ? project.Path?.FullName
@@ -462,74 +462,81 @@ public sealed partial class TiaConnection : IDisposable
             _localSession == null ? null : GetMultiuserStatus(_localSession));
     }
 
-    private void CollectSoftware(DeviceItemComposition items)
+    // Every PLC and HMI software, in device groups too, under its software name and under the name
+    // TIA Portal's project tree shows for it (see ProjectTreeName) - every tool takes either.
+    private void IndexSoftware(string rootGroup, DeviceComposition rootDevices, DeviceUserGroupComposition rootGroups)
     {
-        foreach (DeviceItem item in items)
+        var all = new List<(string Group, Device Device, DeviceItem Item, object Software, string SoftwareName, SoftwareKind Kind, int OnDevice)>();
+        void Walk(string group, DeviceComposition devices, DeviceUserGroupComposition groups)
         {
-            var container = item.GetService<SoftwareContainer>();
-            if (container?.Software is PlcSoftware plcSoftware)
+            foreach (Device device in devices)
             {
-                _softwareByName[plcSoftware.Name] = plcSoftware;
+                var found = new List<(DeviceItem, object)>();
+                FindSoftware(device.DeviceItems, found);
+                foreach (var (item, software) in found)
+                {
+                    var (softwareName, kind) = software switch
+                    {
+                        PlcSoftware plc => (plc.Name, SoftwareKind.Plc),
+                        HmiSoftware hmi => (hmi.Name, SoftwareKind.HmiUnified),
+                        HmiTarget target => (target.Name, SoftwareKind.HmiClassic),
+                        _ => throw new InvalidOperationException(),
+                    };
+                    all.Add((group, device, item, software, softwareName, kind, found.Count));
+                }
             }
-            if (container?.Software is HmiSoftware hmiSoftware)
-            {
-                _hmiSoftwareByName[hmiSoftware.Name] = hmiSoftware;
-                _hmiDeviceItemByName[hmiSoftware.Name] = item;
-            }
-            IndexHmiClassic(container);
+            foreach (DeviceUserGroup g in groups)
+                Walk(group == "" ? g.Name : $"{group}/{g.Name}", g.Devices, g.Groups);
+        }
+        Walk(rootGroup, rootDevices, rootGroups);
 
-            CollectSoftware(item.DeviceItems);
+        // A project-tree name that is another software's name, or already taken, keeps the software name.
+        var taken = new HashSet<string>(all.Select(s => s.SoftwareName), StringComparer.OrdinalIgnoreCase);
+        foreach (var s in all)
+        {
+            var name = ProjectTreeName(s.Device, s.Item, s.SoftwareName, s.OnDevice);
+            if (!string.Equals(name, s.SoftwareName, StringComparison.OrdinalIgnoreCase) && !taken.Add(name)) name = s.SoftwareName;
+            foreach (var key in new[] { s.SoftwareName, name }.Distinct(StringComparer.OrdinalIgnoreCase))
+            {
+                switch (s.Software)
+                {
+                    case PlcSoftware plc: _softwareByName[key] = plc; break;
+                    case HmiSoftware hmi: _hmiSoftwareByName[key] = hmi; _hmiDeviceItemByName[key] = s.Item; break;
+                    case HmiTarget target: _hmiTargetByName[key] = target; break;
+                }
+            }
+            _software.Add(new ProjectSoftware(name, s.SoftwareName, s.Kind, s.Device.Name, s.Group));
         }
     }
 
-    public IReadOnlyList<DeviceSummary> ListDevices()
+    private static void FindSoftware(DeviceItemComposition items, List<(DeviceItem, object)> found)
+    {
+        foreach (DeviceItem item in items)
+        {
+            var software = item.GetService<SoftwareContainer>()?.Software;
+            if (software is PlcSoftware or HmiSoftware or HmiTarget) found.Add((item, software));
+            FindSoftware(item.DeviceItems, found);
+        }
+    }
+
+    // The name TIA Portal's project tree shows for a software: an S7 station (TypeIdentifier
+    // "System:Device.S71500" etc.) isn't shown, its CPU is; a PC station or panel is shown by its own
+    // name. A device holding more than one software (an HMI and a software PLC) keeps the software
+    // names, so they stay apart.
+    private static string ProjectTreeName(Device device, DeviceItem item, string softwareName, int softwareOnDevice)
+    {
+        string type;
+        try { type = device.GetAttribute("TypeIdentifier") as string ?? ""; }
+        catch { type = ""; }
+        if (type.StartsWith("System:Device.", StringComparison.OrdinalIgnoreCase)) return item.Name;
+        return softwareOnDevice == 1 ? device.Name : softwareName;
+    }
+
+    // Every PLC and HMI software of the project, by the name its project tree shows.
+    public IReadOnlyList<ProjectSoftware> ListSoftware()
     {
         EnsureConnected();
-        var result = new List<DeviceSummary>();
-        foreach (Device device in _project!.Devices)
-        {
-            CollectDeviceSummaries(device.Name, device.DeviceItems, result);
-        }
-        return result;
-    }
-
-    private void CollectDeviceSummaries(string deviceName, DeviceItemComposition items, List<DeviceSummary> result)
-    {
-        foreach (DeviceItem item in items)
-        {
-            var software = item.GetService<SoftwareContainer>()?.Software as PlcSoftware;
-            if (software != null)
-            {
-                result.Add(new DeviceSummary(deviceName, item.Name, software.Name));
-            }
-
-            CollectDeviceSummaries(deviceName, item.DeviceItems, result);
-        }
-    }
-
-    public IReadOnlyList<HmiDeviceSummary> ListHmiDevices()
-    {
-        EnsureConnected();
-        var result = new List<HmiDeviceSummary>();
-        foreach (Device device in _project!.Devices)
-        {
-            CollectHmiDeviceSummaries(device.Name, device.DeviceItems, result);
-        }
-        return result;
-    }
-
-    private void CollectHmiDeviceSummaries(string deviceName, DeviceItemComposition items, List<HmiDeviceSummary> result)
-    {
-        foreach (DeviceItem item in items)
-        {
-            var software = item.GetService<SoftwareContainer>()?.Software as HmiSoftware;
-            if (software != null)
-            {
-                result.Add(new HmiDeviceSummary(deviceName, item.Name, software.Name));
-            }
-
-            CollectHmiDeviceSummaries(deviceName, item.DeviceItems, result);
-        }
+        return _software.ToList();
     }
 
     public IReadOnlyList<BlockSummary> ListBlocks(string plcName)
@@ -611,7 +618,7 @@ public sealed partial class TiaConnection : IDisposable
             try { export(file); }
             catch (Exception ex)
             {
-                throw new InvalidOperationException($"XML export failed - an inconsistent block or UDT can't be exported as XML, call compile_plc first: {ex.Message}", ex);
+                throw new InvalidOperationException($"XML export failed - an inconsistent block or UDT can't be exported as XML, call compile first: {ex.Message}", ex);
             }
             return NormalizedXml(file);
         }
@@ -695,18 +702,22 @@ public sealed partial class TiaConnection : IDisposable
     // imported; null when it can't tell (it attached to a project that was already open, and
     // hasn't imported the block since).
     public int? ExportsSinceImport(string plcName, string blockName) =>
-        _exportsSinceImport.TryGetValue($"{plcName}/{blockName}", out var count) ? count : _openedHere ? 0 : null;
+        _exportsSinceImport.TryGetValue(ExportKey(plcName, blockName), out var count) ? count : _openedHere ? 0 : null;
 
     private void CountExport(string plcName, string blockName)
     {
-        if (ExportsSinceImport(plcName, blockName) is { } count) _exportsSinceImport[$"{plcName}/{blockName}"] = count + 1;
+        if (ExportsSinceImport(plcName, blockName) is { } count) _exportsSinceImport[ExportKey(plcName, blockName)] = count + 1;
     }
 
     private ImportResult Imported(string plcName, string blockName, ImportResult result)
     {
-        if (result.Success) _exportsSinceImport[$"{plcName}/{blockName}"] = 0;
+        if (result.Success) _exportsSinceImport[ExportKey(plcName, blockName)] = 0;
         return result;
     }
+
+    // By the software's own name: a PLC can be passed by either of its names (see IndexSoftware).
+    private string ExportKey(string plcName, string blockName) =>
+        $"{(_softwareByName.TryGetValue(plcName, out var plc) ? plc.Name : plcName)}/{blockName}";
 
     // A block's own format: GRAPH is converted from the XML ('.graph.il'), whole-block STL is
     // 'Generate source' text ('.awl'), the rest TIA Portal's document format ('.s7dcl').
@@ -859,7 +870,7 @@ public sealed partial class TiaConnection : IDisposable
         if (!block.IsConsistent)
         {
             return new ExportResult(false, Array.Empty<BlockDocument>(),
-                $"Block '{block.Name}' is a GRAPH block and is not consistent. GRAPH export requires a consistent/compiled block - call compile_plc first, then read it again.");
+                $"Block '{block.Name}' is a GRAPH block and is not consistent. GRAPH export requires a consistent/compiled block - call compile first, then read it again.");
         }
 
         var outDir = new DirectoryInfo(Path.Combine(Path.GetTempPath(), "TiaMcp", "export", Guid.NewGuid().ToString("N")));
@@ -920,7 +931,7 @@ public sealed partial class TiaConnection : IDisposable
         if (!block.IsConsistent)
         {
             return new ExportResult(false, Array.Empty<BlockDocument>(),
-                $"Block '{block.Name}' is not consistent. Reading an STL block requires a consistent/compiled block - call compile_plc first, then read it again.");
+                $"Block '{block.Name}' is not consistent. Reading an STL block requires a consistent/compiled block - call compile first, then read it again.");
         }
 
         var outDir = new DirectoryInfo(Path.Combine(Path.GetTempPath(), "TiaMcp", "export-stl", Guid.NewGuid().ToString("N")));
@@ -1970,7 +1981,7 @@ public sealed partial class TiaConnection : IDisposable
 
         if (!newBlock.IsConsistent)
         {
-            messages.Add($"'{blockName}' is not consistent after cloning/compiling, so reshaping to ilContent was skipped. It currently exists as an exact copy of '{templateBlockName}' under its own name - resolve the compile error (see compile_plc), then write its '.graph.il' file again (write_source_tree) to reshape it.");
+            messages.Add($"'{blockName}' is not consistent after cloning/compiling, so reshaping to ilContent was skipped. It currently exists as an exact copy of '{templateBlockName}' under its own name - resolve the compile error (see compile), then write its '.graph.il' file again (write_source_tree) to reshape it.");
             return new ImportResult(true, messages);
         }
 
@@ -2280,7 +2291,7 @@ public sealed partial class TiaConnection : IDisposable
     // A plain .Name assignment is safe even on an existing, compiled block with real dependents -
     // a bound instance-DB and a second block calling it. Renaming the FB (or, separately,
     // renaming the instance-DB) leaves both dependents temporarily INCONSISTENT, exactly like any
-    // other block edit; a normal compile_plc afterward resolves cleanly, and the caller's call
+    // other block edit; a normal compile afterward resolves cleanly, and the caller's call
     // statement text follows the rename automatically. This means TIA resolves block/DB
     // references by internal object identity, not by name text, so a rename is safe project-wide
     // - unlike delete, which TIA refuses outright when a live dependent exists (see DeleteBlock
@@ -3551,16 +3562,17 @@ public sealed partial class TiaConnection : IDisposable
         if (item != null) item.Text = htmlValue;
     }
 
-    public CompileResult Compile(string plcName)
+    // A PLC, a WinCC Unified HMI or a classic WinCC HMI target, by its software name.
+    public CompileResult Compile(string softwareName)
     {
         EnsureConnected();
-        return Compile(GetSoftware(plcName).GetService<ICompilable>());
+        return _softwareByName.TryGetValue(softwareName, out var plc)
+            ? Compile(plc.GetService<ICompilable>())
+            : CompileHmi(softwareName);
     }
 
-    // A WinCC Unified HMI or a classic WinCC HMI target.
-    public CompileResult CompileHmi(string hmiName)
+    private CompileResult CompileHmi(string hmiName)
     {
-        EnsureConnected();
         // HmiSoftware doesn't declare GetService. Candidates for the compiler, most specific
         // first: the software itself at runtime, the device item holding it and the items and
         // device above that (the GUI compiles the HMI device).
@@ -3577,8 +3589,9 @@ public sealed partial class TiaConnection : IDisposable
         else if (_hmiTargetByName.TryGetValue(hmiName, out var classic)) candidates.Add(classic);
         else
         {
-            var available = string.Join(", ", _hmiSoftwareByName.Keys.Concat(_hmiTargetByName.Keys));
-            throw new InvalidOperationException($"Unknown HMI '{hmiName}'. Known HMIs: [{available}]. For a PLC use compile_plc.");
+            var available = string.Join(", ", _softwareByName.Keys.Concat(_hmiSoftwareByName.Keys).Concat(_hmiTargetByName.Keys));
+            throw new InvalidOperationException($"Unknown PLC or HMI '{hmiName}'. Known: [{available}]. " +
+                "If a device was renamed in the TIA Portal GUI since the last tia_connect, call tia_connect again - the name index is only built at connect time.");
         }
 
         foreach (var candidate in candidates)
@@ -3670,7 +3683,7 @@ public sealed partial class TiaConnection : IDisposable
         if (!_softwareByName.TryGetValue(plcName, out var software))
         {
             if (_hmiSoftwareByName.ContainsKey(plcName) || _hmiTargetByName.ContainsKey(plcName))
-                throw new InvalidOperationException($"'{plcName}' is an HMI, not a PLC - use the HMI tools (e.g. compile_hmi).");
+                throw new InvalidOperationException($"'{plcName}' is an HMI, not a PLC - use the HMI tools.");
             var available = string.Join(", ", _softwareByName.Keys);
             throw new InvalidOperationException(
                 $"Unknown PLC '{plcName}'. Known PLCs: [{available}]. " +
