@@ -357,6 +357,62 @@ public sealed partial class TiaConnection : IDisposable
     }
 
     // openedHere: this server opened the project, rather than attaching to one already open.
+    // Whether the attached project still answers: TIA Portal disposes it, and every object in it,
+    // when it closes the project - also to reopen it, as a Multiuser check-in or refresh does.
+    public bool ProjectAlive()
+    {
+        if (_project == null) return false;
+        try
+        {
+            _ = _project.Name;
+            foreach (var plc in _softwareByName.Values.Take(1)) _ = plc.Name;
+            foreach (var hmi in _hmiSoftwareByName.Values.Take(1)) _ = hmi.Name;
+            return true;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    // Attaches again to the project or local session at projectPath after its handle died (see
+    // ProjectAlive): in processId when that still has it open, else in the one instance that has.
+    // Never opens it: a project the user closed stays closed.
+    public ConnectResult Reconnect(int? processId, string projectPath)
+    {
+        var processes = TiaPortal.GetProcesses().ToList();
+        var withIt = processes.Where(p => SamePath(OpenProjectPath(p), projectPath)).ToList();
+        var proc = withIt.FirstOrDefault(p => p.Id == processId) ?? (withIt.Count == 1 ? withIt[0] : null);
+        if (proc == null)
+            return new ConnectResult(false, null, null, withIt.Count == 0
+                ? $"no running TIA Portal has '{projectPath}' open."
+                : $"{withIt.Count} TIA Portal instances have '{projectPath}' open.");
+
+        var old = _tiaPortal;
+        _tiaPortal = null;
+        _project = null;
+        _localSession = null;
+        try { old?.Dispose(); } catch { /* already gone */ }
+        return ConnectToSpecificProcess(processes, proc.Id, projectPath);
+    }
+
+    private static bool SamePath(string? a, string b)
+    {
+        if (a == null) return false;
+        try { return string.Equals(Path.GetFullPath(a), Path.GetFullPath(b), StringComparison.OrdinalIgnoreCase); }
+        catch { return string.Equals(a, b, StringComparison.OrdinalIgnoreCase); }
+    }
+
+    // The TIA Portal process this server is attached to, if it still answers.
+    public int? ProcessId
+    {
+        get
+        {
+            try { return _tiaPortal?.GetCurrentProcess().Id; }
+            catch { return null; }
+        }
+    }
+
     private ConnectResult FinalizeConnect(TiaPortal portal, ProjectBase project, LocalSession? localSession = null, string? localSessionPath = null, bool openedHere = false)
     {
         _tiaPortal = portal;
