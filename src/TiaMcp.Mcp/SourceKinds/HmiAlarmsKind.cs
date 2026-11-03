@@ -85,7 +85,8 @@ internal sealed class HmiAlarmsKind : ISourceKind
             catch (FormatException ex) { log.Failed.Add($"{Name}: {ex.Message}"); return log; }
 
             var existing = new Dictionary<string, HmiAlarmInfo>(StringComparer.OrdinalIgnoreCase);
-            foreach (var alarm in await session.ListHmiAlarmsAsync(hmi, _alarmType)) existing[alarm.Name] = alarm;
+            // Unrepaired: a text nested by an earlier round trip differs from the file, so it is written.
+            foreach (var alarm in await session.ListHmiAlarmsAsync(hmi, _alarmType, repair: false)) existing[alarm.Name] = alarm;
             var unchanged = 0;
             var notWritten = 0;
             foreach (var spec in alarms)

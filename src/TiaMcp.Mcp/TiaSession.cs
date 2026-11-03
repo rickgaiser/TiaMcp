@@ -496,9 +496,9 @@ public sealed class TiaSession
         return Change(() => _connection.DeleteHmiAlarmClass(hmiName, name));
     }
 
-    public Task<IReadOnlyList<HmiAlarmInfo>> ListHmiAlarmsAsync(string hmiName, string? type = null)
+    public Task<IReadOnlyList<HmiAlarmInfo>> ListHmiAlarmsAsync(string hmiName, string? type = null, bool repair = true)
     {
-        return Read(() => _connection.ListHmiAlarms(hmiName, type));
+        return Read(() => _connection.ListHmiAlarms(hmiName, type, repair));
     }
 
     public Task<SimpleResult> WriteHmiAlarmAsync(string hmiName, HmiAlarmSpec spec)

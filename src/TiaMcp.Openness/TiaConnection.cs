@@ -3459,7 +3459,9 @@ public sealed partial class TiaConnection : IDisposable
         }
     }
 
-    public IReadOnlyList<HmiAlarmInfo> ListHmiAlarms(string hmiName, string? type = null)
+    // repair: texts nested by an earlier round trip come back repaired (see AlarmText); false
+    // gives them as the project has them, for a write to compare with.
+    public IReadOnlyList<HmiAlarmInfo> ListHmiAlarms(string hmiName, string? type = null, bool repair = true)
     {
         EnsureConnected();
         var software = GetHmiSoftware(hmiName);
@@ -3467,11 +3469,11 @@ public sealed partial class TiaConnection : IDisposable
 
         if (type == null || string.Equals(type, "Discrete", StringComparison.OrdinalIgnoreCase))
         {
-            result.AddRange(software.DiscreteAlarms.Select(ToHmiAlarmInfo));
+            result.AddRange(software.DiscreteAlarms.Select(a => ToHmiAlarmInfo(a, repair)));
         }
         if (type == null || string.Equals(type, "Analog", StringComparison.OrdinalIgnoreCase))
         {
-            result.AddRange(software.AnalogAlarms.Select(ToHmiAlarmInfo));
+            result.AddRange(software.AnalogAlarms.Select(a => ToHmiAlarmInfo(a, repair)));
         }
 
         return result;
@@ -3488,12 +3490,12 @@ public sealed partial class TiaConnection : IDisposable
         catch { return null; }
     }
 
-    private HmiAlarmInfo ToHmiAlarmInfo(HmiDiscreteAlarm a) =>
-        new("Discrete", a.Name, TryGet(() => a.AlarmClass), TryGet(() => AlarmText(a.EventText)), TryGet(() => AlarmText(a.InfoText)),
+    private HmiAlarmInfo ToHmiAlarmInfo(HmiDiscreteAlarm a, bool repair) =>
+        new("Discrete", a.Name, TryGet(() => a.AlarmClass), TryGet(() => AlarmText(a.EventText, repair)), TryGet(() => AlarmText(a.InfoText, repair)),
             TryGet(() => a.TriggerBitAddress), null, null, TryGet(() => a.RaisedStateTag), TryGet(() => a.AuditClass), TryGet(() => a.Area), TryGet(() => a.Origin));
 
-    private HmiAlarmInfo ToHmiAlarmInfo(HmiAnalogAlarm a) =>
-        new("Analog", a.Name, TryGet(() => a.AlarmClass), TryGet(() => AlarmText(a.EventText)), TryGet(() => AlarmText(a.InfoText)),
+    private HmiAlarmInfo ToHmiAlarmInfo(HmiAnalogAlarm a, bool repair) =>
+        new("Analog", a.Name, TryGet(() => a.AlarmClass), TryGet(() => AlarmText(a.EventText, repair)), TryGet(() => AlarmText(a.InfoText, repair)),
             TryGet(() => a.TriggerAddress), TryGet(() => a.Condition.ToString()), TryGet(() => a.ConditionValue?.ToString()), TryGet(() => a.RaisedStateTag), TryGet(() => a.AuditClass), TryGet(() => a.Area), TryGet(() => a.Origin));
 
     // Alarm property interdependencies (e.g. whether AlarmClass must be set before
@@ -3624,11 +3626,12 @@ public sealed partial class TiaConnection : IDisposable
         $"FAILED '{propertyName}': WinCC Unified's Openness API (V21) exposes no working setter for this specific field - every route tried (the property setter, SetAttribute(\"{propertyName}\", ...), SetAttribute(\"TriggerTag\", ...), and GetAttributeInfos()) is rejected or fails. Set RaisedStateTag instead to bind the alarm's trigger.";
 
     // An alarm EventText/InfoText in the project's editing language, as plain text (see
-    // UnifiedText); a text nested by an earlier round trip is repaired, so the next write fixes it.
-    private string? AlarmText(MultilingualText? text)
+    // UnifiedText). repair: a text nested by an earlier round trip comes back repaired, so the file
+    // shows the fix; the write compares with it unrepaired (one level), so it writes the fix.
+    private string? AlarmText(MultilingualText? text, bool repair)
     {
         var raw = text?.Items.Find(_project!.LanguageSettings.EditingLanguage)?.Text;
-        return string.IsNullOrEmpty(raw) ? null : UnifiedText.Repair(raw!);
+        return string.IsNullOrEmpty(raw) ? null : repair ? UnifiedText.Repair(raw!) : UnifiedText.HtmlToPlain(raw!);
     }
 
     // MultilingualTextItemComposition has no Create - items for every project editing language
