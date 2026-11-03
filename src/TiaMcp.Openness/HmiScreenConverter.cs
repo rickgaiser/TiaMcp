@@ -413,7 +413,8 @@ internal sealed class HmiScreenConverter
 
     // baseJson: the screen as last read, known to still match the project. Then only what differs
     // from it is written - setting every property of every item takes minutes for a large screen.
-    public WriteStats WriteScreen(HmiScreen screen, JsonObject json, bool deleteMissing, JsonObject? baseJson = null)
+    // defaultsOf: see ScreenJson.ChangedSince.
+    public WriteStats WriteScreen(HmiScreen screen, JsonObject json, bool deleteMissing, JsonObject? baseJson = null, Func<JsonObject, JsonObject?>? defaultsOf = null)
     {
         var stats = new WriteStats();
         var keep = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
@@ -422,7 +423,7 @@ internal sealed class HmiScreenConverter
             foreach (var node in all)
                 if (node is JsonObject o && o[NameKey] is JsonValue n && n.TryGetValue<string>(out var s)) keep.Add(s);
         }
-        if (baseJson != null) json = ScreenJson.ChangedSince(json, baseJson);
+        if (baseJson != null) json = ScreenJson.ChangedSince(json, baseJson, defaultsOf);
 
         ApplyObject(screen, json, "screen", stats.Messages, new HashSet<string>(StringComparer.OrdinalIgnoreCase) { NameKey, ItemsKey, "Name" });
 
@@ -1027,15 +1028,10 @@ internal sealed class HmiScreenConverter
 
     // ---- multilingual text ----
 
-    private static readonly Regex SimpleHtml = new(@"^<body>((?:<p>.*?</p>)*)</body>$", RegexOptions.Singleline);
-    private static readonly Regex Paragraph = new(@"<p>(.*?)</p>", RegexOptions.Singleline);
-    private static readonly Regex LineBreak = new(@"<br\s*/?>");
     private static readonly Regex ProjectText = new(@"^<\?xml[^>]*\?>\s*<ProjectText[^>]*>(.*)</ProjectText>\s*$", RegexOptions.Singleline);
     private const string ProjectTextHeader = "<?xml version=\"1.0\" encoding=\"utf-8\"?><ProjectText xmlns=\"http://www.siemens.com/Industry/2009/10/01/Automation/FormattedText\">";
 
-    // Unified screen texts are stored like alarm texts: an HTML fragment "<body><p>...</p></body>",
-    // line breaks as <br />. Plain paragraphs are shown as plain text (lines joined with \n); text
-    // with any other markup (formatting spans) is returned raw so a round trip keeps it.
+    // Unified screen texts are stored like alarm texts, see UnifiedText.
     private string? ReadText(MultilingualText? text)
     {
         if (text == null) return null;
@@ -1046,14 +1042,7 @@ internal sealed class HmiScreenConverter
         return string.IsNullOrEmpty(raw) ? "" : HtmlToPlain(raw!);
     }
 
-    private static string HtmlToPlain(string raw)
-    {
-        var match = SimpleHtml.Match(raw.Replace("<p/>", "<p></p>"));
-        if (!match.Success) return raw;
-        var paragraphs = Paragraph.Matches(match.Groups[1].Value).Cast<Match>().Select(m => LineBreak.Replace(m.Groups[1].Value, "\n")).ToList();
-        if (paragraphs.Any(p => p.Contains('<'))) return raw;
-        return string.Join("\n", paragraphs.Select(p => p.Replace("&lt;", "<").Replace("&gt;", ">").Replace("&amp;", "&")));
-    }
+    private static string HtmlToPlain(string raw) => UnifiedText.HtmlToPlain(raw);
 
     private void WriteText(MultilingualText? text, string value)
     {
@@ -1080,9 +1069,7 @@ internal sealed class HmiScreenConverter
         catch { item.Text = html; }
     }
 
-    private static string PlainToHtml(string value) =>
-        "<body><p>" + string.Join("<br />", value.Replace("\r\n", "\n").Split('\n')
-            .Select(line => line.Replace("&", "&amp;").Replace("<", "&lt;").Replace(">", "&gt;"))) + "</p></body>";
+    private static string PlainToHtml(string value) => UnifiedText.PlainToHtml(value);
 
     // Text-typed faceplate interface properties hold a whole ProjectText XML document around the
     // same <body> fragment; shown as plain text when it is plain, rewrapped on write.

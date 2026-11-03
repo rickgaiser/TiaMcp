@@ -306,7 +306,25 @@ public sealed partial class TiaConnection
         try { if (baseJsonText != null) baseJson = JsonNode.Parse(baseJsonText) as JsonObject; }
         catch (JsonException) { /* no usable base: write everything */ }
 
-        var stats = NewScreenConverter().WriteScreen(screen, json, deleteMissing, baseJson);
+        // The read left out what equals a fresh object's value: the change check needs those
+        // defaults to see that a value set to its default is no change (sampled at read time,
+        // normally still cached).
+        Func<JsonObject, JsonObject?>? defaultsOf = null;
+        if (baseJson != null)
+        {
+            (Type Type, string? ContainedType)? TypeOf(JsonObject node) =>
+                node[ScreenJson.TypeKey]?.ToString() is not { } typeName ? (typeof(HmiScreen), null)
+                : HmiScreenConverter.ResolveItemType(typeName) is { } type ? (type, node[ScreenJson.ContainedTypeKey]?.ToString())
+                : null;
+            var needed = new List<(Type, string?)> { (typeof(HmiScreen), null) };
+            if (json[ScreenJson.ItemsKey] is JsonArray items)
+                foreach (var node in items)
+                    if (node is JsonObject item && TypeOf(item) is { } t) needed.Add(t);
+            try { EnsureScreenDefaults(software, needed); } catch { /* no defaults: every difference counts */ }
+            defaultsOf = node => TypeOf(node) is { } t && _screenDefaults.TryGetValue(DefaultsKey(software, t.Type, t.ContainedType), out var d) ? d : null;
+        }
+
+        var stats = NewScreenConverter().WriteScreen(screen, json, deleteMissing, baseJson, defaultsOf);
         var name = json[HmiScreenConverter.NameKey]?.ToString();
         if (name != null && !string.Equals(name, screen.Name, StringComparison.Ordinal))
             stats.Messages.Add($"\"name\" '{name}' ignored - use rename_hmi_screen to rename a screen.");

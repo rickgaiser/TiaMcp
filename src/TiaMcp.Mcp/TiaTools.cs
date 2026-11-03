@@ -798,7 +798,7 @@ Writing rules per file type:
 - PLC alarm text list CSV ('PLC alarm text lists/<list>.csv'): From, To, Text [language]... Only existing user lists (create a new list in TIA Portal). The write patches a fresh export of all lists and imports it, so other lists are untouched; a removed row deletes that entry (not when writing a tree read from another project); a language column left out stays unchanged. Every list's language must be a project language.
 - Classic WinCC XML (screens, templates, pop-ups, tag tables, text lists): native Openness XML as read; <Name> must match the file name. A new screen needs a <Number> not used by another screen - checked before the import (a duplicate number makes TIA Portal V21 terminate itself).
 - WinCC Unified screen ('.json', built from the Openness object model - there is no export format): the screen's properties plus ""items"", one object per screen item with ""name"", ""type"" (see describe_hmi_item_type) and its properties under their Openness names; parts are nested objects, part lists arrays. Colors '#AARRGGBB', enums by member name, texts plain text in the editing language. Reserved keys: ""dynamizations"" ({""<Property>"": ""<HMI tag>""} or {""type"": ""Script"", ...}), ""events"" ({""<EventType>"": ""<JS code>""}), ""propertyEvents"" ({""<Property>:Change"": ...}). A FaceplateContainer has ""ContainedType"" (see list_library_types) and ""Interface"" (see read_faceplate_type): a plain value is static - a UDT-typed property takes the HMI tag name - and a binding is an object, {""type"": ""Tag"", ""Tag"": ""<HMI tag>""} or a script. Only values that differ from a new item are shown; leaving a property, dynamization or event out of the file doesn't reset it - set the default value, or null to remove a dynamization/script. Items are matched by name: a new name creates the item (appended - Openness has no z-order control), a changed type recreates it, a removed item is deleted (not when writing a tree read from another project). A new screen is created from a new file. Each property is set on its own; failures are reported per property and the rest still applies. SLOW: a screen is written item by item through Openness - a new screen (also a copy of an existing one: Openness can't copy Unified screens) or a forced write takes about 0.2 s per item, close to a minute for a screen of a few hundred items. An edit to a screen read into this tree writes only the changed properties and is fast. The read before and after each write adds a few seconds per screen.
-- HMI alarms CSV: rows update or add alarms by name; a removed row is not deleted (use delete_hmi_alarm). RaisedStateTag binds the trigger (a tag or member path whose base HMI tag exists); TriggerAddress is computed and read-only. EventText/InfoText are plain text. AlarmClasses.csv: Name, Priority, Log; system classes accept no Priority change.
+- HMI alarms CSV: rows update or add alarms by name; in a tree read from this project a removed row deletes the alarm (a dry run names them). RaisedStateTag binds the trigger (a tag or member path whose base HMI tag exists); TriggerAddress is computed and read-only. EventText/InfoText are plain text in the editing language (formatted text stays a <body> fragment). AlarmClasses.csv: Name, Priority, Log; system classes accept no Priority change.
 
 Writes in dependency order: UDTs, then tag tables, then blocks, with UDTs and blocks each split into layers by what their source references (nested UDTs first; global DBs and called FBs before their callers and instance DBs), compiling the PLC between UDT layers - imports can fail, or a UDT can silently lose nested start values, when what they reference isn't there yet.
 Then the PLC alarm text lists. An HMI is written tag tables before screens (a classic one text lists first, then tag tables, templates and pop-ups, then screens).
@@ -811,7 +811,7 @@ An item whose write FAILED but changed the project anyway (some tag rows or scre
 
 Writes '<sourceDirectory>/_import_report.txt' with one CREATED/UPDATED/SKIPPED/FAILED line per item (per row for alarms). Returns that report for a small write; for a larger one, the counts per software plus every SKIPPED line and the first FAILED lines. Tag rows that fail the same way are reported as one line. Both end with the time per phase. '_progress.log' shows what the write is doing while it runs (also sent as MCP progress notifications). A cancel before the first item is written changes nothing; after that, the items not written yet are SKIPPED and what was written is read back.")]
     public Task<string> WriteSourceTree(
-        [Description("Root directory of the source tree, as passed to read_source_tree.")] string sourceDirectory,
+        [Description("Root directory of the source tree, as passed to read_source_tree. A folder no read went into (e.g. a few files copied out of a read tree, laid out the same way) is written as a whole, without change checks.")] string sourceDirectory,
         [Description("Optional: consider only these items - lines from list_project or _export_summary.txt, as a file path or inline. Omit to consider the whole tree, including new files.")] string? itemList = null,
         [Description("Write every item considered, not only those changed or added since read_source_tree. Default false.")] bool all = false,
         [Description("Create items that don't yet exist in the connected project. Default true.")] bool createMissing = true,
@@ -844,11 +844,23 @@ Writes '<sourceDirectory>/_import_report.txt' with one CREATED/UPDATED/SKIPPED/F
         if (!string.IsNullOrEmpty(itemList) || manifest == null)
         {
             var listPath = string.IsNullOrEmpty(itemList) ? Path.Combine(sourceDirectory, "_export_summary.txt") : itemList!;
+            List<ImportListItem> allItems;
             if (string.IsNullOrEmpty(itemList) && !File.Exists(listPath))
-                return $"No itemList given and no source tree found at '{sourceDirectory}'. Run read_source_tree first, or pass itemList.";
-
-            var allItems = ParseSourceTreeList(File.Exists(listPath) ? File.ReadAllText(listPath) : itemList!);
-            if (allItems.Count == 0) return $"No items recognized in the given list. {ItemListExample}";
+            {
+                // No read here (e.g. a few files copied out of a read tree): the files laid out as
+                // a read lays them out, in a folder named after one of the project's PLCs or HMIs.
+                allItems = Directory.Exists(sourceDirectory)
+                    ? NewItemsInTree(sourceDirectory, new SourceTreeManifest(), FamilyOf).Where(i => FamilyOf(i.DeviceName) != null).ToList()
+                    : new List<ImportListItem>();
+                if (allItems.Count == 0)
+                    return $"No itemList given, and '{sourceDirectory}' holds no source tree: no _export_summary.txt, and no source files in a folder named after a PLC or HMI of this project (<PLC or HMI>/<section>/..., as read_source_tree lays them out). " +
+                           "Run read_source_tree first, or pass itemList - which also writes just some items of a read tree.";
+            }
+            else
+            {
+                allItems = ParseSourceTreeList(File.Exists(listPath) ? File.ReadAllText(listPath) : itemList!);
+                if (allItems.Count == 0) return $"No items recognized in the given list. {ItemListExample}";
+            }
             // Lines above any software header: the software that alone has items of that kind.
             for (var i = 0; i < allItems.Count; i++)
             {

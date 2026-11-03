@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Globalization;
 using System.Linq;
 
 namespace TiaMcp.Formats;
@@ -72,6 +73,21 @@ public static class HmiAlarmsCsv
         }
         return alarms.ToArray();
     }
+
+    // Whether writing spec would change nothing on the alarm as it is: every cell it sets (not
+    // null) already holds that value. TriggerAddress is never written, so it doesn't count.
+    public static bool Unchanged(HmiAlarmSpec spec, HmiAlarmInfo current) =>
+        Same(spec.AlarmClass, current.AlarmClass) && Same(spec.EventText, current.EventText) && Same(spec.InfoText, current.InfoText)
+        && Same(spec.Condition, current.Condition) && SameNumber(spec.ConditionValue, current.ConditionValue)
+        && Same(spec.RaisedStateTag, current.RaisedStateTag) && Same(spec.AuditClass, current.AuditClass)
+        && Same(spec.Area, current.Area) && Same(spec.Origin, current.Origin);
+
+    private static bool Same(string? spec, string? current) => spec == null || spec == (current ?? "");
+
+    private static bool SameNumber(string? spec, string? current) =>
+        Same(spec, current)
+        || (double.TryParse(spec, NumberStyles.Float, CultureInfo.InvariantCulture, out var a)
+            && double.TryParse(current, NumberStyles.Float, CultureInfo.CurrentCulture, out var b) && a == b);
 
     public static string FormatClasses(IReadOnlyList<HmiAlarmClassInfo> classes) =>
         Csv.Format(ClassHeaders, classes.Select(c => new[] { c.Name, c.Priority.ToString(), c.Log ?? "", c.Id.ToString(), c.IsSystem.ToString() }));

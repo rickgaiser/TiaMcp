@@ -3022,6 +3022,10 @@ public sealed partial class TiaConnection : IDisposable
         return new HmiTagTableResult(true, tags, null);
     }
 
+    // "<Internal tag>": a connection name can't start with '<'.
+    private static bool IsNoConnection(string? connection) =>
+        connection is { Length: > 1 } c && c[0] == '<' && c[c.Length - 1] == '>';
+
     // String and WString are the HMI types with a length (HmiTag.MaxLength).
     private static bool IsStringType(string? dataType) =>
         string.Equals(dataType, "String", StringComparison.OrdinalIgnoreCase) || string.Equals(dataType, "WString", StringComparison.OrdinalIgnoreCase);
@@ -3045,6 +3049,10 @@ public sealed partial class TiaConnection : IDisposable
             errors.Add("Nothing was written.");
             return new WriteTagsResult(false, errors);
         }
+
+        // An internal tag reads back with TIA's placeholder for "no connection" ("<Internal tag>",
+        // in the UI language) as its Connection: written back, that means no connection.
+        tags = tags.Select(t => IsNoConnection(t.Connection) ? t with { Connection = null } : t).ToList();
 
         // A connection that doesn't exist otherwise fails every row bound to it, with TIA's
         // misleading "The controller tag ... was not found".
@@ -3425,11 +3433,11 @@ public sealed partial class TiaConnection : IDisposable
     }
 
     private HmiAlarmInfo ToHmiAlarmInfo(HmiDiscreteAlarm a) =>
-        new("Discrete", a.Name, TryGet(() => a.AlarmClass), TryGet(() => ExtractText(a.EventText)), TryGet(() => ExtractText(a.InfoText)),
+        new("Discrete", a.Name, TryGet(() => a.AlarmClass), TryGet(() => AlarmText(a.EventText)), TryGet(() => AlarmText(a.InfoText)),
             TryGet(() => a.TriggerBitAddress), null, null, TryGet(() => a.RaisedStateTag), TryGet(() => a.AuditClass), TryGet(() => a.Area), TryGet(() => a.Origin));
 
     private HmiAlarmInfo ToHmiAlarmInfo(HmiAnalogAlarm a) =>
-        new("Analog", a.Name, TryGet(() => a.AlarmClass), TryGet(() => ExtractText(a.EventText)), TryGet(() => ExtractText(a.InfoText)),
+        new("Analog", a.Name, TryGet(() => a.AlarmClass), TryGet(() => AlarmText(a.EventText)), TryGet(() => AlarmText(a.InfoText)),
             TryGet(() => a.TriggerAddress), TryGet(() => a.Condition.ToString()), TryGet(() => a.ConditionValue?.ToString()), TryGet(() => a.RaisedStateTag), TryGet(() => a.AuditClass), TryGet(() => a.Area), TryGet(() => a.Origin));
 
     // Alarm property interdependencies (e.g. whether AlarmClass must be set before
@@ -3559,19 +3567,27 @@ public sealed partial class TiaConnection : IDisposable
     private static string TriggerAddressUnsupportedMessage(string propertyName) =>
         $"FAILED '{propertyName}': WinCC Unified's Openness API (V21) exposes no working setter for this specific field - every route tried (the property setter, SetAttribute(\"{propertyName}\", ...), SetAttribute(\"TriggerTag\", ...), and GetAttributeInfos()) is rejected or fails. Set RaisedStateTag instead to bind the alarm's trigger.";
 
+    // An alarm EventText/InfoText in the project's editing language, as plain text (see
+    // UnifiedText); a text nested by an earlier round trip is repaired, so the next write fixes it.
+    private string? AlarmText(MultilingualText? text)
+    {
+        var raw = text?.Items.Find(_project!.LanguageSettings.EditingLanguage)?.Text;
+        return string.IsNullOrEmpty(raw) ? null : UnifiedText.Repair(raw!);
+    }
+
     // MultilingualTextItemComposition has no Create - items for every project editing language
-    // pre-exist, only .Text is mutable - so writing a comment/event/info text means finding the
-    // item for the project's current editing language and setting its Text. WinCC Unified alarm
-    // EventText/InfoText items store a small HTML fragment ("<body><p>...</p></body>"), not plain
-    // text - setting a bare string throws "invalid format". Plain text passed in here is wrapped
-    // to match, with the three HTML metacharacters escaped.
+    // pre-exist, only .Text is mutable - so writing an event/info text means finding the item for
+    // the project's current editing language and setting its Text. WinCC Unified alarm texts store
+    // an HTML fragment (see UnifiedText), not plain text - setting a bare string throws "invalid
+    // format". Plain text is wrapped to match; a "<body>" fragment (formatted text, as read) is
+    // written as is. Unchanged text isn't written; a text nested by an earlier round trip is.
     private void SetText(MultilingualText? text, string value)
     {
-        if (text == null) return;
-        var escaped = value.Replace("&", "&amp;").Replace("<", "&lt;").Replace(">", "&gt;");
-        var htmlValue = $"<body><p>{escaped}</p></body>";
-        var item = text.Items.Find(_project!.LanguageSettings.EditingLanguage);
-        if (item != null) item.Text = htmlValue;
+        var item = text?.Items.Find(_project!.LanguageSettings.EditingLanguage);
+        if (item == null) return;
+        var current = item.Text ?? "";
+        if (current == value || (current.Length > 0 && UnifiedText.HtmlToPlain(current) == value)) return;
+        item.Text = value.StartsWith("<body", StringComparison.OrdinalIgnoreCase) ? value : UnifiedText.PlainToHtml(value);
     }
 
     // A PLC, a WinCC Unified HMI or a classic WinCC HMI target, by its software name.
