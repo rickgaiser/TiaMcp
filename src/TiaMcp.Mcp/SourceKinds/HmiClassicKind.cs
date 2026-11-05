@@ -40,9 +40,9 @@ internal sealed class HmiClassicKind : ISourceKind
             .Select(o => new ListedEntry(o.FolderPath, o.Name, Describe(Name, o.FolderPath, o.Name), Formats))
             .ToList();
 
-    public async Task Export(TiaSession session, string hmi, Func<string, string, IReadOnlyCollection<string>?> formats, ExportOptions options, List<ExportedItem> items)
+    public async Task Export(TiaSession session, string hmi, Func<string, string, IReadOnlyCollection<string>?> formats, ExportOptions options, List<ExportedItem> items, ExportingItem? exporting)
     {
-        foreach (var o in await session.ReadHmiClassicObjectsAsync(hmi, (kind, folder, name) => kind == _classicKind && formats(folder, name) != null))
+        foreach (var o in await session.ReadHmiClassicObjectsAsync(hmi, (kind, folder, name) => kind == _classicKind && formats(folder, name) != null, exporting))
         {
             var files = o.Xml == null
                 ? new List<(string, string, bool)>()

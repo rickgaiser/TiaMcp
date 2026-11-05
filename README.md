@@ -85,7 +85,7 @@ All MCP tools exposed by the server, grouped by area.
 | `delete_plc_block` | Delete a single block by name (any language, including GRAPH and instance-DBs) — recovery path for a block stuck INCONSISTENT |
 | `rename_plc_block` | Rename an existing block (any language, including instance-DBs) in place — safe even with real dependents |
 | `create_plc_group` / `delete_plc_group` / `rename_plc_group` | Manage block group folders |
-| `compile_plc` | Compile a PLC's software, report structured errors/warnings |
+| `compile` | Compile a PLC's or an HMI's software (WinCC Unified or classic), report errors/warnings with their path (block > network, screen > item > property) |
 
 ### PLC tag tables
 
@@ -127,7 +127,6 @@ Screen content is read and written through the source tree; these tools manage s
 |---|---|
 | `delete_hmi_screen` / `rename_hmi_screen` | Delete or rename a screen |
 | `create_hmi_screen_group` / `delete_hmi_screen_group` / `rename_hmi_screen_group` | Manage screen group folders |
-| `compile_hmi` | Compile an HMI's software (WinCC Unified or classic), report errors/warnings with their path (screen > item > property) |
 | `describe_hmi_item_type` | Properties, events and dynamization options per screen item type |
 | `list_library_types` / `read_faceplate_type` | Project library types and versions / a faceplate's interface |
 
@@ -202,7 +201,7 @@ A new `.graph.il` file in the source tree is created by cloning an existing GRAP
 
 ```
 <targetDirectory>/
-  <PlcName>/
+  <PlcName>/                                      (as the project tree shows it, see below)
     Program blocks/<group path>/
       Main.s7dcl
       Main.s7res
@@ -229,8 +228,11 @@ A new `.graph.il` file in the source tree is created by cloning an existing GRAP
       States.xml
   _export_summary.txt
   _manifest.json
+  _progress.log                                   (what the last read or write did, live)
   .base/                                          (Unified screens as last read)
 ```
+
+Each PLC and HMI is named as TIA Portal's project tree shows it: a PLC by its CPU (the S7 station above it isn't shown), an HMI on a PC station or panel by that station (`PC_1`, not its `HMI_RT_1`). A station holding more than one software (an HMI and a software PLC) keeps the software names. These names are the folders and the `=== ... ===` headers; every tool also accepts the software's own name. A tree read by an older TiaMcp has its folders moved to the new names on the next read or write. `project_status` lists both names per software.
 
 A `/` in a group name gives a folder per part (`Valve fwd / rev` → `Valve fwd/ rev/`), and folder names lose trailing spaces and dots, as Windows does. A new file in such a folder goes to the group read into it; the group tools take the name as it is (`groupPath: "Valve fwd / rev/Sub"`).
 
@@ -247,6 +249,12 @@ Classic WinCC objects are native Openness XML (the `DocumentInfo` block is left 
 `_manifest.json` (version 2; an older version 1 manifest is still read) records what each item looked like when it was read, and in which formats. An item that was changed in TIA Portal since then is refused rather than overwritten (`force` overrides this).
 
 In a Multiuser local session, `read_source_tree` also records each item's mark state: marked by me, marked by another user, or not up to date with the server (shown in `_export_summary.txt` and the read result). It costs an Openness call per object, about 35 ms per block, UDT or screen and per tag or alarm of a table: roughly a minute for a project of a few hundred blocks and a thousand tags. `write_source_tree` checks the items it writes again and refuses those marked by another user or not up to date (`force` overrides this). Openness can't refresh a local session: refresh it in the TIA Portal GUI, then read again. A tree read from one project can also be written in full into another, e.g. to restore it into an empty PLC.
+
+### Progress and cancelling
+
+A read or write that takes longer than 1.5 s opens a small window at the bottom right of the primary screen: phase, item, a bar per kind (`export - PLC_1: block`, `37 of 120`) and the elapsed time, with a **Cancel** button. It is on by default; to turn it off, add `"env": { "TIAMCP_PROGRESS_WINDOW": "0" }` to the server in `.mcp.json`. The same progress goes to `_progress.log` in the tree (follow it with `Get-Content _progress.log -Wait`) and as MCP progress notifications; the result ends with the time per phase.
+
+Cancel stops a read during its export, and a write before it changes anything: nothing is changed. During a write it finishes the current item, reports the rest SKIPPED and reads back what it wrote.
 
 ## License
 

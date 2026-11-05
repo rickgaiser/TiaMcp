@@ -18,10 +18,12 @@ internal sealed class PlcAlarmTextListKind : ISourceKind
     public async Task<IReadOnlyList<ListedEntry>> List(TiaSession session, string plc) =>
         (await session.ListPlcAlarmTextListNamesAsync(plc)).Select(n => new ListedEntry("", n, Describe(Name, "", n), Formats)).ToList();
 
-    public async Task Export(TiaSession session, string plc, Func<string, string, IReadOnlyCollection<string>?> formats, ExportOptions options, List<ExportedItem> items)
+    public async Task Export(TiaSession session, string plc, Func<string, string, IReadOnlyCollection<string>?> formats, ExportOptions options, List<ExportedItem> items, ExportingItem? exporting)
     {
         var names = (await session.ListPlcAlarmTextListNamesAsync(plc)).Where(n => formats("", n) != null).ToList();
         if (names.Count == 0) return;
+        // One export holds every list.
+        exporting?.Invoke(1, 1, "", names.Count == 1 ? names[0] : $"{names.Count} lists");
         var read = await session.ReadPlcAlarmTextListsAsync(plc);
         foreach (var name in names)
         {

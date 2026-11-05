@@ -16,6 +16,12 @@
   </ItemGroup>
 
   <ItemGroup>
+    <!-- ProgressWindow -->
+    <Reference Include="System.Windows.Forms" />
+    <Reference Include="System.Drawing" />
+  </ItemGroup>
+
+  <ItemGroup>
     <ProjectReference Include="..\TiaMcp.Formats\TiaMcp.Formats.csproj" />
     <Using Include="TiaMcp.Formats" />
   </ItemGroup>

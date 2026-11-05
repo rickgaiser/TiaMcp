@@ -25,10 +25,12 @@ internal sealed class HmiScreenKind : ISourceKind
         return entries;
     }
 
-    public async Task Export(TiaSession session, string hmi, Func<string, string, IReadOnlyCollection<string>?> formats, ExportOptions options, List<ExportedItem> items)
+    public async Task Export(TiaSession session, string hmi, Func<string, string, IReadOnlyCollection<string>?> formats, ExportOptions options, List<ExportedItem> items, ExportingItem? exporting)
     {
-        foreach (var screen in (await session.ListHmiScreensAsync(hmi)).Where(s => formats(s.GroupPath, s.Name) != null))
+        var screens = (await session.ListHmiScreensAsync(hmi)).Where(s => formats(s.GroupPath, s.Name) != null).ToList();
+        foreach (var (screen, i) in screens.Select((s, i) => (s, i)))
         {
+            exporting?.Invoke(i + 1, screens.Count, screen.GroupPath, screen.Name);
             var result = await session.ReadHmiScreenAsync(hmi, screen.Name);
             var files = result.Success
                 ? new List<(string, string, bool)> { (FilePath(hmi, screen.GroupPath, screen.Name), result.Json!, false) }
@@ -48,8 +50,10 @@ internal sealed class HmiScreenKind : ISourceKind
         var existingScreens = (await session.ListHmiScreensAsync(hmi)).Select(s => s.Name).ToHashSet(StringComparer.OrdinalIgnoreCase);
         var ensuredGroups = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
+        var index = 0;
         foreach (var item in items)
         {
+            index++;
             var label = Describe(Name, item.GroupPath, item.ItemName);
             var path = FilePath(hmi, item.GroupPath, item.ItemName);
             var file = Path.Combine(context.Root, path);
@@ -60,6 +64,8 @@ internal sealed class HmiScreenKind : ISourceKind
             if (exists && !context.OverwriteExisting) { log.Skipped.Add($"{label} - already exists, overwriteExisting=false"); continue; }
             if (!exists && !context.CreateMissing) { log.Skipped.Add($"{label} - does not exist, createMissing=false"); continue; }
             if (context.DryRun) { (exists ? log.Updated : log.Created).Add($"{label} (dry run)"); continue; }
+            if (context.Progress.Cancelled) { log.Skipped.Add($"{label} - not written, the call was cancelled"); continue; }
+            context.Progress.Item($"{hmi}: {Name}", index, items.Count, Label(item.GroupPath, item.ItemName));
 
             if (!exists)
             {

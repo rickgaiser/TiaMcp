@@ -5,7 +5,7 @@ TiaMcp makes a TIA Portal project workable for an LLM by mirroring it as a **sou
 ## Principles
 
 1. **Content goes through files, never through tool calls.** Block code, tables and screens are only read and written through `read_source_tree` / `write_source_tree`. Other MCP tools handle the object's life cycle only: connect, list, create/rename/delete, groups, compile.
-2. **The tree mirrors the project tree:** `<Device>/<Section>/<group path>/<Item>.<ext>`, using the section names TIA Portal shows (`Program blocks`, `PLC tags`, `Screens`, ...).
+2. **The tree mirrors the project tree:** `<Device>/<Section>/<group path>/<Item>.<ext>`, using the names TIA Portal shows: the PLC or HMI as its project tree names it (a PLC by its CPU, a PC station or panel by its own name; `TiaConnection.ProjectTreeName`), and the section names (`Program blocks`, `PLC tags`, `Screens`, ...). Tools take that name or the software's own name.
 3. **Every object becomes a file when Openness allows it.** If Openness has no export, build the file from the object model (Unified screens, HMI tags, alarms).
 4. **The format is chosen from this ladder, best option first:**
    1. TIA's own text format (`.s7dcl/.s7res`, `.awl`).

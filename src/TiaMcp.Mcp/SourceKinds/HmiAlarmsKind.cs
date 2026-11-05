@@ -31,9 +31,10 @@ internal sealed class HmiAlarmsKind : ISourceKind
     public Task<IReadOnlyList<ListedEntry>> List(TiaSession session, string hmi) =>
         Task.FromResult<IReadOnlyList<ListedEntry>>(new[] { new ListedEntry(Section, FixedName!, Name, Formats) });
 
-    public async Task Export(TiaSession session, string hmi, Func<string, string, IReadOnlyCollection<string>?> formats, ExportOptions options, List<ExportedItem> items)
+    public async Task Export(TiaSession session, string hmi, Func<string, string, IReadOnlyCollection<string>?> formats, ExportOptions options, List<ExportedItem> items, ExportingItem? exporting)
     {
         if (formats("", "") == null) return;
+        exporting?.Invoke(1, 1, "", "");
         try
         {
             var csv = _alarmType == null

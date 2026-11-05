@@ -71,7 +71,7 @@ For object types TiaMcp doesn't support yet, the notes say what the Openness API
 | TIA Portal instance | ✅ | ✅ | — | — | — | — | Create: start the GUI (`tia_connect` `startPortal`) |
 | Project | — | ❌ | ✅ | ✅ | ❌ | ❌ | Open/close, status, save, save as. Protected projects (user management) can't be opened through Openness yet |
 | Multiuser local session | — | ❌ | ✅ | ❌ | — | — | Open with `tia_connect`; `project_status` tells whether the server has newer changes and lists marked objects. The source tree records each item's mark state and refuses writing items marked by others or not up to date. Refresh: not in Openness (use the GUI); commit: not exposed yet |
-| Source tree | — | — | ✅ | ✅ | — | — | All source is read and written through it; partial reads; writes back only changes, refuses items changed in TIA Portal since the read; never deletes items |
+| Source tree | — | — | ✅ | ✅ | — | — | All source is read and written through it; partial reads; writes back only changes, refuses items changed in TIA Portal since the read; never deletes items. Progress window with a Cancel button, `_progress.log` and MCP progress notifications; time per phase in the result |
 
 ## Hardware & library
 
