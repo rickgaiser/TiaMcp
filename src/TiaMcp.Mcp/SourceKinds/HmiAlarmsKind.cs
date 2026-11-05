@@ -117,13 +117,8 @@ internal sealed class HmiAlarmsKind : ISourceKind
                     else log.Failed.Add($"HMI alarm '{name}': delete failed: {result.Error}");
                 }
             }
-            if (unchanged > 0 || deleted.Count > 0)
-            {
-                var parts = new List<string>();
-                if (unchanged > 0) parts.Add($"{unchanged} alarm(s) unchanged");
-                if (deleted.Count > 0) parts.Add($"{(context.DryRun ? "would delete" : "deleted")} {string.Join(", ", deleted)}");
-                log.Updated.Add($"{Name}: {string.Join(", ", parts)}");
-            }
+            if (deleted.Count > 0) log.Updated.Add($"{Name}: {(context.DryRun ? "would delete" : "deleted")} {string.Join(", ", deleted)}");
+            if (unchanged > 0) log.Notes.Add($"{Name}: {unchanged} alarm(s) unchanged.");
         }
 
         if (!context.DryRun && log.Failed.Count == 0) context.Written.AddRange(items);

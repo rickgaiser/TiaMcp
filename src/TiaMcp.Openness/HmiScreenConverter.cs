@@ -17,6 +17,7 @@ using Siemens.Engineering.HmiUnified.UI.Dynamization.Flashing;
 using Siemens.Engineering.HmiUnified.UI.Dynamization.Script;
 using Siemens.Engineering.HmiUnified.UI.Dynamization.Tag;
 using Siemens.Engineering.HmiUnified.UI.Events;
+using Siemens.Engineering.HmiUnified.UI.Parts;
 using Siemens.Engineering.HmiUnified.UI.Screens;
 
 namespace TiaMcp.Openness;
@@ -63,6 +64,7 @@ internal sealed class HmiScreenConverter
     private static readonly HashSet<(Type, string)> CrashingProperties = new()
     {
         (typeof(HmiSystemDiagnosisControl), "ScriptDiagnosisOverviewText"),
+        (typeof(HmiSystemDiagnosisControlScriptColumnPart), "SystemDiagnosisControlScriptBlock"),
     };
 
     private static bool IsCrashing(Type t, string property)

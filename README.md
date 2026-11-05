@@ -164,7 +164,7 @@ Openness has no export format for Unified screens, so in the source tree a scree
 - A new screen is created by adding a new `.json` file. Openness can't copy a Unified screen, so a copy is a new file too.
 - Faceplates must be in the **project library**. `list_library_types` gives the `ContainedType` (`V<version>\<type>`), `read_faceplate_type` the interface. A UDT-typed interface property takes the HMI tag name as its value; texts are plain text. An interface property bound to a tag is an object, `{"type": "Tag", "Tag": "<HMI tag>"}`: a plain string is a static value.
 - Writing is slow: every item goes through Openness separately, so creating, copying or force-writing a screen of a few hundred items takes about a minute. An edited screen only gets its changed properties written, by comparing the file with its copy as last read (`.base/` in the tree).
-- `HmiSystemDiagnosisControl.ScriptDiagnosisOverviewText` is never read or written: reading it crashes TIA Portal V21.
+- `HmiSystemDiagnosisControl.ScriptDiagnosisOverviewText` and the `SystemDiagnosisControlScriptBlock` of its script columns are never read or written: reading them crashes TIA Portal V21.
 
 ## GRAPH (S7-GRAPH/SFC) blocks
 
@@ -267,7 +267,7 @@ AGPL-3.0 (see [LICENSE](LICENSE)). Contributions require signing the [CLA](CLA.m
 
 ## Known limitations
 
-- A block with STL embedded in a mixed FBD/LAD/SCL block can only be written through its raw `.xml`; whole-block STL is fully supported (see the STL section above).
+- A block with STL embedded in a mixed FBD/LAD/SCL block can only be written through its raw `.xml`; whole-block STL is fully supported (see the STL section above). To drop the STL through the `.s7dcl`, remove its placeholder networks and delete the block's `.stl-networks` file; a tree that holds neither is not recognized as having STL.
 - TIA Portal V21's `.s7dcl` import gets some blocks wrong without an error. `read_source_tree` warns about each one (`WARNING` line), and `write_source_tree` refuses to write such a `.s7dcl`; the message gives the workaround (often: write the block's `.xml` instead):
   - an array access inside an index in a LAD/FBD network (`"DB_A".arr["DB_B".structArr[1].idx]`) is mangled into one quoted name;
   - a project FB or UDT named like a system type (`TON`, `TOF`, `TP`, `TONR`, `CTU`, `CTD`, `CTUD`, `R_TRIG`, `F_TRIG`) is replaced by the system type;

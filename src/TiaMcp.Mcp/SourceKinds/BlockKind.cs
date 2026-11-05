@@ -88,7 +88,7 @@ internal sealed class BlockKind : ISourceKind
             var problems = s7dcl.SelectMany(d => S7dclSource.FindWriteProblems(d.Content)).ToList();
             // Told from the files, not by exporting the block: an export right before the override
             // import makes TIA Portal V21 terminate for a block with a textual interface.
-            if (s7dcl.Count > 0 && !problems.Contains(S7dclSource.EmbeddedStlProblem) && ReadWithStlNetworks(context, item)) problems.Add(S7dclSource.EmbeddedStlProblem);
+            if (s7dcl.Count > 0 && !problems.Contains(S7dclSource.EmbeddedStlProblem) && HasStlNetworksFile(context, item)) problems.Add(S7dclSource.EmbeddedStlProblem);
             if (problems.Count > 0)
             {
                 log.Failed.Add($"{label}: refused, the .s7dcl import would change it - {string.Join(" | ", problems)}");
@@ -150,11 +150,10 @@ internal sealed class BlockKind : ISourceKind
         return log;
     }
 
-    // Whether a read found embedded STL networks in the block, whatever its .s7dcl still shows: the
-    // tree has its .stl-networks companion. On disk too, as only a working copy has context.Tree.
-    private bool ReadWithStlNetworks(WriteContext context, ImportListItem item) =>
-        context.Tree?.Find(context.Device, Name, item.ItemName)?.Files.Keys.Any(k => k.IndexOf(".stl-networks.", StringComparison.OrdinalIgnoreCase) >= 0) == true
-        || Directory.GetFiles(GroupDir(context.DeviceDir, Section, item.GroupPath), Sanitize(item.ItemName) + ".stl-networks.*").Length > 0;
+    // A read found embedded STL networks in the block, whatever its .s7dcl still shows. Deleting
+    // the file is how to say the STL goes on purpose.
+    private bool HasStlNetworksFile(WriteContext context, ImportListItem item) =>
+        Directory.GetFiles(GroupDir(context.DeviceDir, Section, item.GroupPath), Sanitize(item.ItemName) + ".stl-networks.*").Length > 0;
 
     // Locates the on-disk source file(s) read_source_tree wrote for one block and packages them as the
     // BlockDocument(s) WriteBlock/CreateBlock expect - mirroring ExportBlocks' own

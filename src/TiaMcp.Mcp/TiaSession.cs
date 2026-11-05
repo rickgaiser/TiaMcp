@@ -67,9 +67,9 @@ public sealed class TiaSession
         {
             return await _sta.InvokeAsync(call);
         }
-        catch (Exception ex) when (_target is { } target && IsLostProject(ex))
+        catch (Exception ex) when (_target is { } target && TiaConnection.IsLostProject(ex))
         {
-            var result = await _sta.InvokeAsync(() => _connection.Reconnect(target.ProcessId, target.Path));
+            var result = await _sta.InvokeAsync(() => _connection.Reconnect(target.ProcessId, target.Path, ReopenWait));
             if (!result.Success)
                 throw new InvalidOperationException($"TIA Portal closed the project while this call ran, and it could not be attached again: {result.Error} Call tia_connect.", ex);
             Connected(result);
@@ -82,12 +82,8 @@ public sealed class TiaSession
     private Task<T> Read<T>(Func<T> call) => Run(call, repeat: true);
     private Task<T> Change<T>(Func<T> call) => Run(call, repeat: false);
 
-    private static bool IsLostProject(Exception ex)
-    {
-        for (var e = ex; e != null; e = e.InnerException)
-            if (e.GetType().Name == "EngineeringObjectDisposedException" || e.Message.Contains("Access to a disposed object")) return true;
-        return false;
-    }
+    // How long a call that lost the project waits for TIA Portal to reopen it.
+    private static readonly TimeSpan ReopenWait = TimeSpan.FromSeconds(60);
 
     private static string TargetFile()
     {

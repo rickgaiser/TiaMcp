@@ -274,7 +274,7 @@ public sealed partial class TiaConnection
             var json = converter.SerializeScreen(screen, defaults);
             return new HmiScreenResult(true, json.ToJsonString(ScreenJsonOptions), null);
         }
-        catch (Exception ex)
+        catch (Exception ex) when (!IsLostProject(ex))
         {
             return new HmiScreenResult(false, null, ex.Message);
         }

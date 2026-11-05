@@ -34,11 +34,16 @@ public class S7dclSourceTests
                     "Data".member(in := 1);
                     #inst(in := "Other");
                     "Motor_IDB"();
+                    (* "In a comment" (not a call) *)
+                    /* "Also a comment" (not a call) */
+                    #text := 'a "quoted" (text)'; // "Line comment" (not a call)
+                    "Data"."member"(in := 1);
+                    "Last"();
                 END_NETWORK
             END_FUNCTION
             """;
 
-        Assert.Equal(new[] { "Motor_IDB", "Scale" }, S7dclSource.CalledBlocks(dcl));
+        Assert.Equal(new[] { "Motor_IDB", "Scale", "Last" }, S7dclSource.CalledBlocks(dcl));
     }
 
     private const string Fb = """

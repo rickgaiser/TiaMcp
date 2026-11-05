@@ -298,9 +298,10 @@ public sealed partial class TiaConnection : IDisposable
 
         if (existing != null)
         {
+            // Made first: disposing the portal disposes existing too.
+            var error = $"TIA Portal process {processId} already has a different project open: '{existing.Name}' ({existing.Path?.FullName ?? "unsaved"}). Close it first (tia_connect with processId={processId}, then close_project) or pick a different processId.";
             portal.Dispose();
-            return new ConnectResult(false, null, null,
-                $"TIA Portal process {processId} already has a different project open: '{existing.Name}' ({existing.Path?.FullName ?? "unsaved"}). Close it first (tia_connect with processId={processId}, then close_project) or pick a different processId.");
+            return new ConnectResult(false, null, null, error);
         }
 
         try
@@ -377,16 +378,26 @@ public sealed partial class TiaConnection : IDisposable
 
     // Attaches again to the project or local session at projectPath after its handle died (see
     // ProjectAlive): in processId when that still has it open, else in the one instance that has.
-    // Never opens it: a project the user closed stays closed.
-    public ConnectResult Reconnect(int? processId, string projectPath)
+    // Never opens it: a project the user closed stays closed. wait: how long TIA Portal may take
+    // to reopen it, as long as processId runs.
+    public ConnectResult Reconnect(int? processId, string projectPath, TimeSpan wait = default)
     {
+        var deadline = DateTime.UtcNow + wait;
         var processes = TiaPortal.GetProcesses().ToList();
         var withIt = processes.Where(p => SamePath(OpenProjectPath(p), projectPath)).ToList();
+        while (withIt.Count == 0 && processes.Any(p => p.Id == processId) && DateTime.UtcNow < deadline)
+        {
+            System.Threading.Thread.Sleep(2000);
+            processes = TiaPortal.GetProcesses().ToList();
+            withIt = processes.Where(p => SamePath(OpenProjectPath(p), projectPath)).ToList();
+        }
         var proc = withIt.FirstOrDefault(p => p.Id == processId) ?? (withIt.Count == 1 ? withIt[0] : null);
         if (proc == null)
-            return new ConnectResult(false, null, null, withIt.Count == 0
-                ? $"no running TIA Portal has '{projectPath}' open."
-                : $"{withIt.Count} TIA Portal instances have '{projectPath}' open.");
+            return new ConnectResult(false, null, null, withIt.Count > 0
+                ? $"{withIt.Count} TIA Portal instances have '{projectPath}' open."
+                : processId != null && processes.All(p => p.Id != processId)
+                    ? $"TIA Portal (process {processId}) stopped. Its crash report is under {DiagnosticsFolder}."
+                    : $"no running TIA Portal has '{projectPath}' open.");
 
         var old = _tiaPortal;
         _tiaPortal = null;
@@ -711,8 +722,22 @@ public sealed partial class TiaConnection : IDisposable
 
     private static ExportResult ReadSafely(Func<ExportResult> read)
     {
-        try { return read(); }
-        catch (Exception ex) { return new ExportResult(false, Array.Empty<BlockDocument>(), ex.Message); }
+        ExportResult result;
+        try { result = read(); }
+        catch (Exception ex) { result = new ExportResult(false, Array.Empty<BlockDocument>(), ex.Message); }
+        // Not this item's failure: thrown, so the caller attaches again and repeats the read.
+        if (!result.Success && result.Error?.Contains(DisposedMessage) == true) throw new InvalidOperationException(result.Error);
+        return result;
+    }
+
+    private const string DisposedMessage = "Access to a disposed object";
+
+    // Whether a call failed because TIA Portal closed the project under it (see ProjectAlive).
+    public static bool IsLostProject(Exception ex)
+    {
+        for (var e = ex; e != null; e = e.InnerException)
+            if (e.GetType().Name == "EngineeringObjectDisposedException" || e.Message.Contains(DisposedMessage)) return true;
+        return false;
     }
 
     public IReadOnlyList<TypeSummary> ListPlcTypes(string plcName)
@@ -1720,9 +1745,10 @@ public sealed partial class TiaConnection : IDisposable
         {
             // Gone: Openness or GetProcessById threw.
         }
-        return "TIA Portal stopped during the import (unsaved changes in the project are lost). Its crash report is under " +
-               @"C:\ProgramData\Siemens\Automation\Portal V21\Diagnostics. Start TIA Portal again and call tia_connect.";
+        return $"TIA Portal stopped during the import (unsaved changes in the project are lost). Its crash report is under {DiagnosticsFolder}. Start TIA Portal again and call tia_connect.";
     }
+
+    private const string DiagnosticsFolder = @"C:\ProgramData\Siemens\Automation\Portal V21\Diagnostics";
 
     // GRAPH write, mirroring ReadGraphBlock's use of the separate PlcBlock.Export/
     // PlcBlockComposition.Import XML API (not ImportFromDocuments). Conservative by design -
