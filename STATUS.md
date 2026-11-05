@@ -43,7 +43,7 @@ For object types TiaMcp doesn't support yet, the notes say what the Openness API
 | HMI tag | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | Through the tag table CSV (a removed row deletes the tag); rename via `rename_hmi_tag` (keeps alarm references). The Connection must exist in the HMI |
 | HMI tag table group | ✅ | ✅ | — | — | ✅ | ✅ | Empty groups are listed as `Group/` |
 | Alarm class | ✅ | ✅ | ✅ | ✅ | ❌ | ✅ | `AlarmClasses.csv` |
-| Alarm (discrete / analog) | ✅ | ✅ | ✅ | ✅ | ❌ | ✅ | `DiscreteAlarms.csv` / `AnalogAlarms.csv` |
+| Alarm (discrete / analog) | ✅ | ✅ | ✅ | ✅ | ❌ | ✅ | `DiscreteAlarms.csv` / `AnalogAlarms.csv` (a removed row deletes the alarm). Texts in the editing language only |
 | Screen | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | `.json`, built from the object model (Openness has no screen export) |
 | Screen item (incl. faceplate) | ✅ | ✅ | ✅ | ✅ | ❌ | ✅ | Through the screen JSON: properties, dynamizations, events, faceplate interface. No z-order control |
 | Screen group | ✅ | ✅ | — | — | ✅ | ✅ | Empty groups are listed as `Group/` |

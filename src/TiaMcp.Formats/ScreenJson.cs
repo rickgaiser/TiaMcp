@@ -22,13 +22,18 @@ public static class ScreenJson
     // or one whose type or ContainedType changed (it gets recreated), is kept whole. Keys missing
     // from json are left out, as a write never resets them anyway. Always has an "items" array
     // when json has one, so the caller can still delete items that json no longer has.
-    public static JsonObject ChangedSince(JsonObject json, JsonObject baseJson)
+    //
+    // defaultsOf: a fresh object's values for the screen (no "type") or an item, if known. A read
+    // leaves out what equals them, so a value the read left out that json sets to its default
+    // (e.g. a generated faceplate's "Alarm": false) is no change.
+    public static JsonObject ChangedSince(JsonObject json, JsonObject baseJson, Func<JsonObject, JsonObject?>? defaultsOf = null)
     {
         var patch = new JsonObject();
+        var screenDefaults = defaultsOf?.Invoke(json);
         foreach (var kv in json)
         {
             if (kv.Key == ItemsKey) continue;
-            if (!baseJson.TryGetPropertyValue(kv.Key, out var old) || !JsonNode.DeepEquals(kv.Value, old))
+            if (!Same(kv.Value, baseJson.TryGetPropertyValue(kv.Key, out var old), old, screenDefaults?[kv.Key]))
                 patch[kv.Key] = kv.Value?.DeepClone();
         }
         if (json[ItemsKey] is not JsonArray items) return patch;
@@ -49,6 +54,7 @@ public static class ScreenJson
                 continue;
             }
             if (JsonNode.DeepEquals(item, old)) continue;
+            var defaults = defaultsOf?.Invoke(item);
             if (!JsonNode.DeepEquals(item[TypeKey], old[TypeKey]) || !JsonNode.DeepEquals(item[ContainedTypeKey], old[ContainedTypeKey]))
             {
                 changed.Add(item.DeepClone());
@@ -59,7 +65,7 @@ public static class ScreenJson
             foreach (var kv in item)
             {
                 if (kv.Key == NameKey) continue;
-                if (!old.TryGetPropertyValue(kv.Key, out var oldValue) || !JsonNode.DeepEquals(kv.Value, oldValue))
+                if (!Same(kv.Value, old.TryGetPropertyValue(kv.Key, out var oldValue), oldValue, defaults?[kv.Key]))
                     itemPatch[kv.Key] = kv.Value?.DeepClone();
             }
             // Only keys removed: nothing to write.
@@ -67,5 +73,32 @@ public static class ScreenJson
         }
         patch[ItemsKey] = changed;
         return patch;
+    }
+
+    // Whether value is what was read: equal to old, or - where the read left a key out (inRead
+    // false) - equal to the default it was left out for, also within nested objects.
+    private static bool Same(JsonNode? value, bool inRead, JsonNode? old, JsonNode? def)
+    {
+        if (!inRead) return IsDefault(value, def);
+        if (JsonNode.DeepEquals(value, old)) return true;
+        if (value is not JsonObject vo || old is not JsonObject oo) return false;
+        foreach (var kv in oo)
+            if (!vo.ContainsKey(kv.Key)) return false;
+        var defaults = def as JsonObject;
+        foreach (var kv in vo)
+            if (!Same(kv.Value, oo.TryGetPropertyValue(kv.Key, out var o), o, defaults?[kv.Key])) return false;
+        return true;
+    }
+
+    // As HmiScreenConverter.Prune leaves a value out: equal to its default, or an object whose
+    // every key is.
+    private static bool IsDefault(JsonNode? value, JsonNode? def)
+    {
+        if (def == null) return false;
+        if (JsonNode.DeepEquals(value, def)) return true;
+        if (value is not JsonObject vo || def is not JsonObject d) return false;
+        foreach (var kv in vo)
+            if (!d.ContainsKey(kv.Key) || !IsDefault(kv.Value, d[kv.Key])) return false;
+        return true;
     }
 }

@@ -52,6 +52,7 @@ internal sealed class BlockKind : ISourceKind
         var writes = new List<PendingWrite>();
         string? graphTemplateName = null;
         var graphTemplateSearched = false;
+        var called = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
         foreach (var item in items)
         {
@@ -83,13 +84,17 @@ internal sealed class BlockKind : ISourceKind
 
             // What TIA Portal's .s7dcl import would get wrong - refused, also in a dry run, so the
             // file can be worked around first.
-            var problems = docs.Where(d => d.FileName.EndsWith(".s7dcl", StringComparison.OrdinalIgnoreCase))
-                .SelectMany(d => S7dclSource.FindWriteProblems(d.Content)).ToList();
+            var s7dcl = docs.Where(d => d.FileName.EndsWith(".s7dcl", StringComparison.OrdinalIgnoreCase)).ToList();
+            var problems = s7dcl.SelectMany(d => S7dclSource.FindWriteProblems(d.Content)).ToList();
+            // Told from the files, not by exporting the block: an export right before the override
+            // import makes TIA Portal V21 terminate for a block with a textual interface.
+            if (s7dcl.Count > 0 && !problems.Contains(S7dclSource.EmbeddedStlProblem) && HasStlNetworksFile(context, item)) problems.Add(S7dclSource.EmbeddedStlProblem);
             if (problems.Count > 0)
             {
                 log.Failed.Add($"{label}: refused, the .s7dcl import would change it - {string.Join(" | ", problems)}");
                 continue;
             }
+            called.UnionWith(s7dcl.SelectMany(d => S7dclSource.CalledBlocks(d.Content)));
 
             if (existingBlocks.Contains(item.ItemName))
             {
@@ -97,9 +102,7 @@ internal sealed class BlockKind : ISourceKind
                 if (context.DryRun) { log.Updated.Add($"{label} (dry run)"); continue; }
 
                 var name = item.ItemName;
-                // The read wrote an .stl-networks companion: the block has embedded STL networks.
-                var stlAtRead = context.Tree?.Find(plc, Name, name)?.Files.Keys.Any(k => k.IndexOf(".stl-networks.", StringComparison.OrdinalIgnoreCase) >= 0) == true;
-                writes.Add(new PendingWrite(item, label, docs, false, () => session.WriteBlockAsync(plc, name, docs, stlAtRead)));
+                writes.Add(new PendingWrite(item, label, docs, false, () => session.WriteBlockAsync(plc, name, docs)));
                 continue;
             }
 
@@ -138,8 +141,19 @@ internal sealed class BlockKind : ISourceKind
         }
 
         await DependencyWrites.Write(context, writes, log, compileBetweenLayers: false);
+
+        // Not a write error, only the compile would tell - typically a new FB's instance DB.
+        var missing = called.Where(c => !existingBlocks.Contains(c) && !items.Any(i => string.Equals(i.ItemName, c, StringComparison.OrdinalIgnoreCase)))
+            .OrderBy(c => c, StringComparer.OrdinalIgnoreCase).Select(c => $"'{c}'").ToList();
+        if (missing.Count > 0)
+            log.Notes.Add($"{plc}: blocks call {string.Join(", ", missing)}, not in the project or this write. An FB's instance DB isn't made by itself: add its .s7dcl to the tree, or use create_plc_instance_db.");
         return log;
     }
+
+    // A read found embedded STL networks in the block, whatever its .s7dcl still shows. Deleting
+    // the file is how to say the STL goes on purpose.
+    private bool HasStlNetworksFile(WriteContext context, ImportListItem item) =>
+        Directory.GetFiles(GroupDir(context.DeviceDir, Section, item.GroupPath), Sanitize(item.ItemName) + ".stl-networks.*").Length > 0;
 
     // Locates the on-disk source file(s) read_source_tree wrote for one block and packages them as the
     // BlockDocument(s) WriteBlock/CreateBlock expect - mirroring ExportBlocks' own

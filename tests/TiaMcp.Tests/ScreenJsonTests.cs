@@ -103,6 +103,46 @@ public sealed class ScreenJsonTests
         Assert.Equal("""{"items":[]}""", patch.ToJsonString());
     }
 
+    // A fresh FP_Motor has "Alarm": false in its interface, a fresh screen Width 1920 and BackColor white.
+    private static JsonObject? Defaults(JsonObject node) => node["type"]?.GetValue<string>() switch
+    {
+        null => Parse("""{ "BackColor": "#FFFFFFFF", "Width": 1920, "Height": 1080 }"""),
+        "FaceplateContainer" => Parse("""{ "Left": 0, "Interface": { "Motor": "", "Label": "", "Alarm": false } }"""),
+        _ => null,
+    };
+
+    [Fact]
+    public void ValueTheReadLeftOutAsDefault_NoChange()
+    {
+        var json = Edit(s =>
+        {
+            Item(s, "Motor_1")["Interface"]!["Alarm"] = false;
+            s["Height"] = 1080;
+        });
+
+        Assert.Equal("""{"items":[]}""", ScreenJson.ChangedSince(json, Parse(Screen), Defaults).ToJsonString());
+        // Without defaults both count.
+        Assert.Equal("""{"Height":1080,"items":[{"name":"Motor_1","Interface":{"Motor":"Motor_1","Label":"M1","Alarm":false}}]}""",
+            ScreenJson.ChangedSince(json, Parse(Screen)).ToJsonString());
+    }
+
+    [Fact]
+    public void ValueTheReadLeftOut_SetToNonDefault_IsChange()
+    {
+        var patch = ScreenJson.ChangedSince(Edit(s => Item(s, "Motor_1")["Interface"]!["Alarm"] = true), Parse(Screen), Defaults);
+
+        Assert.Equal("""{"items":[{"name":"Motor_1","Interface":{"Motor":"Motor_1","Label":"M1","Alarm":true}}]}""", patch.ToJsonString());
+    }
+
+    [Fact]
+    public void ReadValueSetBackToDefault_IsChange()
+    {
+        // The read had a non-default Label; setting it to the default must still be written.
+        var patch = ScreenJson.ChangedSince(Edit(s => Item(s, "Motor_1")["Interface"]!["Label"] = ""), Parse(Screen), Defaults);
+
+        Assert.Equal("""{"items":[{"name":"Motor_1","Interface":{"Motor":"Motor_1","Label":""}}]}""", patch.ToJsonString());
+    }
+
     [Fact]
     public void ClonedValues_KeepTheirType()
     {

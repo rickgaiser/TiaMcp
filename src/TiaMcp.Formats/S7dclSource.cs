@@ -73,12 +73,30 @@ public static class S7dclSource
     private static readonly Regex Network = new(@"\{(?<attributes>[^{}]*)\}\s*NETWORK\b(?<body>.*?)\bEND_NETWORK\b", RegexOptions.Singleline);
     private static readonly Regex Language = new(@"S7_Language\s*:=\s*""(?<language>\w+)""");
 
+    // The placeholder network a read leaves at each embedded STL network.
+    private static readonly Regex StlNetwork = new(@"S7_Language\s*:=\s*""STL""");
+
+    // A quoted name, followed by '(' in a call of a block or instance DB, after a '.' for a member
+    // ("db"."member"(). Comments and strings are matched first, so nothing in them counts.
+    private static readonly Regex QuotedName = new(@"//[^\r\n]*|\(\*.*?\*\)|/\*.*?\*/|'(?:[^'\r\n]|'')*'|(?<member>\.)?""(?<name>[^""\r\n]*)""(?<call>\s*\()?", RegexOptions.Singleline);
+
+    public const string EmbeddedStlProblem = "the block has embedded STL networks, which .s7dcl can't carry: the import would silently delete them. " +
+        "Workaround: write this block from its raw XML (read it in the xml format, edit the .xml and write that), or edit it in the TIA Portal GUI. " +
+        "To drop the STL on purpose: remove its placeholder networks from the .s7dcl and delete the block's .stl-networks file.";
+
+    // The blocks and instance DBs a block's .s7dcl calls by name.
+    public static IReadOnlyList<string> CalledBlocks(string s7dcl) =>
+        QuotedName.Matches(s7dcl).Cast<Match>().Where(m => m.Groups["call"].Success && !m.Groups["member"].Success)
+            .Select(m => m.Groups["name"].Value).Distinct().ToList();
+
     // What in a block's .s7dcl TIA Portal's .s7dcl import is known to get wrong, each with the
     // workaround: an empty list when nothing is. read_source_tree warns about these, and
     // write_source_tree refuses to write such a .s7dcl.
     public static IReadOnlyList<string> FindWriteProblems(string s7dcl)
     {
         var problems = new List<string>();
+
+        if (StlNetwork.IsMatch(s7dcl)) problems.Add(EmbeddedStlProblem);
 
         foreach (Match m in ProjectTypeNamedLikeSystemType.Matches(s7dcl))
         {

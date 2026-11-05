@@ -133,4 +133,6 @@ internal sealed class WriteLog
     public List<string> Updated { get; } = new();
     public List<string> Skipped { get; } = new();
     public List<string> Failed { get; } = new();
+    // Not about one item: shown below the report.
+    public List<string> Notes { get; } = new();
 }

@@ -50,8 +50,9 @@ internal sealed class HmiAlarmsKind : ISourceKind
 
     // Alarms/alarm classes are always upsert-by-name (see TiaConnection.WriteHmiAlarm/WriteHmiAlarmClass),
     // so createMissing/overwriteExisting are applied per row here rather than per file, unlike
-    // every other kind where one item is one write call. A removed row is not deleted. The file
-    // counts as written only if every row was - see write_source_tree's refresh.
+    // every other kind where one item is one write call. Only changed rows are written; in a
+    // working copy a removed alarm row deletes the alarm (alarm classes are never deleted). The
+    // file counts as written only if every row was - see write_source_tree's refresh.
     public async Task<WriteLog> Write(WriteContext context, IReadOnlyList<ImportListItem> items)
     {
         var log = new WriteLog();
@@ -83,16 +84,41 @@ internal sealed class HmiAlarmsKind : ISourceKind
             try { alarms = HmiAlarmsCsv.ParseAlarms(File.ReadAllText(file), _alarmType); }
             catch (FormatException ex) { log.Failed.Add($"{Name}: {ex.Message}"); return log; }
 
-            var existing = (await session.ListHmiAlarmsAsync(hmi, _alarmType)).Select(a => a.Name).ToHashSet(StringComparer.OrdinalIgnoreCase);
+            var existing = new Dictionary<string, HmiAlarmInfo>(StringComparer.OrdinalIgnoreCase);
+            // Unrepaired: a text nested by an earlier round trip differs from the file, so it is written.
+            foreach (var alarm in await session.ListHmiAlarmsAsync(hmi, _alarmType, repair: false)) existing[alarm.Name] = alarm;
+            var unchanged = 0;
+            var notWritten = 0;
             foreach (var spec in alarms)
             {
                 var label = $"HMI alarm '{spec.Name}'";
-                var exists = existing.Contains(spec.Name);
+                var exists = existing.TryGetValue(spec.Name, out var current);
+                // Only what changed: writing every row of a large file takes minutes.
+                if (exists && HmiAlarmsCsv.Unchanged(spec, current!)) { unchanged++; continue; }
                 if (!Allowed(context, log, label, exists)) continue;
+                if (context.Progress.Cancelled) { notWritten++; continue; }
                 var result = await session.WriteHmiAlarmAsync(hmi, spec);
                 if (result.Success) (exists ? log.Updated : log.Created).Add(label);
                 else log.Failed.Add($"{label}: {result.Error}");
             }
+            if (notWritten > 0) log.Skipped.Add($"{Name}: {notWritten} changed alarm(s) not written, the call was cancelled");
+
+            // A working copy's file is the whole list, as for tag tables: an alarm without a row
+            // is deleted. Elsewhere (a generated file) a missing row leaves the alarm alone.
+            var deleted = new List<string>();
+            if (context.WorkingCopy && notWritten == 0)
+            {
+                var keep = alarms.Select(a => a.Name).ToHashSet(StringComparer.OrdinalIgnoreCase);
+                foreach (var name in existing.Keys.Where(n => !keep.Contains(n)).OrderBy(n => n, StringComparer.OrdinalIgnoreCase))
+                {
+                    if (context.DryRun) { deleted.Add($"'{name}'"); continue; }
+                    var result = await session.DeleteHmiAlarmAsync(hmi, _alarmType, name);
+                    if (result.Success) deleted.Add($"'{name}'");
+                    else log.Failed.Add($"HMI alarm '{name}': delete failed: {result.Error}");
+                }
+            }
+            if (deleted.Count > 0) log.Updated.Add($"{Name}: {(context.DryRun ? "would delete" : "deleted")} {string.Join(", ", deleted)}");
+            if (unchanged > 0) log.Notes.Add($"{Name}: {unchanged} alarm(s) unchanged.");
         }
 
         if (!context.DryRun && log.Failed.Count == 0) context.Written.AddRange(items);

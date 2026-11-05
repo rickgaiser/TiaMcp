@@ -298,9 +298,10 @@ public sealed partial class TiaConnection : IDisposable
 
         if (existing != null)
         {
+            // Made first: disposing the portal disposes existing too.
+            var error = $"TIA Portal process {processId} already has a different project open: '{existing.Name}' ({existing.Path?.FullName ?? "unsaved"}). Close it first (tia_connect with processId={processId}, then close_project) or pick a different processId.";
             portal.Dispose();
-            return new ConnectResult(false, null, null,
-                $"TIA Portal process {processId} already has a different project open: '{existing.Name}' ({existing.Path?.FullName ?? "unsaved"}). Close it first (tia_connect with processId={processId}, then close_project) or pick a different processId.");
+            return new ConnectResult(false, null, null, error);
         }
 
         try
@@ -357,6 +358,72 @@ public sealed partial class TiaConnection : IDisposable
     }
 
     // openedHere: this server opened the project, rather than attaching to one already open.
+    // Whether the attached project still answers: TIA Portal disposes it, and every object in it,
+    // when it closes the project - also to reopen it, as a Multiuser check-in or refresh does.
+    public bool ProjectAlive()
+    {
+        if (_project == null) return false;
+        try
+        {
+            _ = _project.Name;
+            foreach (var plc in _softwareByName.Values.Take(1)) _ = plc.Name;
+            foreach (var hmi in _hmiSoftwareByName.Values.Take(1)) _ = hmi.Name;
+            return true;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    // Attaches again to the project or local session at projectPath after its handle died (see
+    // ProjectAlive): in processId when that still has it open, else in the one instance that has.
+    // Never opens it: a project the user closed stays closed. wait: how long TIA Portal may take
+    // to reopen it, as long as processId runs.
+    public ConnectResult Reconnect(int? processId, string projectPath, TimeSpan wait = default)
+    {
+        var deadline = DateTime.UtcNow + wait;
+        var processes = TiaPortal.GetProcesses().ToList();
+        var withIt = processes.Where(p => SamePath(OpenProjectPath(p), projectPath)).ToList();
+        while (withIt.Count == 0 && processes.Any(p => p.Id == processId) && DateTime.UtcNow < deadline)
+        {
+            System.Threading.Thread.Sleep(2000);
+            processes = TiaPortal.GetProcesses().ToList();
+            withIt = processes.Where(p => SamePath(OpenProjectPath(p), projectPath)).ToList();
+        }
+        var proc = withIt.FirstOrDefault(p => p.Id == processId) ?? (withIt.Count == 1 ? withIt[0] : null);
+        if (proc == null)
+            return new ConnectResult(false, null, null, withIt.Count > 0
+                ? $"{withIt.Count} TIA Portal instances have '{projectPath}' open."
+                : processId != null && processes.All(p => p.Id != processId)
+                    ? $"TIA Portal (process {processId}) stopped. Its crash report is under {DiagnosticsFolder}."
+                    : $"no running TIA Portal has '{projectPath}' open.");
+
+        var old = _tiaPortal;
+        _tiaPortal = null;
+        _project = null;
+        _localSession = null;
+        try { old?.Dispose(); } catch { /* already gone */ }
+        return ConnectToSpecificProcess(processes, proc.Id, projectPath);
+    }
+
+    private static bool SamePath(string? a, string b)
+    {
+        if (a == null) return false;
+        try { return string.Equals(Path.GetFullPath(a), Path.GetFullPath(b), StringComparison.OrdinalIgnoreCase); }
+        catch { return string.Equals(a, b, StringComparison.OrdinalIgnoreCase); }
+    }
+
+    // The TIA Portal process this server is attached to, if it still answers.
+    public int? ProcessId
+    {
+        get
+        {
+            try { return _tiaPortal?.GetCurrentProcess().Id; }
+            catch { return null; }
+        }
+    }
+
     private ConnectResult FinalizeConnect(TiaPortal portal, ProjectBase project, LocalSession? localSession = null, string? localSessionPath = null, bool openedHere = false)
     {
         _tiaPortal = portal;
@@ -655,8 +722,22 @@ public sealed partial class TiaConnection : IDisposable
 
     private static ExportResult ReadSafely(Func<ExportResult> read)
     {
-        try { return read(); }
-        catch (Exception ex) { return new ExportResult(false, Array.Empty<BlockDocument>(), ex.Message); }
+        ExportResult result;
+        try { result = read(); }
+        catch (Exception ex) { result = new ExportResult(false, Array.Empty<BlockDocument>(), ex.Message); }
+        // Not this item's failure: thrown, so the caller attaches again and repeats the read.
+        if (!result.Success && result.Error?.Contains(DisposedMessage) == true) throw new InvalidOperationException(result.Error);
+        return result;
+    }
+
+    private const string DisposedMessage = "Access to a disposed object";
+
+    // Whether a call failed because TIA Portal closed the project under it (see ProjectAlive).
+    public static bool IsLostProject(Exception ex)
+    {
+        for (var e = ex; e != null; e = e.InnerException)
+            if (e.GetType().Name == "EngineeringObjectDisposedException" || e.Message.Contains(DisposedMessage)) return true;
+        return false;
     }
 
     public IReadOnlyList<TypeSummary> ListPlcTypes(string plcName)
@@ -1621,8 +1702,9 @@ public sealed partial class TiaConnection : IDisposable
         }
     }
 
-    // stlAtRead: the block had embedded STL networks when it was read into the tree.
-    public ImportResult WriteBlock(string plcName, string blockName, IReadOnlyList<BlockDocument> documents, bool stlAtRead = false)
+    // A .s7dcl of a block with embedded STL networks is refused before this: the import would
+    // silently delete them (see S7dclSource.FindWriteProblems and BlockKind.Write).
+    public ImportResult WriteBlock(string plcName, string blockName, IReadOnlyList<BlockDocument> documents)
     {
         EnsureConnected();
         var software = GetSoftware(plcName);
@@ -1646,24 +1728,6 @@ public sealed partial class TiaConnection : IDisposable
             return WriteStlBlock(software, block.Name, documents);
         }
 
-        // Safety check: a .s7dcl that's missing a block's embedded STL network(s) - exactly what
-        // read_source_tree hands back for a mixed block, since it can't
-        // represent STL content in .s7dcl - imports SUCCESSFULLY via ImportFromDocuments and
-        // SILENTLY DELETES the STL network(s) from the real block. Whole-block STL is handled
-        // above via WriteStlBlock; a mixed FBD/LAD/SCL block with one or more embedded STL
-        // networks has no such route yet (there's no per-network import API either) - refuse
-        // outright here rather than risk a silent, destructive partial overwrite. Told from the
-        // read and the documents, not by exporting the block: an export right before the override
-        // import below makes TIA Portal V21 terminate for a block with a textual interface.
-        if (stlAtRead || documents.Any(d => d.FileName.EndsWith(".s7dcl", StringComparison.OrdinalIgnoreCase) && StlPlaceholder.IsMatch(d.Content)))
-        {
-            return new ImportResult(false, new[]
-            {
-                $"Block '{block.Name}' contains one or more embedded STL networks - these can't be written back yet (read_source_tree shows them in '<name>.stl-networks.awl' or '.xml'). " +
-                "Writing the .s7dcl content back here would silently delete the STL network(s), since .s7dcl can't represent STL content. Edit this block's STL logic in the TIA Portal GUI instead.",
-            });
-        }
-
         return Imported(plcName, blockName, ImportBlockDocuments(owner, blockName, documents, ImportDocumentOptions.Override));
     }
 
@@ -1681,12 +1745,10 @@ public sealed partial class TiaConnection : IDisposable
         {
             // Gone: Openness or GetProcessById threw.
         }
-        return "TIA Portal stopped during the import (unsaved changes in the project are lost). Its crash report is under " +
-               @"C:\ProgramData\Siemens\Automation\Portal V21\Diagnostics. Start TIA Portal again and call tia_connect.";
+        return $"TIA Portal stopped during the import (unsaved changes in the project are lost). Its crash report is under {DiagnosticsFolder}. Start TIA Portal again and call tia_connect.";
     }
 
-    // The placeholder NETWORK ReadMixedStlBlock leaves at each embedded STL network.
-    private static readonly Regex StlPlaceholder = new(@"S7_Language\s*:=\s*""STL""");
+    private const string DiagnosticsFolder = @"C:\ProgramData\Siemens\Automation\Portal V21\Diagnostics";
 
     // GRAPH write, mirroring ReadGraphBlock's use of the separate PlcBlock.Export/
     // PlcBlockComposition.Import XML API (not ImportFromDocuments). Conservative by design -
@@ -3022,6 +3084,10 @@ public sealed partial class TiaConnection : IDisposable
         return new HmiTagTableResult(true, tags, null);
     }
 
+    // "<Internal tag>": a connection name can't start with '<'.
+    private static bool IsNoConnection(string? connection) =>
+        connection is { Length: > 1 } c && c[0] == '<' && c[c.Length - 1] == '>';
+
     // String and WString are the HMI types with a length (HmiTag.MaxLength).
     private static bool IsStringType(string? dataType) =>
         string.Equals(dataType, "String", StringComparison.OrdinalIgnoreCase) || string.Equals(dataType, "WString", StringComparison.OrdinalIgnoreCase);
@@ -3045,6 +3111,10 @@ public sealed partial class TiaConnection : IDisposable
             errors.Add("Nothing was written.");
             return new WriteTagsResult(false, errors);
         }
+
+        // An internal tag reads back with TIA's placeholder for "no connection" ("<Internal tag>",
+        // in the UI language) as its Connection: written back, that means no connection.
+        tags = tags.Select(t => IsNoConnection(t.Connection) ? t with { Connection = null } : t).ToList();
 
         // A connection that doesn't exist otherwise fails every row bound to it, with TIA's
         // misleading "The controller tag ... was not found".
@@ -3395,7 +3465,9 @@ public sealed partial class TiaConnection : IDisposable
         }
     }
 
-    public IReadOnlyList<HmiAlarmInfo> ListHmiAlarms(string hmiName, string? type = null)
+    // repair: texts nested by an earlier round trip come back repaired (see AlarmText); false
+    // gives them as the project has them, for a write to compare with.
+    public IReadOnlyList<HmiAlarmInfo> ListHmiAlarms(string hmiName, string? type = null, bool repair = true)
     {
         EnsureConnected();
         var software = GetHmiSoftware(hmiName);
@@ -3403,11 +3475,11 @@ public sealed partial class TiaConnection : IDisposable
 
         if (type == null || string.Equals(type, "Discrete", StringComparison.OrdinalIgnoreCase))
         {
-            result.AddRange(software.DiscreteAlarms.Select(ToHmiAlarmInfo));
+            result.AddRange(software.DiscreteAlarms.Select(a => ToHmiAlarmInfo(a, repair)));
         }
         if (type == null || string.Equals(type, "Analog", StringComparison.OrdinalIgnoreCase))
         {
-            result.AddRange(software.AnalogAlarms.Select(ToHmiAlarmInfo));
+            result.AddRange(software.AnalogAlarms.Select(a => ToHmiAlarmInfo(a, repair)));
         }
 
         return result;
@@ -3424,12 +3496,12 @@ public sealed partial class TiaConnection : IDisposable
         catch { return null; }
     }
 
-    private HmiAlarmInfo ToHmiAlarmInfo(HmiDiscreteAlarm a) =>
-        new("Discrete", a.Name, TryGet(() => a.AlarmClass), TryGet(() => ExtractText(a.EventText)), TryGet(() => ExtractText(a.InfoText)),
+    private HmiAlarmInfo ToHmiAlarmInfo(HmiDiscreteAlarm a, bool repair) =>
+        new("Discrete", a.Name, TryGet(() => a.AlarmClass), TryGet(() => AlarmText(a.EventText, repair)), TryGet(() => AlarmText(a.InfoText, repair)),
             TryGet(() => a.TriggerBitAddress), null, null, TryGet(() => a.RaisedStateTag), TryGet(() => a.AuditClass), TryGet(() => a.Area), TryGet(() => a.Origin));
 
-    private HmiAlarmInfo ToHmiAlarmInfo(HmiAnalogAlarm a) =>
-        new("Analog", a.Name, TryGet(() => a.AlarmClass), TryGet(() => ExtractText(a.EventText)), TryGet(() => ExtractText(a.InfoText)),
+    private HmiAlarmInfo ToHmiAlarmInfo(HmiAnalogAlarm a, bool repair) =>
+        new("Analog", a.Name, TryGet(() => a.AlarmClass), TryGet(() => AlarmText(a.EventText, repair)), TryGet(() => AlarmText(a.InfoText, repair)),
             TryGet(() => a.TriggerAddress), TryGet(() => a.Condition.ToString()), TryGet(() => a.ConditionValue?.ToString()), TryGet(() => a.RaisedStateTag), TryGet(() => a.AuditClass), TryGet(() => a.Area), TryGet(() => a.Origin));
 
     // Alarm property interdependencies (e.g. whether AlarmClass must be set before
@@ -3559,19 +3631,28 @@ public sealed partial class TiaConnection : IDisposable
     private static string TriggerAddressUnsupportedMessage(string propertyName) =>
         $"FAILED '{propertyName}': WinCC Unified's Openness API (V21) exposes no working setter for this specific field - every route tried (the property setter, SetAttribute(\"{propertyName}\", ...), SetAttribute(\"TriggerTag\", ...), and GetAttributeInfos()) is rejected or fails. Set RaisedStateTag instead to bind the alarm's trigger.";
 
+    // An alarm EventText/InfoText in the project's editing language, as plain text (see
+    // UnifiedText). repair: a text nested by an earlier round trip comes back repaired, so the file
+    // shows the fix; the write compares with it unrepaired (one level), so it writes the fix.
+    private string? AlarmText(MultilingualText? text, bool repair)
+    {
+        var raw = text?.Items.Find(_project!.LanguageSettings.EditingLanguage)?.Text;
+        return string.IsNullOrEmpty(raw) ? null : repair ? UnifiedText.Repair(raw!) : UnifiedText.HtmlToPlain(raw!);
+    }
+
     // MultilingualTextItemComposition has no Create - items for every project editing language
-    // pre-exist, only .Text is mutable - so writing a comment/event/info text means finding the
-    // item for the project's current editing language and setting its Text. WinCC Unified alarm
-    // EventText/InfoText items store a small HTML fragment ("<body><p>...</p></body>"), not plain
-    // text - setting a bare string throws "invalid format". Plain text passed in here is wrapped
-    // to match, with the three HTML metacharacters escaped.
+    // pre-exist, only .Text is mutable - so writing an event/info text means finding the item for
+    // the project's current editing language and setting its Text. WinCC Unified alarm texts store
+    // an HTML fragment (see UnifiedText), not plain text - setting a bare string throws "invalid
+    // format". Plain text is wrapped to match; a "<body>" fragment (formatted text, as read) is
+    // written as is. Unchanged text isn't written; a text nested by an earlier round trip is.
     private void SetText(MultilingualText? text, string value)
     {
-        if (text == null) return;
-        var escaped = value.Replace("&", "&amp;").Replace("<", "&lt;").Replace(">", "&gt;");
-        var htmlValue = $"<body><p>{escaped}</p></body>";
-        var item = text.Items.Find(_project!.LanguageSettings.EditingLanguage);
-        if (item != null) item.Text = htmlValue;
+        var item = text?.Items.Find(_project!.LanguageSettings.EditingLanguage);
+        if (item == null) return;
+        var current = item.Text ?? "";
+        if (current == value || (current.Length > 0 && UnifiedText.HtmlToPlain(current) == value)) return;
+        item.Text = value.StartsWith("<body", StringComparison.OrdinalIgnoreCase) ? value : UnifiedText.PlainToHtml(value);
     }
 
     // A PLC, a WinCC Unified HMI or a classic WinCC HMI target, by its software name.
