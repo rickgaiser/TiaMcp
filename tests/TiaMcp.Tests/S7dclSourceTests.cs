@@ -2,6 +2,45 @@ namespace TiaMcp.Tests;
 
 public class S7dclSourceTests
 {
+    [Fact]
+    public void EmbeddedStlPlaceholderIsAWriteProblem()
+    {
+        const string dcl = """
+            FUNCTION "Mixed" : Void
+                { S7_Language := "SCL" }
+                NETWORK
+                    #a := 1;
+                END_NETWORK
+                { S7_Language := "STL"; S7_NetworkTitle := "MLC_net2t" }
+                NETWORK
+                    RUNG
+                    END_RUNG
+                END_NETWORK
+            END_FUNCTION
+            """;
+
+        Assert.Equal(S7dclSource.EmbeddedStlProblem, Assert.Single(S7dclSource.FindWriteProblems(dcl)));
+    }
+
+    [Fact]
+    public void CalledBlocksAreCallsByName()
+    {
+        const string dcl = """
+            FUNCTION "Caller" : Void
+                { S7_Language := "SCL" }
+                NETWORK
+                    "Motor_IDB"();
+                    "Scale" (in := "Data".value);
+                    "Data".member(in := 1);
+                    #inst(in := "Other");
+                    "Motor_IDB"();
+                END_NETWORK
+            END_FUNCTION
+            """;
+
+        Assert.Equal(new[] { "Motor_IDB", "Scale" }, S7dclSource.CalledBlocks(dcl));
+    }
+
     private const string Fb = """
         {
             S7_Optimized := "TRUE";

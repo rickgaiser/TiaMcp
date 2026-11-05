@@ -256,9 +256,9 @@ public sealed class TiaSession
         return Read(() => _connection.ExportsSinceImport(plcName, blockName));
     }
 
-    public Task<ImportResult> WriteBlockAsync(string plcName, string blockName, IReadOnlyList<BlockDocument> documents, bool stlAtRead = false)
+    public Task<ImportResult> WriteBlockAsync(string plcName, string blockName, IReadOnlyList<BlockDocument> documents)
     {
-        return Change(() => _connection.WriteBlock(plcName, blockName, documents, stlAtRead));
+        return Change(() => _connection.WriteBlock(plcName, blockName, documents));
     }
 
     public Task<WriteTagsResult> WriteTagTableAsync(string plcName, string tableName, IReadOnlyList<TagSpec> tags, bool deleteMissing = false, bool dryRun = false)

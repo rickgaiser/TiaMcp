@@ -197,7 +197,7 @@ A new `.graph.il` file in the source tree is created by cloning an existing GRAP
 
 ## Source tree
 
-`read_source_tree` exports PLC blocks, tag tables, UDTs and alarm text lists, WinCC Unified HMI tag tables, screens and alarms, and classic WinCC screens, screen templates, pop-up screens, tag tables and text lists to disk, in folders mirroring the TIA Portal project tree — the whole project, or only the items or groups you name:
+`read_source_tree` exports PLC blocks, tag tables, UDTs and alarm text lists, WinCC Unified HMI tag tables, screens and alarms, and classic WinCC screens, screen templates, pop-up screens, tag tables and text lists to disk, in folders mirroring the TIA Portal project tree — the whole project, or only the items, groups or sections (`Screens`, `HMI tags`) you name:
 
 ```
 <targetDirectory>/
@@ -275,5 +275,6 @@ AGPL-3.0 (see [LICENSE](LICENSE)). Contributions require signing the [CLA](CLA.m
 - TIA Portal V21 terminates when it overwrites a block with a textual interface (`S7_EditorMode := "[SCL,TextualInterface]"`) that was exported more than once since the project was opened or the block was last written. `write_source_tree` counts the exports and refuses such a write; save, close and reopen the project (`tia_connect` with `projectPath`) and write right away. After attaching to an already open project the count is unknown, so these writes are refused until the project is reopened through TiaMcp.
 - WinCC Unified screen-item groups are not in Openness V21: a grouped item reads as an ordinary item of the screen, with its position (`Left`/`Top`, `Points`, `CenterX`/`CenterY`) relative to the group, whose own position can't be read. Several grouped shapes can therefore read back at the same spot near 0,0. A write that doesn't change their position leaves them where they are; check the layout around grouped graphics in TIA Portal, or ungroup them there.
 - GRAPH blocks can only be created by cloning an existing one (see the GRAPH section above), not from scratch.
+- A write doesn't make the instance DB of a new FB: add its `.s7dcl` to the tree or call `create_plc_instance_db`. The write result names called blocks that don't exist.
 - Classic WinCC (Comfort/Advanced/RT Advanced): alarms are not reachable through Openness; graphic lists are skipped (export crashes TIA Portal V21); objects can't be renamed or deleted through TiaMcp yet.
 - PLC alarm text lists: only existing user lists can be written; the screen-number check for classic screens exports every screen once per write (about a minute for ~50 screens).

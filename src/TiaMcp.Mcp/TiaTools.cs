@@ -680,7 +680,7 @@ An item that fails to export (e.g. an inconsistent block - GRAPH blocks must be 
 In a Multiuser local session the read also checks each item's mark state (about 35 ms per block, UDT or screen, and per tag or alarm of a table - roughly a minute for a medium-sized project): items marked by another user or not up to date with the server are listed in the result, and every marked item in _export_summary.txt, e.g. ""(marked by another user: 2 of 240 (Tag_A, Tag_B))"". write_source_tree refuses to write those.")]
     public Task<string> ReadSourceTree(
         [Description("Root directory of the source tree. Created if it doesn't exist; keep using the same one for the project.")] string targetDirectory,
-        [Description("Optional: read only these items - 'Name', 'group/path/Name', 'group/path/' for everything below a group, or item lines as list_project shows them, optionally ending with the formats to read, e.g. \"tag table 'Tags' [csv, xml]\" (case-insensitive; for HMI alarms 'DiscreteAlarms', 'AnalogAlarms', 'AlarmClasses' or 'HMI alarms/'). Omit to read everything.")] string[]? items = null,
+        [Description("Optional: read only these items - 'Name', 'group/path/Name', 'group/path/' for everything below a group, a section of the tree such as 'Screens' or 'HMI tags', or item lines as list_project shows them, optionally ending with the formats to read, e.g. \"tag table 'Tags' [csv, xml]\" (case-insensitive; for HMI alarms 'DiscreteAlarms', 'AnalogAlarms' or 'AlarmClasses'). An entry that matches nothing is reported. Omit to read everything.")] string[]? items = null,
         [Description("Optional: read only this PLC or HMI software name")] string? deviceName = null,
         [Description("Read into a tree that has an _export_summary.txt but no _manifest.json (read by an older version, or generated), making it a working copy of the connected project. Default false.")] bool adoptExisting = false,
         [Description("Give WinCC Unified HMI tag table CSVs a Length column (the maximum length of String/WString tags). SLOW: an extra Openness call per tag. Remembered for the tree; omit to keep the tree's setting (off for a new tree).")] bool? hmiTagLength = null,
@@ -736,6 +736,8 @@ In a Multiuser local session the read also checks each item's mark state (about 
                         && !exported.Any(e => i.Is(e.Device, e.Kind, e.Name)))
             .ToList();
         foreach (var item in gone) RemoveFromTree(targetDirectory, manifest, item);
+        var unmatched = (selection ?? Array.Empty<string>()).Where(s => !exported.Select(e => (e.Kind, e.GroupPath, e.Name)).Concat(gone.Select(i => (i.Kind, i.GroupPath, i.Name)))
+            .Any(e => RequestedFormats(new[] { s }, e.Kind, e.GroupPath, e.Name) != null)).ToList();
 
         // Multiuser: what this user can edit without conflicts, known before editing.
         var read = exported.Where(e => e.Ok).Select(e => (e.Device, e.Kind, e.Name)).ToList();
@@ -762,6 +764,7 @@ In a Multiuser local session the read also checks each item's mark state (about 
             else if (partial) result.AppendLine($"  OK      {Describe(item.Kind, item.GroupPath, item.Name)}: {string.Join(", ", item.Files.Select(f => f.Path))}");
         }
         foreach (var item in gone) result.AppendLine($"  REMOVED {Describe(item.Kind, item.GroupPath, item.Name)} - no longer in the project, its files were deleted");
+        foreach (var entry in unmatched) result.AppendLine($"  NOT FOUND '{entry}': no item matches it (expected 'Name', 'group/path/Name', 'group/path/' or a section such as 'Screens')");
         // The same warning for many blocks (a library pattern) is explained once, its blocks below it.
         var warnings = exported.SelectMany(e => e.Warnings.Select(w => (Describe(e.Kind, e.GroupPath, e.Name), w)));
         foreach (var (text, names) in GroupSimilar(warnings))
@@ -804,8 +807,8 @@ Writing rules per file type:
 - What TIA Portal's .s7dcl import gets wrong is refused, with a workaround: an array access inside an index in a LAD/FBD network, and a project FB or UDT named like a system type (TON, TOF, TP, TONR, CTU, CTD, CTUD, R_TRIG, F_TRIG), and an AT overlay (.s7dcl has no AT: the read marks the overlay's declaration with a '// TiaMcp: AT' comment; the import would make it an independent variable). read_source_tree warns about them.
 - Comments and titles: an { S7_MLC := ""MLC_x"" } attribute (S7_NetworkTitle/S7_NetworkComment for networks) referring to an entry in the .s7res; '//' comments in the source are dropped by TIA Portal. Keep text ids unique within a .s7res.
 - GRAPH ('.graph.il'): step/transition attributes, actions and conditions are writable, steps/transitions can be added or removed, and BRANCHES/CONNECTIONS of a SEQUENCE are rewritten when present; INTERFACE and PREOPERATIONS are read-only. A condition still containing a construct shown as generic 'PartName(args)' is refused. A new GRAPH block is made by cloning an existing GRAPH block of the PLC (picked automatically) and reshaping it. The write recompiles the block and reports errors.
-- Whole-block STL ('.awl'): AWL text as TIA Portal's 'Generate source' produces it, block name in the header unchanged. A block with embedded STL networks can't be written.
-- Instance DB: its .s7dcl ('DATA_BLOCK ""x"" ... : FB_y'); the FB must exist.
+- Whole-block STL ('.awl'): AWL text as TIA Portal's 'Generate source' produces it, block name in the header unchanged. A block with embedded STL networks is only written through its raw XML.
+- Instance DB: its .s7dcl ('DATA_BLOCK ""x"" ... : FB_y'); the FB must exist or be in the same write. A write doesn't make the instance DB of a new FB by itself, but notes a called block that isn't there.
 - Raw XML ('<name>.xml' of a block, UDT or PLC tag table): SimaticML as read; replaces the whole object (a table's removed tags go too), or creates it - also GRAPH blocks and blocks with embedded STL networks. Its <Name> must match the file name.
 - PLC tag table CSV: Name, DataType, LogicalAddress, Comment, ExternalAccessible, ExternalVisible, ExternalWritable (True/False). Rows update or add tags; an empty cell leaves that value unchanged (but clears the Comment in a tree read from this project); removing a row deletes that tag (not when writing a tree read from another project). Renaming a tag in the CSV deletes it and makes a new one, breaking references - use rename_plc_tag.
 - HMI tag table CSV: Name, DataType, Address, Connection, PlcName, PlcTag, Comment, AcquisitionCycle, Length. Bind to a PLC tag with Connection + PlcTag (dot-qualified for a DB member); DataType then follows from the PLC tag. PlcName is ignored on write. AcquisitionCycle (e.g. T1s) only on PLC-bound tags. Length (only in a tree read with hmiTagLength=true; without the column lengths stay unchanged) is the maximum length of a String/WString tag, empty for other types; only writable on internal tags (a PLC-bound tag has its PLC tag's length). Rows and removed rows as for PLC tag tables; rename with rename_hmi_tag.
@@ -872,8 +875,13 @@ Writes '<sourceDirectory>/_import_report.txt' with one CREATED/UPDATED/SKIPPED/F
             }
             else
             {
-                allItems = ParseSourceTreeList(File.Exists(listPath) ? File.ReadAllText(listPath) : itemList!);
+                var unknownLines = new List<string>();
+                var listFile = File.Exists(listPath);
+                allItems = ParseSourceTreeList(listFile ? File.ReadAllText(listPath) : itemList!, unknownLines);
                 if (allItems.Count == 0) return $"No items recognized in the given list. {ItemListExample}";
+                // TiaMcp's own lists hold other lines too.
+                if (unknownLines.Count > 0 && !(listFile && Path.GetFileName(listPath).ToLowerInvariant() is ("_export_summary.txt" or "_project_list.txt")))
+                    notes.Add($"{unknownLines.Count} line(s) of the list name no item and were left out: {string.Join(", ", unknownLines.Take(5).Select(l => $"'{l}'"))}{(unknownLines.Count > 5 ? ", ..." : "")}. {ItemListExample}");
             }
             // Lines above any software header: the software that alone has items of that kind.
             for (var i = 0; i < allItems.Count; i++)
@@ -1030,6 +1038,7 @@ Writes '<sourceDirectory>/_import_report.txt' with one CREATED/UPDATED/SKIPPED/F
                 logs.Add(await kind.Write(context, kindItems));
             }
             touched.AddRange(context.Touched);
+            notes.AddRange(logs.SelectMany(l => l.Notes));
 
             var unknown = new WriteLog();
             unknown.Failed.AddRange(deviceItems.Where(i => !kinds.Any(k => k.Name == i.Kind)).Select(i => family == null
@@ -1278,7 +1287,8 @@ Writes '<sourceDirectory>/_import_report.txt' with one CREATED/UPDATED/SKIPPED/F
     // either - into importable items; see write_source_tree. The status column is optional (a line
     // without one counts as OK). Unrecognized lines (headers, blank lines, the trailing 'Done: ...'
     // line, empty groups) are silently skipped, so callers don't need to strip them out first.
-    private static List<ImportListItem> ParseSourceTreeList(string text)
+    // unknownLines gets the lines that are no header or item.
+    private static List<ImportListItem> ParseSourceTreeList(string text, List<string> unknownLines)
     {
         var items = new List<ImportListItem>();
         string? currentDevice = null;
@@ -1296,8 +1306,15 @@ Writes '<sourceDirectory>/_import_report.txt' with one CREATED/UPDATED/SKIPPED/F
                 continue;
             }
 
+            // A fixed-file kind by its file name, as read_source_tree's items take it.
+            if (SourceKinds.All.FirstOrDefault(k => string.Equals(k.FixedName, trimmed, StringComparison.OrdinalIgnoreCase)) is { } fixedKind)
+            {
+                items.Add(new ImportListItem(currentDevice ?? "", fixedKind.Name, "", "", true));
+                continue;
+            }
+
             var itemMatch = SourceKinds.ListedItem.Match(trimmed);
-            if (!itemMatch.Success) continue;
+            if (!itemMatch.Success) { unknownLines.Add(trimmed); continue; }
 
             var ok = itemMatch.Groups["status"].Value is "" or "OK";
             var label = itemMatch.Groups["label"].Value;
@@ -1507,9 +1524,10 @@ Writes '<sourceDirectory>/_import_report.txt' with one CREATED/UPDATED/SKIPPED/F
         return summary.ToString();
     }
 
-    // read_source_tree's items: 'Name', 'group/path/Name', or 'group/path/' for everything below a
-    // group, case-insensitive. A fixed-file kind (the HMI alarm files) is selected by its file name
-    // ('DiscreteAlarms') or its section ('HMI alarms/'). A line as list_project or
+    // read_source_tree's items: 'Name', 'group/path/Name', 'group/path/' for everything below a
+    // group, or a section of the tree ('Screens', 'HMI tags/'), which can also start a path
+    // ('Screens/group/'); case-insensitive. A fixed-file kind (the HMI alarm files) is selected by
+    // its file name ('DiscreteAlarms') or its section ('HMI alarms'). A line as list_project or
     // _export_summary.txt shows an item ("block 'group/Name' [SCL] [s7dcl, xml]", "OK     udt
     // 'Name'", "HMI DiscreteAlarms") selects that item, in the formats at its end if any. Returns
     // null when the item isn't selected, else the requested formats - empty for the default.
@@ -1525,19 +1543,20 @@ Writes '<sourceDirectory>/_import_report.txt' with one CREATED/UPDATED/SKIPPED/F
 
         if (SourceKinds.IsFixed(kind)) (groupPath, name) = (SectionOf(kind), ItemStem(kind, name));
         var label = Label(groupPath, name);
+        var section = SectionOf(kind);
+        bool Selects(string path, string item)
+        {
+            if (!path.EndsWith("/")) return string.Equals(path, item, StringComparison.OrdinalIgnoreCase);
+            var group = path.TrimEnd('/');
+            return string.Equals(groupPath, group, StringComparison.OrdinalIgnoreCase) || groupPath.StartsWith(group + "/", StringComparison.OrdinalIgnoreCase);
+        }
         foreach (var raw in selection)
         {
             var entry = raw.Trim().Replace('\\', '/');
             if (SourceKinds.ListedItem.IsMatch(entry)) continue;
-            if (entry.EndsWith("/"))
-            {
-                var group = entry.TrimEnd('/');
-                if (string.Equals(groupPath, group, StringComparison.OrdinalIgnoreCase) || groupPath.StartsWith(group + "/", StringComparison.OrdinalIgnoreCase)) return Array.Empty<string>();
-            }
-            else if (string.Equals(entry, entry.Contains("/") ? label : name, StringComparison.OrdinalIgnoreCase))
-            {
-                return Array.Empty<string>();
-            }
+            if (string.Equals(entry.TrimEnd('/'), section, StringComparison.OrdinalIgnoreCase)) return Array.Empty<string>();
+            if (Selects(entry, entry.Contains("/") ? label : name)) return Array.Empty<string>();
+            if (entry.StartsWith(section + "/", StringComparison.OrdinalIgnoreCase) && Selects(entry.Substring(section.Length + 1), label)) return Array.Empty<string>();
         }
         return null;
     }

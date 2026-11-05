@@ -1677,8 +1677,9 @@ public sealed partial class TiaConnection : IDisposable
         }
     }
 
-    // stlAtRead: the block had embedded STL networks when it was read into the tree.
-    public ImportResult WriteBlock(string plcName, string blockName, IReadOnlyList<BlockDocument> documents, bool stlAtRead = false)
+    // A .s7dcl of a block with embedded STL networks is refused before this: the import would
+    // silently delete them (see S7dclSource.FindWriteProblems and BlockKind.Write).
+    public ImportResult WriteBlock(string plcName, string blockName, IReadOnlyList<BlockDocument> documents)
     {
         EnsureConnected();
         var software = GetSoftware(plcName);
@@ -1702,24 +1703,6 @@ public sealed partial class TiaConnection : IDisposable
             return WriteStlBlock(software, block.Name, documents);
         }
 
-        // Safety check: a .s7dcl that's missing a block's embedded STL network(s) - exactly what
-        // read_source_tree hands back for a mixed block, since it can't
-        // represent STL content in .s7dcl - imports SUCCESSFULLY via ImportFromDocuments and
-        // SILENTLY DELETES the STL network(s) from the real block. Whole-block STL is handled
-        // above via WriteStlBlock; a mixed FBD/LAD/SCL block with one or more embedded STL
-        // networks has no such route yet (there's no per-network import API either) - refuse
-        // outright here rather than risk a silent, destructive partial overwrite. Told from the
-        // read and the documents, not by exporting the block: an export right before the override
-        // import below makes TIA Portal V21 terminate for a block with a textual interface.
-        if (stlAtRead || documents.Any(d => d.FileName.EndsWith(".s7dcl", StringComparison.OrdinalIgnoreCase) && StlPlaceholder.IsMatch(d.Content)))
-        {
-            return new ImportResult(false, new[]
-            {
-                $"Block '{block.Name}' contains one or more embedded STL networks - these can't be written back yet (read_source_tree shows them in '<name>.stl-networks.awl' or '.xml'). " +
-                "Writing the .s7dcl content back here would silently delete the STL network(s), since .s7dcl can't represent STL content. Edit this block's STL logic in the TIA Portal GUI instead.",
-            });
-        }
-
         return Imported(plcName, blockName, ImportBlockDocuments(owner, blockName, documents, ImportDocumentOptions.Override));
     }
 
@@ -1740,9 +1723,6 @@ public sealed partial class TiaConnection : IDisposable
         return "TIA Portal stopped during the import (unsaved changes in the project are lost). Its crash report is under " +
                @"C:\ProgramData\Siemens\Automation\Portal V21\Diagnostics. Start TIA Portal again and call tia_connect.";
     }
-
-    // The placeholder NETWORK ReadMixedStlBlock leaves at each embedded STL network.
-    private static readonly Regex StlPlaceholder = new(@"S7_Language\s*:=\s*""STL""");
 
     // GRAPH write, mirroring ReadGraphBlock's use of the separate PlcBlock.Export/
     // PlcBlockComposition.Import XML API (not ImportFromDocuments). Conservative by design -
