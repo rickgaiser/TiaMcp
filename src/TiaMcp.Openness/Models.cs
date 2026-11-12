@@ -47,7 +47,7 @@ public enum SoftwareKind { Plc, HmiUnified, HmiClassic }
 public sealed record ProjectSoftware(string Name, string SoftwareName, SoftwareKind Kind, string Device, string Group);
 
 // What TiaConnection.GetMarkStates checks the mark state of: one item kind of the source tree.
-public enum MarkTarget { Block, Udt, TagTable, HmiTagTable, HmiScreen, HmiAlarmClasses, HmiDiscreteAlarms, HmiAnalogAlarms }
+public enum MarkTarget { Block, Udt, TagTable, HmiTagTable, HmiScreen, HmiAlarmClasses, HmiDiscreteAlarms, HmiAnalogAlarms, HmiTextList }
 
 // The Multiuser mark state of one item, over the markable objects it is made of (one for a block,
 // every tag of a tag table): how many are marked by this session, marked by another user, and not

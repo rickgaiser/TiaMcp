@@ -27,6 +27,7 @@ Special features that make TiaMcp fast for LLM's and human-readable friendly:
 | HMI alarms (WinCC Unified) | `.csv`, Excel-compatible (synthesized) | Yes | Yes |
 | Screen (WinCC Unified), incl. faceplates | `.json` (synthesized from the object model) | Yes | Yes |
 | PLC alarm text list (user list) | `.csv`, Excel-compatible (synthesized from TIA's Excel export) | Yes | Yes (existing lists) |
+| Text list (WinCC Unified) | `.csv`, Excel-compatible (synthesized from TIA's YAML export) | Yes | Yes |
 | Classic WinCC (Comfort/Advanced/RT Advanced): screens, screen templates, pop-up screens, tag tables, text lists | `.xml`, native Openness XML | Yes | Yes |
 | Raw export of any block, UDT or PLC tag table, next to or instead of the formats above | `.xml`, SimaticML as Openness exports it | Yes | Yes |
 
@@ -125,6 +126,7 @@ Screen content is read and written through the source tree; these tools manage s
 
 | Tool | Purpose |
 |---|---|
+| `delete_hmi_text_list` | Delete a WinCC Unified text list by name |
 | `delete_hmi_screen` / `rename_hmi_screen` | Delete or rename a screen |
 | `create_hmi_screen_group` / `delete_hmi_screen_group` / `rename_hmi_screen_group` | Manage screen group folders |
 | `describe_hmi_item_type` | Properties, events and dynamization options per screen item type |
@@ -197,7 +199,7 @@ A new `.graph.il` file in the source tree is created by cloning an existing GRAP
 
 ## Source tree
 
-`read_source_tree` exports PLC blocks, tag tables, UDTs and alarm text lists, WinCC Unified HMI tag tables, screens and alarms, and classic WinCC screens, screen templates, pop-up screens, tag tables and text lists to disk, in folders mirroring the TIA Portal project tree — the whole project, or only the items, groups or sections (`Screens`, `HMI tags`) you name:
+`read_source_tree` exports PLC blocks, tag tables, UDTs and alarm text lists, WinCC Unified HMI tag tables, text lists, screens and alarms, and classic WinCC screens, screen templates, pop-up screens, tag tables and text lists to disk, in folders mirroring the TIA Portal project tree — the whole project, or only the items, groups or sections (`Screens`, `HMI tags`) you name:
 
 ```
 <targetDirectory>/
@@ -224,8 +226,8 @@ A new `.graph.il` file in the source tree is created by cloning an existing GRAP
       Template.xml
     Pop-up screens/<group path>/                  (classic only)
       Popup.xml
-    Text lists/                                   (classic only)
-      States.xml
+    Text lists/
+      States.csv/xml                              (Unified/classic)
   _export_summary.txt
   _manifest.json
   _progress.log                                   (what the last read or write did, live)
@@ -243,6 +245,8 @@ WinCC Unified HMI tag tables leave out the length of String/WString tags by defa
 An open HMI tag editor in TIA Portal (e.g. "Show all tags") slows every Openness call on that HMI down, a read or write of its tag tables about eight times. Close it while working through TiaMcp.
 
 PLC alarm text lists: one CSV per user list (`From`, `To`, one `Text [language]` column per project language). TIA Portal's Excel import replaces whole lists, so a write starts from a fresh export, changes only the lists being written and imports that; removing a row deletes that entry (not when writing a tree read from another project). Lists can't be created through Openness - create a new list in TIA Portal first. System lists (`SYSTEM_*`) are not exported.
+
+WinCC Unified text lists: one CSV per list in `Text lists/`, with the same columns as a PLC alarm text list (`From`, `To`, one `Text [language]` column per project language); the list's default entry (the text for every value no other row has) is the row with `From` = `Default` and an empty `To`. Openness only reads and writes all lists of an HMI at once (as TIA Portal's YAML export), so a write starts from a fresh export, changes only the lists being written, imports that and checks what TIA Portal made of it; removing a row deletes that entry (not when writing a tree read from another project). A new CSV creates a list, but only next to an existing one: create the HMI's first list in TIA Portal. Show a list on a screen with a SymbolicIOField's `"ResourceList": "<list>"`. System text lists are not exported.
 
 Classic WinCC objects are native Openness XML (the `DocumentInfo` block is left out so an unchanged object reads back identically). They are written in dependency order (text lists, tag tables, templates and pop-ups, screens); a screen whose `<Number>` is already used by another screen is refused before the import, since TIA Portal V21 terminates itself on that. Graphic lists are not exported: exporting one crashed TIA Portal V21 (`InvalidCastException` in `UpdateOpenLinks`); a full read reports them as SKIPPED.
 
