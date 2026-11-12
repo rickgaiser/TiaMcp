@@ -62,6 +62,8 @@ public sealed partial class TiaConnection
                 var hmi = GetHmiSoftware(device);
                 return AllHmiScreens(hmi.Screens, hmi.ScreenGroups).Select(s => (s.Name, One(s)));
             }
+            case MarkTarget.HmiTextList:
+                return GetHmiSoftware(device).HmiTextLists.Select(l => (l.Name, One(l)));
             case MarkTarget.HmiAlarmClasses:
                 return new[] { ("", (IEnumerable<IEngineeringObject>)GetHmiSoftware(device).AlarmClasses) };
             case MarkTarget.HmiDiscreteAlarms:

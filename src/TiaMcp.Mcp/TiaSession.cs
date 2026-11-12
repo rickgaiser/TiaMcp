@@ -437,6 +437,26 @@ public sealed class TiaSession
         return Change(() => _connection.WritePlcAlarmTextLists(plcName, lists, deleteMissing, dryRun));
     }
 
+    public Task<IReadOnlyList<string>> ListHmiTextListNamesAsync(string hmiName)
+    {
+        return Read(() => _connection.ListHmiTextListNames(hmiName));
+    }
+
+    public Task<PlcAlarmTextListsResult> ReadHmiTextListsAsync(string hmiName)
+    {
+        return Read(() => _connection.ReadHmiTextLists(hmiName));
+    }
+
+    public Task<PlcAlarmTextWriteResult> WriteHmiTextListsAsync(string hmiName, IReadOnlyList<PlcAlarmTextList> lists, bool deleteMissing, bool dryRun)
+    {
+        return Change(() => _connection.WriteHmiTextLists(hmiName, lists, deleteMissing, dryRun));
+    }
+
+    public Task<SimpleResult> DeleteHmiTextListAsync(string hmiName, string listName)
+    {
+        return Change(() => _connection.DeleteHmiTextList(hmiName, listName));
+    }
+
     public Task<IReadOnlyList<HmiTagTableSummary>> ListHmiTagTablesAsync(string hmiName)
     {
         return Read(() => _connection.ListHmiTagTables(hmiName));
