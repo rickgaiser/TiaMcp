@@ -117,6 +117,7 @@ public sealed class SourceTreeManifestTests : IDisposable
     [InlineData("D/Program blocks/Main.stl-networks.xml", "s7dcl")]
     [InlineData("D/Program blocks/Seq.graph.il", "graph.il")]
     [InlineData("D/Program blocks/Calc.awl", "awl")]
+    [InlineData("D/Scripts/GlobalModule.js", "js")]
     [InlineData("D/PLC tags/Tags.csv", "csv")]
     [InlineData("D/Screens/Start.XML", "xml")]
     public void FormatOf_GroupsFilesByFormat(string path, string format)

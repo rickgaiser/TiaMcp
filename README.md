@@ -26,6 +26,7 @@ Special features that make TiaMcp fast for LLM's and human-readable friendly:
 | HMI tag table (WinCC Unified) | `.csv`, Excel-compatible (synthesized) | Yes | Yes |
 | HMI alarms (WinCC Unified) | `.csv`, Excel-compatible (synthesized) | Yes | Yes |
 | Screen (WinCC Unified), incl. faceplates | `.json` (synthesized from the object model) | Yes | Yes |
+| Global script module (WinCC Unified) | `.js`, native Openness export | Yes | Read-only |
 | PLC alarm text list (user list) | `.csv`, Excel-compatible (synthesized from TIA's Excel export) | Yes | Yes (existing lists) |
 | Text list (WinCC Unified) | `.csv`, Excel-compatible (synthesized from TIA's YAML export) | Yes | Yes |
 | Classic WinCC (Comfort/Advanced/RT Advanced): screens, screen templates, pop-up screens, tag tables, text lists | `.xml`, native Openness XML | Yes | Yes |
@@ -199,7 +200,7 @@ A new `.graph.il` file in the source tree is created by cloning an existing GRAP
 
 ## Source tree
 
-`read_source_tree` exports PLC blocks, tag tables, UDTs and alarm text lists, WinCC Unified HMI tag tables, text lists, screens and alarms, and classic WinCC screens, screen templates, pop-up screens, tag tables and text lists to disk, in folders mirroring the TIA Portal project tree — the whole project, or only the items, groups or sections (`Screens`, `HMI tags`) you name:
+`read_source_tree` exports PLC blocks, tag tables, UDTs and alarm text lists, WinCC Unified HMI tag tables, text lists, screens, global script modules and alarms, and classic WinCC screens, screen templates, pop-up screens, tag tables and text lists to disk, in folders mirroring the TIA Portal project tree — the whole project, or only the items, groups or sections (`Screens`, `HMI tags`) you name:
 
 ```
 <targetDirectory>/
@@ -220,6 +221,8 @@ A new `.graph.il` file in the source tree is created by cloning an existing GRAP
       DiscreteAlarms.csv
       AnalogAlarms.csv
       AlarmClasses.csv
+    Scripts/                                      (Unified global modules; read-only)
+      GlobalModule.js
     Screens/<group path>/
       Overview.json/xml                           (Unified/classic)
     Screen templates/<group path>/                (classic only)
@@ -235,6 +238,8 @@ A new `.graph.il` file in the source tree is created by cloning an existing GRAP
 ```
 
 Each PLC and HMI is named as TIA Portal's project tree shows it: a PLC by its CPU (the S7 station above it isn't shown), an HMI on a PC station or panel by that station (`PC_1`, not its `HMI_RT_1`). A station holding more than one software (an HMI and a software PLC) keeps the software names. These names are the folders and the `=== ... ===` headers; every tool also accepts the software's own name. A tree read by an older TiaMcp has its folders moved to the new names on the next read or write. `project_status` lists both names per software.
+
+WinCC Unified global script modules are exported as `Scripts/<module>.js`. They are read-only: `write_source_tree` refuses an edited or new module. Create, change or delete modules in TIA Portal, then read them again.
 
 A `/` in a group name gives a folder per part (`Valve fwd / rev` → `Valve fwd/ rev/`), and folder names lose trailing spaces and dots, as Windows does. A new file in such a folder goes to the group read into it; the group tools take the name as it is (`groupPath: "Valve fwd / rev/Sub"`).
 

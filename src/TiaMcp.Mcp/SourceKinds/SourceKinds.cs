@@ -20,6 +20,7 @@ internal static class SourceKinds
         new HmiTagTableKind(),
         new HmiTextListKind(),
         new HmiScreenKind(),
+        new HmiGlobalScriptKind(),
         HmiAlarmsKind.Classes,
         HmiAlarmsKind.Discrete,
         HmiAlarmsKind.Analog,
@@ -32,7 +33,7 @@ internal static class SourceKinds
     };
 
     // The order of list_project and _export_summary.txt, which differs from the write order.
-    private static readonly string[] ListOrder = { "block", "tag table", "udt", "alarm text list", "HMI tag table", "HMI text list", "HMI screen template", "HMI pop-up screen", "HMI screen", "HMI DiscreteAlarms", "HMI AnalogAlarms", "HMI AlarmClasses" };
+    private static readonly string[] ListOrder = { "block", "tag table", "udt", "alarm text list", "HMI tag table", "HMI text list", "HMI screen template", "HMI pop-up screen", "HMI screen", "HMI global script module", "HMI DiscreteAlarms", "HMI AnalogAlarms", "HMI AlarmClasses" };
 
     public static IEnumerable<ISourceKind> Of(DeviceFamily family) => All.Where(k => k.Family == family);
 

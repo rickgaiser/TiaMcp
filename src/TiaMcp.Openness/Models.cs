@@ -85,6 +85,8 @@ public sealed record PlcAlarmTextWriteResult(bool Success, IReadOnlyList<PlcAlar
 
 public sealed record HmiScreenSummary(string HmiName, string GroupPath, string Name, int ScreenNumber, long Width, long Height, int ItemCount);
 
+public sealed record HmiScriptModuleSummary(string HmiName, string Name);
+
 // Screens travel as JSON text (see HmiScreenConverter).
 public sealed record HmiScreenResult(bool Success, string? Json, string? Error);
 
