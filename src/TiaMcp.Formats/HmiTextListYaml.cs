@@ -143,6 +143,7 @@ public static class HmiTextListYaml
         var nextKey = model.LibraryEntries.Entries.Select(e => Regex.Match(e.Key.Value, @"^Text_(\d+)$"))
             .Where(m => m.Success).Select(m => int.Parse(m.Groups[1].Value)).DefaultIfEmpty(-1).Max() + 1;
         var changes = new List<TextListChange>();
+        var deletedTexts = new List<YMap>();
         foreach (var list in lists)
         {
             var node = model.FindList(list.Name);
@@ -205,7 +206,7 @@ public static class HmiTextListYaml
             {
                 if (!deleteMissing) { result.Add(old.Node); continue; }
                 change.Deleted.Add($"{Range(old.From, old.To)}: {model.TextsOf(old.Text).FirstOrDefault()}");
-                RemoveText(model, old);
+                if (old.Text != null) deletedTexts.Add(old.Text);
             }
 
             // Unchanged lists keep their entry names; a written one is numbered as TIA Portal numbers them.
@@ -217,6 +218,7 @@ public static class HmiTextListYaml
             }
             changes.Add(change);
         }
+        RemoveTexts(model, deletedTexts);
         return new HmiTextListPatch(SimpleYaml.Emit(model.Lists), SimpleYaml.Emit(model.Library), changes);
     }
 
@@ -246,14 +248,17 @@ public static class HmiTextListYaml
         text.Set("Text", updated);
     }
 
-    // Drops a deleted entry's library text, unless another entry still refers to it.
-    private static void RemoveText(Model model, Entry entry)
+    // Drops the library texts of deleted entries that no entry refers to any more, once every list
+    // is written. References are compared as text: resolving them would trip over a text removed
+    // before (deleting two entries of a list did).
+    private static void RemoveTexts(Model model, IReadOnlyCollection<YMap> deleted)
     {
-        if (entry.Text == null) return;
-        var reference = Scalar(entry.Node, "Text");
-        var stillUsed = model.AllLists.Where(l => l.Value is YMap).SelectMany(l => model.EntriesOf((YMap)l.Value))
-            .Count(e => Scalar(e.Node, "Text") == reference) > 1;
-        if (!stillUsed) model.LibraryEntries.Entries.RemoveAll(e => ReferenceEquals(e.Value, entry.Text));
+        if (deleted.Count == 0) return;
+        var referenced = new HashSet<string>(model.AllLists.Select(l => l.Value).OfType<YMap>()
+            .SelectMany(l => (l.Get("Entries") as YMap)?.Entries ?? new List<KeyValuePair<YScalar, YNode>>())
+            .Select(e => e.Value is YMap node ? Scalar(node, "Text") : null).OfType<string>(), StringComparer.Ordinal);
+        model.LibraryEntries.Entries.RemoveAll(e => deleted.Any(d => ReferenceEquals(d, e.Value))
+            && !referenced.Contains($"{model.LibraryName}.{e.Key.Value}"));
     }
 
     private static bool IsDefault(PlcAlarmTextEntry entry) => entry.From == AlarmTextListCsv.DefaultEntry;

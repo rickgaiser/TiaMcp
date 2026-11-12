@@ -81,6 +81,21 @@ public class HmiTextListYamlTests
     }
 
     [Fact]
+    public void Patch_DeletesSeveralEntriesOfAList()
+    {
+        var emptied = new PlcAlarmTextList("PumpStates", new[] { "en-US" }, new[] { new PlcAlarmTextEntry("9", "9", new[] { "New" }) });
+
+        var patch = HmiTextListYaml.Patch(Lists, Library, new[] { emptied }, deleteMissing: true);
+
+        Assert.Equal(2, patch.Changes[0].Deleted.Count);
+        Assert.DoesNotContain("Stopped", patch.LibraryYaml);
+        Assert.DoesNotContain("Running", patch.LibraryYaml);
+        Assert.Contains("Open", patch.LibraryYaml);
+        var pump = HmiTextListYaml.Read(patch.ListsYaml, patch.LibraryYaml).Single(l => l.Name == "PumpStates");
+        Assert.Equal(new[] { "9" }, pump.Entries.Select(e => e.From));
+    }
+
+    [Fact]
     public void Patch_WithoutDeleteMissing_KeepsEntriesNotGiven()
     {
         var edited = new PlcAlarmTextList("PumpStates", new[] { "en-US" }, new[] { new PlcAlarmTextEntry("9", "9", new[] { "New" }) });
