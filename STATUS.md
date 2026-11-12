@@ -48,7 +48,7 @@ For object types TiaMcp doesn't support yet, the notes say what the Openness API
 | Screen item (incl. faceplate) | ✅ | ✅ | ✅ | ✅ | ❌ | ✅ | Through the screen JSON: properties, dynamizations, events, faceplate interface. No z-order control |
 | Screen group | ✅ | ✅ | — | — | ✅ | ✅ | Empty groups are listed as `Group/` |
 | Script module (global) | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | Openness: import/export |
-| Text list | ✅ | ✅ | ✅ | ✅ | ❌ | ✅ | `.csv` per list, the columns of a PLC alarm text list; written by patching a fresh YAML export of all lists (a removed row deletes the entry). The HMI needs one list made in TIA Portal before others can be created. Openness has no rename |
+| Text list | ✅ | ✅ | ✅ | ✅ | ❌ | ✅ | `.csv` per list, the columns of a PLC alarm text list (the default entry is a `Default` row); written by patching a fresh YAML export of all lists (a removed row deletes the entry). The HMI needs one list made in TIA Portal before others can be created. Openness has no rename |
 | Graphic list | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | Openness: delete, import/export |
 | HMI connection | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | Only checked when writing tags. Openness: create, delete |
 | Data log / alarm log / logging tag | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | Openness: create, delete |

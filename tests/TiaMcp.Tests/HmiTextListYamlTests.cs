@@ -129,6 +129,81 @@ public class HmiTextListYamlTests
         Assert.Contains("can't write back unchanged", ex.Message);
     }
 
+    // PumpStates with a default entry next to the entry for value 0, as TIA Portal exports it.
+    private static readonly string ListsWithDefault = Lists.Replace(
+        "          Text_list_entry_1:\r\n            Type: Range",
+        "          Text_list_entry_1:\r\n            IsDefaultEntry: True\r\n            Text: MyTextLibrary.Text_3\r\n" +
+        "          Text_list_entry_2:\r\n            Type: Range");
+
+    private static readonly string LibraryWithDefault = Library +
+        "      Text_3:\r\n        Text:\r\n        - Unknown\r\n        - Unbekannt\r\n";
+
+    [Fact]
+    public void Read_KeepsTheDefaultEntryApartFromValue0()
+    {
+        var pump = HmiTextListYaml.Read(ListsWithDefault, LibraryWithDefault)[0];
+
+        Assert.Equal(new[] { ("0", "0"), ("Default", ""), ("1", "5") }, pump.Entries.Select(e => (e.From, e.To)));
+        Assert.Equal(new[] { "Unknown", "Unbekannt" }, pump.Entries[1].Texts);
+        var csv = AlarmTextListCsv.Format(pump);
+        Assert.Contains("Default,,Unknown,Unbekannt", csv);
+        Assert.Equal(pump.Entries.Select(e => (e.From, e.To)), AlarmTextListCsv.Parse("PumpStates", csv, allowDefault: true).Entries.Select(e => (e.From, e.To)));
+    }
+
+    [Fact]
+    public void Patch_WithADefaultEntry_UnchangedGivesTheExportBack()
+    {
+        var lists = HmiTextListYaml.Read(ListsWithDefault, LibraryWithDefault);
+
+        var patch = HmiTextListYaml.Patch(ListsWithDefault, LibraryWithDefault, lists, deleteMissing: true);
+
+        Assert.All(patch.Changes, c => Assert.False(c.Any));
+        Assert.Equal(ListsWithDefault, patch.ListsYaml);
+    }
+
+    [Fact]
+    public void Patch_AddsAndChangesTheDefaultEntry()
+    {
+        var added = new PlcAlarmTextList("ValveStates", new[] { "en-US" }, new[]
+        {
+            new PlcAlarmTextEntry("10", "10", new[] { "Open" }),
+            new PlcAlarmTextEntry("Default", "", new[] { "Unknown" }),
+        });
+        var patch = HmiTextListYaml.Patch(Lists, Library, new[] { added }, deleteMissing: true);
+
+        Assert.Equal("Default: [en-US] Unknown | [de-DE] ", Assert.Single(patch.Changes[0].Added));
+        Assert.Contains("          Text_list_entry_1:\r\n            IsDefaultEntry: True\r\n            Text: MyTextLibrary.Text_3\r\n", patch.ListsYaml);
+        var valve = HmiTextListYaml.Read(patch.ListsYaml, patch.LibraryYaml).Single(l => l.Name == "ValveStates");
+        Assert.Equal(("Default", "Unknown"), (valve.Entries[1].From, valve.Entries[1].Texts[0]));
+
+        var changed = new PlcAlarmTextList("PumpStates", new[] { "en-US" }, new[]
+        {
+            new PlcAlarmTextEntry("0", "0", new[] { "Stopped" }),
+            new PlcAlarmTextEntry("Default", "", new[] { "Other" }),
+            new PlcAlarmTextEntry("1", "5", new[] { "Running: fast" }),
+        });
+        var patch2 = HmiTextListYaml.Patch(ListsWithDefault, LibraryWithDefault, new[] { changed }, deleteMissing: true);
+        Assert.Equal("Default: [en-US] 'Unknown' -> 'Other'", Assert.Single(patch2.Changes[0].Changed));
+        Assert.Empty(patch2.Changes[0].Added);
+        Assert.Empty(patch2.Changes[0].Deleted);
+    }
+
+    [Theory]
+    [InlineData("From,To,Text [en-US]\r\nDefault,,a\r\ndefault,,b\r\n", "default entry appears 2 times")]
+    [InlineData("From,To,Text [en-US]\r\nDefault,3,a\r\n", "has no To")]
+    [InlineData("From,To,Text [en-US]\r\nOther,,a\r\n", "not a number or 'Default'")]
+    public void Csv_RefusesABadDefaultRow(string csv, string message)
+    {
+        var ex = Assert.Throws<FormatException>(() => AlarmTextListCsv.Parse("L", csv, allowDefault: true));
+        Assert.Contains(message, ex.Message);
+    }
+
+    [Fact]
+    public void Csv_DefaultRowOnlyWhereAllowed()
+    {
+        Assert.Throws<FormatException>(() => AlarmTextListCsv.Parse("L", "From,To,Text [en-US]\r\nDefault,,a\r\n"));
+    }
+
     [Theory]
     [InlineData("key: |\n  block\n")]
     [InlineData("key: &a value\n")]

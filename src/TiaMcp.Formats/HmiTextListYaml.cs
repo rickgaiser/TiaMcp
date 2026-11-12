@@ -71,9 +71,11 @@ public static class HmiTextListYaml
             foreach (var e in entries.Entries)
             {
                 if (e.Value is not YMap node) throw new FormatException($"entry '{e.Key.Value}' is not a mapping");
-                // TIA Portal leaves a value of 0 out.
-                var from = Scalar(node, "FromValue") ?? "0";
-                var to = Scalar(node, "ToValue") ?? "0";
+                // The default entry has "IsDefaultEntry: True" and no values. TIA Portal leaves a
+                // value of 0 out.
+                var isDefault = string.Equals(Scalar(node, "IsDefaultEntry"), "True", StringComparison.OrdinalIgnoreCase);
+                var from = isDefault ? AlarmTextListCsv.DefaultEntry : Scalar(node, "FromValue") ?? "0";
+                var to = isDefault ? "" : Scalar(node, "ToValue") ?? "0";
                 result.Add(new Entry(node, from, to, ResolveText(Scalar(node, "Text"))));
             }
             return result;
@@ -178,13 +180,18 @@ public static class HmiTextListYaml
                 }
                 else
                 {
-                    // As TIA Portal writes an entry: a range is "Type: Range", Value is From, and a
-                    // value of 0 is left out. Without the Type, TIA Portal drops a range entry.
+                    // As TIA Portal writes an entry: the default is "IsDefaultEntry: True" without
+                    // values; a range is "Type: Range", Value is From, and a value of 0 is left
+                    // out. Without the Type, TIA Portal drops a range entry.
                     var entry = new YMap();
-                    if (given.From != given.To) entry.Set("Type", new YScalar("Range"));
-                    if (given.From != "0") entry.Set("Value", new YScalar(given.From));
-                    if (given.From != "0") entry.Set("FromValue", new YScalar(given.From));
-                    if (given.To != "0") entry.Set("ToValue", new YScalar(given.To));
+                    if (IsDefault(given)) entry.Set("IsDefaultEntry", new YScalar("True", ' '));
+                    else
+                    {
+                        if (given.From != given.To) entry.Set("Type", new YScalar("Range"));
+                        if (given.From != "0") entry.Set("Value", new YScalar(given.From));
+                        if (given.From != "0") entry.Set("FromValue", new YScalar(given.From));
+                        if (given.To != "0") entry.Set("ToValue", new YScalar(given.To));
+                    }
                     var texts = new string[model.Languages.Count];
                     for (var i = 0; i < texts.Length; i++) texts[i] = "";
                     for (var i = 0; i < list.Languages.Count; i++)
@@ -249,7 +256,9 @@ public static class HmiTextListYaml
         if (!stillUsed) model.LibraryEntries.Entries.RemoveAll(e => ReferenceEquals(e.Value, entry.Text));
     }
 
-    private static string Range(string from, string to) => from == to ? from : $"{from}..{to}";
+    private static bool IsDefault(PlcAlarmTextEntry entry) => entry.From == AlarmTextListCsv.DefaultEntry;
+
+    private static string Range(string from, string to) => from == to || to.Length == 0 ? from : $"{from}..{to}";
 
     private static void CheckRoundTrip(string yaml, string what)
     {

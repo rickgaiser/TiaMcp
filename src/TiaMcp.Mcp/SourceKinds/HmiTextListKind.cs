@@ -4,7 +4,7 @@ using static TiaMcp.Mcp.SourceTree;
 namespace TiaMcp.Mcp;
 
 // WinCC Unified text lists: one CSV per list in 'Text lists/' (the same columns as a PLC alarm
-// text list, see AlarmTextListCsv), no groups. Openness reads and writes them only all at once,
+// text list, see AlarmTextListCsv, plus a "Default" row for the default entry), no groups. Openness reads and writes them only all at once,
 // through the export/import of every list of the HMI (see TiaConnection.HmiTextLists); a new CSV
 // creates a list. Classic WinCC text lists share the kind name and folder, but are an HmiClassicKind.
 internal sealed class HmiTextListKind : ISourceKind
@@ -54,7 +54,7 @@ internal sealed class HmiTextListKind : ISourceKind
             var exists = existing.Contains(item.ItemName);
             if (exists && !context.OverwriteExisting) { log.Skipped.Add($"{label} - already exists, overwriteExisting=false"); continue; }
             if (!exists && !context.CreateMissing) { log.Skipped.Add($"{label} - does not exist, createMissing=false"); continue; }
-            try { lists.Add((item, AlarmTextListCsv.Parse(item.ItemName, File.ReadAllText(file)))); }
+            try { lists.Add((item, AlarmTextListCsv.Parse(item.ItemName, File.ReadAllText(file), allowDefault: true))); }
             catch (FormatException ex) { log.Failed.Add($"{label}: {ex.Message}"); }
         }
         if (lists.Count == 0) return log;
