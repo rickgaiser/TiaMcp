@@ -532,6 +532,16 @@ public sealed class TiaSession
         return Read(() => _connection.ListHmiScreens(hmiName));
     }
 
+    public Task<IReadOnlyList<HmiScriptModuleSummary>> ListHmiScriptModulesAsync(string hmiName)
+    {
+        return _sta.InvokeAsync(() => _connection.ListHmiScriptModules(hmiName));
+    }
+
+    public Task<IReadOnlyList<(HmiScriptModuleSummary Module, ExportResult Result)>> ReadHmiScriptModulesAsync(string hmiName, Func<string, bool>? include = null, ExportingItem? exporting = null)
+    {
+        return _sta.InvokeAsync(() => _connection.ReadHmiScriptModules(hmiName, include, exporting));
+    }
+
     public Task<IReadOnlyList<string>> ListHmiScreenGroupsAsync(string hmiName)
     {
         return Read(() => _connection.ListHmiScreenGroups(hmiName));
