@@ -8,7 +8,7 @@ TiaMcp makes a TIA Portal project workable for an LLM by mirroring it as a **sou
 2. **The tree mirrors the project tree:** `<Device>/<Section>/<group path>/<Item>.<ext>`, using the names TIA Portal shows: the PLC or HMI as its project tree names it (a PLC by its CPU, a PC station or panel by its own name; `TiaConnection.ProjectTreeName`), and the section names (`Program blocks`, `PLC tags`, `Screens`, ...). Tools take that name or the software's own name.
 3. **Every object becomes a file when Openness allows it.** If Openness has no export, build the file from the object model (Unified screens, HMI tags, alarms).
 4. **The format is chosen from this ladder, best option first:**
-   1. TIA's own text format (`.s7dcl/.s7res`, `.awl`).
+   1. TIA's own text format (`.s7dcl/.s7res`, `.awl`, Unified script modules as `.js`).
    2. A standard text format: CSV for anything tabular (Excel-compatible, UTF-8 with BOM), JSON for object models.
    3. A small text DSL, only when no standard format fits (GRAPH `.graph.il`).
    4. Native Openness XML, as the fallback for a kind that doesn't have a converter yet.

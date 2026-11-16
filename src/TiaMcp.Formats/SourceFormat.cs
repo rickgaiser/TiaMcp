@@ -15,6 +15,9 @@ public static class SourceFormat
     // Whole-block STL, TIA Portal's 'Generate source' text.
     public const string Awl = "awl";
 
+    // WinCC Unified global script modules, as exported by Openness.
+    public const string Js = "js";
+
     // Tables, converted from the raw XML or the object model.
     public const string Csv = "csv";
 
@@ -24,7 +27,7 @@ public static class SourceFormat
     // The raw SimaticML export, as Openness writes and imports it (without DocumentInfo).
     public const string Xml = "xml";
 
-    public static readonly IReadOnlyList<string> All = new[] { S7dcl, GraphIL, Awl, Csv, Json, Xml };
+    public static readonly IReadOnlyList<string> All = new[] { S7dcl, GraphIL, Awl, Js, Csv, Json, Xml };
 
     // The file extension of a format's main file.
     public static string Extension(string format) => "." + format;
