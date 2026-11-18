@@ -27,7 +27,7 @@ internal sealed class BlockKind : ISourceKind
 
     public async Task<IReadOnlyList<ListedEntry>> List(TiaSession session, string plc) =>
         (await session.ListBlocksAsync(plc))
-            .Select(b => new ListedEntry(b.GroupPath, b.Name, $"{Describe(Name, b.GroupPath, b.Name)} [{b.Language}]{(b.Consistent ? "" : " INCONSISTENT")}", FormatsOf(b.Language), inconsistent: !b.Consistent))
+            .Select(b => new ListedEntry(b.GroupPath, b.Name, $"{Describe(Name, b.GroupPath, b.Name)} [{b.Language}]{(b.Number == null ? "" : $" {b.Number} {BlockNumbers.Mode(b.AutoNumber)}")}{(b.Consistent ? "" : " INCONSISTENT")}", FormatsOf(b.Language), inconsistent: !b.Consistent))
             .ToList();
 
     public async Task Export(TiaSession session, string plc, Func<string, string, IReadOnlyCollection<string>?> formats, ExportOptions options, List<ExportedItem> items, ExportingItem? exporting)
@@ -35,6 +35,7 @@ internal sealed class BlockKind : ISourceKind
         foreach (var (b, result) in await session.ReadAllBlocksAsync(plc, formats, exporting))
         {
             var item = ExportedItem.FromDocuments(plc, Name, b.GroupPath, b.Name, result, FormatsOf(b.Language));
+            item.Number = b.Number;
             foreach (var dcl in result.Documents.Where(d => d.FileName.EndsWith(".s7dcl", StringComparison.OrdinalIgnoreCase)))
                 item.Warnings.AddRange(S7dclSource.FindWriteProblems(dcl.Content));
             items.Add(item);

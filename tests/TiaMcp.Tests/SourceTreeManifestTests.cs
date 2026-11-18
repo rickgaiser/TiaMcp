@@ -19,6 +19,20 @@ public sealed class SourceTreeManifestTests : IDisposable
     }
 
     [Fact]
+    public void SaveLoad_KeepsBlockNumber_AndLeavesItOutForOtherKinds()
+    {
+        var manifest = new SourceTreeManifest();
+        manifest.Set(new SourceTreeItem { Device = "PLC_1", Kind = "block", Name = "Pump", Number = "FB44" });
+        manifest.Set(new SourceTreeItem { Device = "PLC_1", Kind = "tag table", Name = "Tags" });
+        manifest.Save(_root);
+
+        var loaded = SourceTreeManifest.Load(_root)!;
+        Assert.Equal("FB44", loaded.Find("PLC_1", "block", "Pump")!.Number);
+        Assert.Null(loaded.Find("PLC_1", "tag table", "Tags")!.Number);
+        Assert.Single(System.Text.RegularExpressions.Regex.Matches(ManifestText, "\"number\""));
+    }
+
+    [Fact]
     public void Load_Version1_ConvertsFilesAndFormats()
     {
         File.WriteAllText(Path.Combine(_root, SourceTreeManifest.FileName), """

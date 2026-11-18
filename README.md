@@ -77,7 +77,7 @@ All MCP tools exposed by the server, grouped by area.
 | `project_status` | Report unsaved-changes state, author, last-saved info; for a Multiuser local session also whether the server has newer changes, and the marked objects. Openness can't refresh a local session: do that in the TIA Portal GUI |
 | `save_project` / `save_project_as` | Save in place, or save a copy to a new folder; for Multiuser local sessions, save is local-only and Save As is unsupported |
 | `close_project` | Close the connected project; closing a Multiuser local session does not commit it to the server |
-| `list_project` | List PLC and HMI software with their blocks (language, consistency), UDTs, tag tables and empty groups — names only, fast; filter by text or software |
+| `list_project` | List PLC and HMI software with their blocks (language, number and numbering mode such as `FB44 auto`, consistency), UDTs, tag tables and empty groups — names only, fast; filter by text, block number (`FB44`), numbering mode (`auto`/`fixed`) or software |
 
 ### PLC blocks
 
@@ -86,6 +86,7 @@ All MCP tools exposed by the server, grouped by area.
 | `create_plc_instance_db` | Create an instance-DB bound to an FB type, without writing its source |
 | `delete_plc_block` | Delete a single block by name (any language, including GRAPH and instance-DBs) — recovery path for a block stuck INCONSISTENT |
 | `rename_plc_block` | Rename an existing block (any language, including instance-DBs) in place — safe even with real dependents |
+| `renumber_plc_blocks` | Give many blocks a fixed number (or automatic numbering) in one call, e.g. `Roaster_CM = DB10`; swaps are ordered, taken numbers and blocks whose numbering TIA Portal fixes (error OBs) refused per block, `dryRun` previews. A renumbered DB starts with its start values after a download |
 | `create_plc_group` / `delete_plc_group` / `rename_plc_group` | Manage block group folders |
 | `compile` | Compile a PLC's or an HMI's software (WinCC Unified or classic), report errors/warnings with their path (block > network, screen > item > property) |
 

@@ -332,6 +332,13 @@ public sealed class TiaSession
         return Change(() => _connection.RenamePlcBlock(plcName, blockName, newName));
     }
 
+    public Task<IReadOnlyList<BlockNumberChange>> RenumberBlocksAsync(string plcName, IReadOnlyList<BlockNumberRequest> requests, bool dryRun)
+    {
+        return dryRun
+            ? Read(() => _connection.RenumberBlocks(plcName, requests, dryRun))
+            : Change(() => _connection.RenumberBlocks(plcName, requests, dryRun));
+    }
+
     public Task<bool> TypeGroupExistsAsync(string plcName, string groupPath)
     {
         return Read(() => _connection.TypeGroupExists(plcName, groupPath));
