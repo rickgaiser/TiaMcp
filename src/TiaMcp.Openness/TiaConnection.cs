@@ -621,7 +621,8 @@ public sealed partial class TiaConnection : IDisposable
         foreach (PlcBlock block in blocks)
         {
             if (block.ProgrammingLanguage == ProgrammingLanguage.Undef) continue;
-            result.Add(new BlockSummary(plcName, groupPath, block.Name, block.ProgrammingLanguage.ToString(), block.IsConsistent));
+            var (number, auto) = BlockNumbers.Of(block);
+            result.Add(new BlockSummary(plcName, groupPath, block.Name, block.ProgrammingLanguage.ToString(), block.IsConsistent, number, auto));
             objects?.Add(block);
         }
 

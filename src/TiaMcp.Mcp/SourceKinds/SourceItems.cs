@@ -52,6 +52,9 @@ internal sealed class ExportedItem
     public IReadOnlyList<string> Formats { get; }
     public bool Ok => Error == null;
 
+    // A block's number as the PLC addresses it ("FB44"); null for other kinds.
+    public string? Number { get; set; }
+
     // What would go wrong writing the item back as read; read_source_tree reports these.
     public List<string> Warnings { get; } = new();
 

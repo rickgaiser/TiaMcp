@@ -4,7 +4,17 @@ using System.Collections.Generic;
 namespace TiaMcp.Openness;
 
 
-public sealed record BlockSummary(string PlcName, string GroupPath, string Name, string Language, bool Consistent);
+// Number: the block as the PLC addresses it, e.g. "FB44" or "DB6" (see BlockNumbers); null when
+// its type has no number space.
+public sealed record BlockSummary(string PlcName, string GroupPath, string Name, string Language, bool Consistent, string? Number = null, bool AutoNumber = true);
+
+// One line of renumber_plc_blocks: a block and the number it should get, null for automatic
+// numbering. Space: the number space the line named ("DB" in "DB6"), checked against the block.
+public sealed record BlockNumberRequest(string Block, int? Number, string? Space = null);
+
+// What renumbering one block did (or, in a dry run, would do). From/To as "DB6"; "auto" marks
+// automatic numbering ("DB6 auto"). Error: why it wasn't renumbered; Note: e.g. unchanged.
+public sealed record BlockNumberChange(string Block, string? From, string? To, string? Error, string? Note = null);
 
 public sealed record BlockDocument(string FileName, string Content);
 

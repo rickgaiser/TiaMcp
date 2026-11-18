@@ -287,6 +287,57 @@ public sealed partial class TiaTools
         return result.Success ? "Success" : $"FAILED: {result.Error}";
     });
 
+    [McpServerTool(Name = "renumber_plc_blocks")]
+    [Description(@"Give blocks a fixed number, or set them back to automatic numbering - any number of blocks in one call. list_project shows each block's number (""block 'Group/Name' [SCL] FB44""); OBs, FBs, FCs and DBs each have their own numbers (instance, global and array DBs share the DB numbers). Callers follow by themselves (TIA Portal refers to blocks by identity), so call compile afterward.
+
+A number taken by a block that keeps it is refused for that block only; numbers swapped or shifted among the listed blocks are done in the right order. dryRun shows what would change. Each line of the result: 'Name: DB6 auto -> DB10 fixed' ('auto': numbered automatically). list_project filter=""auto"" lists the blocks still numbered automatically. Some blocks' numbering can't be changed (e.g. error OBs such as OB86, whose number comes with their type); a dry run reports those too.
+
+Confirm with the user first: in the PLC a renumbered block is a different block. Downloading it starts a DB with its start values (actual values lost), and anything that addresses a block by number (SCADA/HMI absolute addresses such as DB6.DBX3.2, an online view) has to follow. The blocks' files in a source tree carry the number (S7_BlockNumber, XML <Number>): read them again before writing them.")]
+    public Task<string> RenumberPlcBlocks(
+        [Description("PLC software name, from list_project")] string plcName,
+        [Description("One block per line: 'Name = 44', 'Name = DB44' (the type is then checked) or 'Name = auto'. The name may be the list_project label 'Group/Name'.")] string numbers,
+        [Description("Only show what would change. Default false.")] bool dryRun = false) => Safe(async () =>
+    {
+        var requests = new List<BlockNumberRequest>();
+        var bad = new List<string>();
+        foreach (var raw in numbers.Split('\n').Select(l => l.Trim()).Where(l => l.Length > 0))
+        {
+            var request = ParseNumberLine(raw);
+            if (request == null) bad.Add(raw); else requests.Add(request);
+        }
+        if (bad.Count > 0)
+            return $"Not understood: {string.Join(" | ", bad.Select(b => $"'{b}'"))}. Expected one block per line: 'Name = 44', 'Name = DB44' or 'Name = auto'. Nothing was changed.";
+        if (requests.Count == 0) return "No blocks given. Nothing was changed.";
+
+        var changes = await _session.RenumberBlocksAsync(plcName, requests, dryRun);
+        var done = changes.Where(c => c.Error == null && c.Note == null).ToList();
+        var result = new StringBuilder();
+        result.AppendLine($"{(dryRun ? "Dry run: would renumber" : "Renumbered")} {done.Count} of {changes.Count} block(s) in {plcName}" +
+                          $"{(changes.Count(c => c.Note != null) is > 0 and var same ? $", {same} unchanged" : "")}{(changes.Count(c => c.Error != null) is > 0 and var failed ? $", {failed} failed" : "")}.");
+        foreach (var c in changes)
+        {
+            if (c.Error != null) result.AppendLine($"  FAILED {c.Block}{(c.From == null ? "" : $" ({c.From})")}: {c.Error}");
+            else if (c.Note != null) result.AppendLine($"  {c.Block}: {c.From} ({c.Note})");
+            else result.AppendLine($"  {c.Block}: {c.From} -> {c.To}");
+        }
+        if (done.Count > 0 && !dryRun) result.AppendLine("Call compile. Read these blocks into the source tree again before writing them: their files carry the number.");
+        return result.ToString().TrimEnd();
+    });
+
+    // 'Name = 44', 'Name = DB44', 'Name = auto'; the name may be quoted. Null when not understood.
+    private static BlockNumberRequest? ParseNumberLine(string line)
+    {
+        var eq = line.LastIndexOf('=');
+        if (eq <= 0) return null;
+        var name = line.Substring(0, eq).Trim().Trim('"', '\'').Trim();
+        var value = line.Substring(eq + 1).Trim();
+        if (name.Length == 0) return null;
+        if (string.Equals(value, "auto", StringComparison.OrdinalIgnoreCase)) return new BlockNumberRequest(name, null);
+        var match = Regex.Match(value, @"^(?<space>OB|FB|FC|DB)?\s*(?<number>\d{1,6})$", RegexOptions.IgnoreCase);
+        if (!match.Success) return null;
+        return new BlockNumberRequest(name, int.Parse(match.Groups["number"].Value), match.Groups["space"].Success ? match.Groups["space"].Value.ToUpperInvariant() : null);
+    }
+
     [McpServerTool(Name = "rename_plc_tag")]
     [Description("Rename a single PLC tag in place, in whichever tag table it lives. Unlike changing the name in a tag table CSV in the source tree (which makes a new tag), this keeps references to the tag in blocks intact; blocks show the new name only after compile. Fails if a tag with the new name already exists (names are unique per-PLC).")]
     public Task<string> RenameTag(
@@ -564,18 +615,27 @@ public sealed partial class TiaTools
     });
 
     [McpServerTool(Name = "list_project")]
-    [Description(@"List what the connected project has, per PLC and HMI software ('=== name ===' - the plcName/hmiName other tools take): blocks with their language (INCONSISTENT: needs compile_plc, e.g. before a GRAPH or STL block can be read), UDTs, tag tables, empty tag table groups and alarm text lists; for WinCC Unified the HMI tag tables, text lists, screens, global script modules and alarm files, for classic WinCC the tag tables, text lists, screen templates, pop-up screens and screens. Fast: names only, no source - read_source_tree reads the source. Each item line ends with the formats it can be read in, its own first, e.g. ""tag table 'Tags' [csv, xml]"" (""xml"" is the raw Openness export). Item lines are in _export_summary.txt's format and can be passed to read_source_tree's items as they are.
+    [Description(@"List what the connected project has, per PLC and HMI software ('=== name ===' - the plcName/hmiName other tools take): blocks with their language, number and numbering mode (""block 'Group/Name' [SCL] FB44 auto"": 'auto' numbered automatically, 'fixed' a fixed number), INCONSISTENT: needs compile_plc, e.g. before a GRAPH or STL block can be read), UDTs, tag tables, empty tag table groups and alarm text lists; for WinCC Unified the HMI tag tables, text lists, screens, global script modules and alarm files, for classic WinCC the tag tables, text lists, screen templates, pop-up screens and screens. Fast: names only, no source - read_source_tree reads the source. Each item line ends with the formats it can be read in, its own first, e.g. ""tag table 'Tags' [csv, xml]"" (""xml"" is the raw Openness export). Item lines are in _export_summary.txt's format and can be passed to read_source_tree's items as they are.
 
 Without filter or deviceName, a project of more than 200 items only gets counts per software back; pass targetDirectory to write the full list to '<targetDirectory>/_project_list.txt'.")]
     public Task<string> ListProject(
-        [Description("Optional: only items whose list line contains this text (case-insensitive): a name or group path, a language such as \"[SCL]\", or \"INCONSISTENT\" for the blocks that need a compile")] string? filter = null,
+        [Description("Optional: only items whose list line contains this text (case-insensitive): a name or group path, a language such as \"[SCL]\", a block number such as \"FB44\" or \"DB6\" (that block only, not FB440), \"auto\" or \"fixed\" for the blocks numbered that way, or \"INCONSISTENT\" for the blocks that need a compile")] string? filter = null,
         [Description("Optional: only this PLC or HMI software name")] string? deviceName = null,
         [Description("Optional: directory (e.g. the source tree root) to write the full list to as _project_list.txt")] string? targetDirectory = null) => Safe(async () =>
     {
         if (!_session.IsConnected) return "Not connected. Call tia_connect first.";
 
-        // On the whole list line, so a filter can also pick a language ("[SCL]") or "INCONSISTENT".
-        bool Matches(ListedEntry e) => filter == null || e.Text.IndexOf(filter, StringComparison.OrdinalIgnoreCase) >= 0;
+        // On the whole list line, so a filter can also pick a language ("[SCL]") or "INCONSISTENT". A
+        // block number ("FB44") matches as a whole word, so it finds that one block.
+        var numberFilter = filter != null && Regex.IsMatch(filter.Trim(), @"^(OB|FB|FC|DB)\s*\d+$", RegexOptions.IgnoreCase)
+            ? new Regex($@"\b{Regex.Replace(filter.Trim(), @"\s+", "")}\b", RegexOptions.IgnoreCase)
+            : null;
+        // "auto"/"fixed": the numbering mode after a block number, not a name that holds the word.
+        numberFilter ??= filter?.Trim().ToLowerInvariant() is "auto" or "fixed"
+            ? new Regex($@"\b(OB|FB|FC|DB)\d+ {filter.Trim()}\b", RegexOptions.IgnoreCase)
+            : null;
+        bool Matches(ListedEntry e) => filter == null
+            || (numberFilter != null ? numberFilter.IsMatch(e.Text) : e.Text.IndexOf(filter, StringComparison.OrdinalIgnoreCase) >= 0);
         var list = new StringBuilder();
         var counts = new StringBuilder();
         var total = 0;
@@ -1438,7 +1498,7 @@ Writes '<sourceDirectory>/_import_report.txt' with one CREATED/UPDATED/SKIPPED/F
     {
         foreach (var item in items.Where(i => i.Ok))
         {
-            var entry = new SourceTreeItem { Device = item.Device, Kind = item.Kind, GroupPath = item.GroupPath, Name = item.Name, Formats = item.Formats.ToList() };
+            var entry = new SourceTreeItem { Device = item.Device, Kind = item.Kind, GroupPath = item.GroupPath, Name = item.Name, Formats = item.Formats.ToList(), Number = item.Number };
             foreach (var file in item.Files)
             {
                 entry.Files[file.Path] = new SourceTreeFile { Hash = SourceTreeManifest.Hash(file.Content), Format = SourceTreeManifest.FormatOf(file.Path) };
@@ -1457,7 +1517,7 @@ Writes '<sourceDirectory>/_import_report.txt' with one CREATED/UPDATED/SKIPPED/F
             var dir = Path.Combine(root, ItemDir(item.Device, item.Kind, item.GroupPath));
             var stem = ItemStem(item.Kind, item.Name);
             var previous = manifest.Find(item.Device, item.Kind, item.Name);
-            var entry = new SourceTreeItem { Device = item.Device, Kind = item.Kind, GroupPath = item.GroupPath, Name = item.Name, Formats = item.Formats.ToList() };
+            var entry = new SourceTreeItem { Device = item.Device, Kind = item.Kind, GroupPath = item.GroupPath, Name = item.Name, Formats = item.Formats.ToList(), Number = item.Number };
             if (!item.Ok)
             {
                 entry.Ok = false;
@@ -1524,8 +1584,9 @@ Writes '<sourceDirectory>/_import_report.txt' with one CREATED/UPDATED/SKIPPED/F
             foreach (var item in device.OrderBy(i => SourceKinds.ListIndex(i.Kind)).ThenBy(i => Label(i.GroupPath, i.Name), StringComparer.OrdinalIgnoreCase))
             {
                 var marks = item.Multiuser?.Describe() is { Length: > 0 } m ? $" ({m})" : "";
-                if (item.Ok) { summary.AppendLine($"  OK     {Describe(item.Kind, item.GroupPath, item.Name)}{FormatList(item.Files.Values.Select(f => f.Format).Distinct().ToList())}{marks}"); continue; }
-                summary.AppendLine($"  FAILED {Describe(item.Kind, item.GroupPath, item.Name)}: {item.Error}");
+                var number = item.Number == null ? "" : " " + item.Number;
+                if (item.Ok) { summary.AppendLine($"  OK     {Describe(item.Kind, item.GroupPath, item.Name)}{number}{FormatList(item.Files.Values.Select(f => f.Format).Distinct().ToList())}{marks}"); continue; }
+                summary.AppendLine($"  FAILED {Describe(item.Kind, item.GroupPath, item.Name)}{number}: {item.Error}");
                 if (item.Stale) summary.AppendLine($"  STALE  {Describe(item.Kind, item.GroupPath, item.Name)} - previous export left on disk with a '.stale' suffix, does not reflect current state");
             }
             summary.AppendLine();

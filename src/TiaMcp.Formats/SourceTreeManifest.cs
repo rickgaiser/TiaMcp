@@ -142,6 +142,9 @@ public sealed class SourceTreeItem
     // The formats the item can be read in, friendly format first - as list_project shows them.
     public List<string> Formats { get; set; } = new();
 
+    // A block's number as read ("FB44"); null for other kinds.
+    public string? Number { get; set; }
+
     // Root-relative path ('/'-separated) -> the file as exported.
     public Dictionary<string, SourceTreeFile> Files { get; set; } = new();
 
