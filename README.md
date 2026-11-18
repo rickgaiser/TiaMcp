@@ -86,7 +86,7 @@ All MCP tools exposed by the server, grouped by area.
 | `create_plc_instance_db` | Create an instance-DB bound to an FB type, without writing its source |
 | `delete_plc_block` | Delete a single block by name (any language, including GRAPH and instance-DBs) — recovery path for a block stuck INCONSISTENT |
 | `rename_plc_block` | Rename an existing block (any language, including instance-DBs) in place — safe even with real dependents |
-| `renumber_plc_blocks` | Give many blocks a fixed number (or automatic numbering) in one call, e.g. `Roaster_CM = DB10`; swaps are ordered, taken numbers and blocks whose numbering TIA Portal fixes (error OBs) refused per block, `dryRun` previews. A renumbered DB starts with its start values after a download |
+| `renumber_plc_blocks` | Give many blocks a fixed number (or automatic numbering) in one call, e.g. `Pump_Data = DB10`; swaps are ordered, taken numbers and blocks whose numbering TIA Portal fixes (error OBs) refused per block, `dryRun` previews. A renumbered DB starts with its start values after a download |
 | `create_plc_group` / `delete_plc_group` / `rename_plc_group` | Manage block group folders |
 | `compile` | Compile a PLC's or an HMI's software (WinCC Unified or classic), report errors/warnings with their path (block > network, screen > item > property) |
 
