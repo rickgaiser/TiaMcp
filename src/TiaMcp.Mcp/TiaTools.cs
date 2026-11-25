@@ -1216,7 +1216,7 @@ Writes '<sourceDirectory>/_import_report.txt' with one CREATED/UPDATED/SKIPPED/F
         if (workingCopy && written.Count + touched.Count > 0) progressLog.Phase("read back", total: written.Count + touched.Count);
         if (workingCopy && written.Count > 0)
         {
-            var (exported, _) = await ExportItems((device, kind, _, name) => written.Any(w => w.Is(device, kind, name)) ? Array.Empty<string>() : null, null, manifest, progressLog);
+            var (exported, _) = await ExportItems((device, kind, _, name) => ReadBackFormats(written, manifest, device, kind, name), null, manifest, progressLog);
             WriteExport(sourceDirectory, manifest!, exported);
             notes.Add($"Refreshed the {exported.Count(e => e.Ok)} written item(s) in the tree from the project.");
         }
@@ -1466,6 +1466,19 @@ Writes '<sourceDirectory>/_import_report.txt' with one CREATED/UPDATED/SKIPPED/F
     private const string ItemListExample =
         "Expected lines as list_project or _export_summary.txt show them, under their software's header (it can be left out when only one software has items of that kind), e.g.:\n" +
         "=== PLC_1 ===\n  block 'Group/Main'\n  OK     udt 'Types/UDT_Motor'\n=== HMI_1 (HMI) ===\n  HMI tag table 'Tags'\n  HMI DiscreteAlarms";
+
+    // The formats a written item is read back in: those it has in the tree (empty: see ExportItems).
+    // A new item has none there yet, so it is read in its own format and the one it was written
+    // from - otherwise a new item written from its .xml would leave that .xml untracked, and the
+    // next write would take it for an edit.
+    private static IReadOnlyCollection<string>? ReadBackFormats(List<ImportListItem> written, SourceTreeManifest? manifest, string device, string kind, string name)
+    {
+        var item = written.FirstOrDefault(w => w.Is(device, kind, name));
+        if (item == null) return null;
+        if (item.Format == null || manifest?.Find(device, kind, name) != null) return Array.Empty<string>();
+        var own = SourceKinds.Find(kind)?.Formats.FirstOrDefault();
+        return new[] { own, item.Format }.Where(f => f != null).Select(f => f!).Distinct().ToList();
+    }
 
     // Exports every item include (device, kind, group path, name) selects - all of them when it's
     // null - from every PLC and HMI, or only deviceName's. Also returns the devices it went
