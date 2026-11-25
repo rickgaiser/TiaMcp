@@ -3,11 +3,15 @@ using System.Collections.Generic;
 using System.ComponentModel;
 using System.IO;
 using System.Linq;
+using System.Security.Principal;
 using System.Text;
 using System.Text.RegularExpressions;
+using System.Threading;
 using System.Threading.Tasks;
+using ModelContextProtocol;
 using ModelContextProtocol.Server;
 using TiaMcp.Openness;
+using static TiaMcp.Mcp.SourceTree;
 
 namespace TiaMcp.Mcp;
 
@@ -15,6 +19,9 @@ namespace TiaMcp.Mcp;
 public sealed partial class TiaTools
 {
     private readonly TiaSession _session;
+
+    // Notes of the last ExportItems for the read result (e.g. graphic lists that are skipped).
+    private readonly List<string> _exportNotes = new();
 
     public TiaTools(TiaSession session)
     {
@@ -28,12 +35,31 @@ public sealed partial class TiaTools
     /// plcName, or two concurrent tool calls racing on the same underlying Openness session.
     /// Every tool method below is wrapped in this so the real exception message and type
     /// always come back in the tool result text instead of being swallowed.
+    ///
+    /// First the connection is restored when TIA Portal closed and reopened the project (a
+    /// Multiuser check-in or refresh, another Openness client) or this server restarted since
+    /// tia_connect; the result then says so.
     /// </summary>
-    private static async Task<string> Safe(Func<Task<string>> action)
+    private async Task<string> Safe(Func<Task<string>> action)
+    {
+        string? note = null;
+        try { note = await _session.RestoreAsync(); }
+        catch (Exception ex) { note = $"The connection to TIA Portal could not be checked: {ex.Message}"; }
+        var result = await Guarded(action);
+        return note == null ? result : $"{note}\n{result}";
+    }
+
+    // As Safe, without restoring the connection first: for the tools that make or inspect it.
+    private static async Task<string> Guarded(Func<Task<string>> action)
     {
         try
         {
             return await action();
+        }
+        catch (OperationCanceledException ex) when (ex.CancellationToken.IsCancellationRequested)
+        {
+            // See ProgressLog: a call is only stopped before it changes the project or the tree.
+            return "Cancelled - nothing was changed.";
         }
         catch (Exception ex)
         {
@@ -42,33 +68,58 @@ public sealed partial class TiaTools
     }
 
     [McpServerTool(Name = "tia_connect")]
-    [Description("Attach to a running TIA Portal instance. With no arguments, attaches to whatever project is already open in the GUI - this only works when exactly one TIA Portal instance is running. If more than one instance is running, this returns an error listing their process ids instead of guessing or attaching to any of them (attaching is what triggers Openness's 'allow connection' dialog, so probing every instance would prompt all of them) - call list_tia_instances first, then call this again with processId set to the one you want. Pass projectPath to open a specific project (.apXX file) by path in the targeted instance - use this when the project you need isn't the one currently open. Call this first, and call it again (with no projectPath) if a PLC/device was renamed in the GUI or a tool starts reporting an unknown plcName - the PLC name index is only built at connect time.")]
+    [Description("Attach to a running TIA Portal instance. With no arguments, attaches to the open project or Multiuser local session. With more than one TIA Portal instance running, it picks the instance by the project each one has open: the one that has projectPath open (else the one with no project, to open it in), or without projectPath the only one with a project open. When that isn't clear it lists the instances and their projects instead of attaching to any of them (attaching is what triggers Openness's 'allow connection' dialog) - call it again with processId. Pass projectPath to open a specific .apXX project or .alsXX local session, or to match it if already open. With no TIA Portal running, startPortal=true starts the TIA Portal GUI and opens projectPath in it. Call this again if a PLC/device was renamed in the GUI or a tool starts reporting an unknown plcName - the PLC name index is only built at connect time. Not needed when TIA Portal closed and reopened the project (a Multiuser check-in or refresh) or this server restarted: the next tool attaches to the same project again by itself, if it is still open.")]
     public Task<string> Connect(
-        [Description("Optional full path to a .apXX project file to open. Omit to use whatever project is already open in TIA Portal.")] string? projectPath = null,
-        [Description("Optional process id (PID) of the specific running TIA Portal instance to attach to, from list_tia_instances. Required when more than one TIA Portal instance is running; omit when only one is running.")] int? processId = null) => Safe(async () =>
+        [Description("Optional full path to a .apXX project file or .alsXX Multiuser local session to open. Omit to use whatever project or local session is already open in TIA Portal.")] string? projectPath = null,
+        [Description("Optional process id (PID) of the TIA Portal instance to attach to, from list_tia_instances. Only needed when tia_connect can't tell which instance is meant.")] int? processId = null,
+        [Description("Start the TIA Portal GUI when none is running, and open projectPath in it (required then). It runs on its own: it stays open when this server stops. Takes a minute or two. Default false.")] bool startPortal = false) => Guarded(async () =>
     {
-        var result = await _session.ConnectAsync(projectPath, processId);
+        var result = await _session.ConnectAsync(projectPath, processId, startPortal);
         if (!result.Success)
         {
-            return $"Connect failed: {result.Error}";
+            return $"Connect failed: {result.Error}" + (result.Error?.Contains(OpennessGroup) == true ? $"\n{OpennessGroupHint}" : "");
         }
-        return $"Connected to project '{result.ProjectName}' at {result.ProjectPath}.";
+        return result.ProjectPath == null
+            ? $"Connected to project '{result.ProjectName}'."
+            : $"Connected to project '{result.ProjectName}' at {result.ProjectPath}.";
     });
 
     [McpServerTool(Name = "list_tia_instances")]
-    [Description("List running TIA Portal GUI instances (process id and window title, if visible) without attaching to any of them. Use this before tia_connect when more than one TIA Portal instance is running, to pick the right one via processId without triggering an Openness 'allow connection' prompt on every instance. Window title may be blank for a headless/orphaned instance or one not currently showing a project window - attach to it with tia_connect's processId to see what project (if any) it actually has open.")]
-    public Task<string> ListInstances() => Safe(async () =>
+    [Description("List running TIA Portal instances without attaching to any of them (no Openness 'allow connection' prompt): per process id the project or Multiuser local session it has open, whether it has a GUI, and how many Openness clients (other agent sessions, scripts, this server) are attached to it. Pass a process id to tia_connect's processId when tia_connect can't tell which instance is meant.")]
+    public Task<string> ListInstances() => Guarded(async () =>
     {
         var instances = await _session.ListInstancesAsync();
         if (instances.Count == 0)
         {
-            return "No running TIA Portal instance found. Open TIA Portal first.";
+            return "No running TIA Portal instance found. Open TIA Portal first, or call tia_connect with startPortal=true and projectPath.";
         }
-        return string.Join("\n", instances.Select(i => $"- PID {i.ProcessId}: {i.WindowTitle ?? "(no window title - headless or not currently showing a project)"}"));
+        var warning = InOpennessGroup() == false ? $"WARNING: this user is not in the Windows group '{OpennessGroup}', so tia_connect will fail. {OpennessGroupHint}\n" : "";
+        return warning + string.Join("\n", instances.Select(i =>
+        {
+            var clients = i.AttachedClients == 0 ? "no Openness clients"
+                : $"{i.AttachedClients} Openness client{(i.AttachedClients == 1 ? "" : "s")}{(i.ThisServer ? ", this server included" : "")}";
+            return $"- PID {i.ProcessId}: {i.ProjectPath ?? "no project open"} ({(i.WithUserInterface ? "GUI" : "no GUI")}, {clients})";
+        }));
     });
 
+    private const string OpennessGroup = "Siemens TIA Openness";
+    private const string OpennessGroupHint = "An administrator has to add the user to that group; then log off and on again (a running logon doesn't pick up new groups), and restart TIA Portal and this MCP server.";
+
+    // Whether this process's logon has the Openness group: false when it doesn't, null when that
+    // can't be told (the group doesn't exist on this machine).
+    private static bool? InOpennessGroup()
+    {
+        try
+        {
+            var sid = (SecurityIdentifier)new NTAccount(OpennessGroup).Translate(typeof(SecurityIdentifier));
+            using var identity = WindowsIdentity.GetCurrent();
+            return identity.Groups?.Contains(sid) == true;
+        }
+        catch { return null; }
+    }
+
     [McpServerTool(Name = "save_project_as")]
-    [Description("Save the currently connected project to a new folder, like TIA Portal's own 'Save project as' - creates a copy at the target location and continues working on that copy. Use this before risky changes if you want an on-disk checkpoint distinct from the original project.")]
+    [Description("Save the currently connected project to a new folder, like TIA Portal's own 'Save project as' - creates a copy at the target location and continues working on that copy. Use this before risky changes if you want an on-disk checkpoint distinct from the original project. Not supported for Multiuser local sessions.")]
     public Task<string> SaveProjectAs(
         [Description("Target directory for the new project copy. Must not already contain a project.")] string targetDirectory) => Safe(async () =>
     {
@@ -81,7 +132,7 @@ public sealed partial class TiaTools
     });
 
     [McpServerTool(Name = "save_project")]
-    [Description("Save the currently connected project in place (equivalent to Ctrl+S in the TIA Portal GUI). Block/tag/group writes made through this server only live in the open session until this is called - call it after a batch of changes you want persisted to disk.")]
+    [Description("Save the currently connected project in place (equivalent to Ctrl+S in the TIA Portal GUI). Block/tag/group writes made through this server remain in the open session until this is called - call it after a batch of changes you want persisted to disk. For a Multiuser local session, this saves locally only and does not commit changes to the project server.")]
     public Task<string> SaveProject() => Safe(async () =>
     {
         var result = await _session.SaveProjectAsync();
@@ -89,15 +140,16 @@ public sealed partial class TiaTools
     });
 
     [McpServerTool(Name = "close_project")]
-    [Description("Close the currently connected project (equivalent to closing the project in the TIA Portal GUI). Unsaved changes are lost unless save_project was called first - this does not save automatically. Use this before tia_connect with a different projectPath if TIA Portal refuses to open a second project while one is already open.")]
+    [Description("Close the currently connected project (equivalent to closing it in the TIA Portal GUI). Save first to preserve unsaved edits; this does not save automatically. Use before tia_connect with a different projectPath if TIA refuses to open a second project. For a Multiuser local session, this closes the session without committing to the project server; it is not just an MCP disconnect.")]
     public Task<string> CloseProject() => Safe(async () =>
     {
         var result = await _session.CloseProjectAsync();
-        return result.Success ? "Closed." : $"Close failed: {result.Error}";
+        if (result.Success) return "Closed.";
+        return _session.IsConnected ? $"Close failed: {result.Error}" : result.Error!;
     });
 
     [McpServerTool(Name = "project_status")]
-    [Description("Report the connected project's save state: whether it has unsaved changes, and who/when it was last saved.")]
+    [Description("Report the connected project's save state: whether it has unsaved changes, and who/when it was last saved. For a Multiuser local session, the path shown is the inner .amcXX project file, not the outer .alsXX session file; it also tells whether the server has changes the local session doesn't have yet, and which objects are marked. Openness can't refresh a local session: do that in the TIA Portal GUI, before read_source_tree.")]
     public Task<string> ProjectStatus() => Safe(async () =>
     {
         var s = await _session.GetProjectStatusAsync();
@@ -105,15 +157,17 @@ public sealed partial class TiaTools
                $"Unsaved changes: {(s.IsModified ? "YES" : "no")}\n" +
                $"Author: {s.Author}\n" +
                $"Last modified: {s.LastModified:u} by {s.LastModifiedBy}\n" +
-               $"Version: {s.Version}";
+               $"Version: {s.Version}" +
+               (s.Multiuser is not { } mu ? "" :
+                   $"\nMultiuser server: {(mu.UpToDate switch { true => "local session is up to date", false => "the server has newer changes - refresh the local session in the TIA Portal GUI", _ => "unknown" })}" +
+                   (mu.MarkedCount is not { } count || mu.Marked == null ? "" :
+                       $"\nMarked objects: {(count == 0 ? "none" : $"{count}{(mu.Marked.Count == 0 ? "" : $", e.g. {string.Join(", ", mu.Marked.Take(20))}{(mu.Marked.Count > 20 ? ", ..." : "")}")}")}{(mu.Conflicted > 0 ? $", {mu.Conflicted} in conflict" : "")}") +
+                   (mu.Error == null ? "" : $"\nCould not read: {mu.Error}")) +
+               "\nSoftware (as the project tree names it):" +
+               string.Concat((await _session.ListSoftwareAsync()).Select(l =>
+                   $"\n  {l.Name}: {l.Kind switch { SoftwareKind.Plc => "PLC", SoftwareKind.HmiUnified => "WinCC Unified HMI", _ => "classic WinCC HMI" }}" +
+                   $"{(string.Equals(l.Name, l.SoftwareName, StringComparison.OrdinalIgnoreCase) ? "" : $" '{l.SoftwareName}'")}, device '{l.Device}'{(l.Group == "" ? "" : $" in group '{l.Group}'")}"));
     });
-
-    private static List<BlockDocument> UdtDocuments(string typeName, string content, string? resContent)
-    {
-        var docs = new List<BlockDocument> { new($"{typeName}.s7dcl", content) };
-        if (!string.IsNullOrEmpty(resContent)) docs.Add(new BlockDocument($"{typeName}.s7res", resContent!));
-        return docs;
-    }
 
     [McpServerTool(Name = "delete_plc_udt")]
     [Description("Delete a UDT (PLC data type) by name. Fails with TIA Portal's own error if the UDT is still used as a member type by another UDT or block interface. This is destructive - confirm with the user before calling.")]
@@ -126,7 +180,7 @@ public sealed partial class TiaTools
     });
 
     [McpServerTool(Name = "rename_plc_udt")]
-    [Description("Rename an existing UDT (PLC data type) in place. Fails if a UDT with the new name already exists (names are unique per-PLC). Does not auto-compile - call compile_plc afterward, since a UDT rename can affect every block that references it.")]
+    [Description("Rename an existing UDT (PLC data type) in place. Fails if a UDT with the new name already exists (names are unique per-PLC). Does not auto-compile - call compile afterward, since a UDT rename can affect every block that references it.")]
     public Task<string> RenameUdt(
         [Description("PLC software name, from list_project")] string plcName,
         [Description("UDT name to rename, from list_project")] string typeName,
@@ -169,7 +223,7 @@ public sealed partial class TiaTools
     });
 
     [McpServerTool(Name = "create_plc_instance_db")]
-    [Description("Create an instance-DB bound to a specific FB type (e.g. instantiate a Typical FB from a library for one piece of equipment). Unlike adding its .s7dcl to the source tree, this needs no source text. Does not auto-compile - call compile_plc afterward.")]
+    [Description("Create an instance-DB bound to a specific FB type (e.g. instantiate a Typical FB from a library for one piece of equipment). Unlike adding its .s7dcl to the source tree, this needs no source text. Does not auto-compile - call compile afterward.")]
     public Task<string> CreateInstanceDb(
         [Description("PLC software name, from list_project")] string plcName,
         [Description("Group path to create the DB in, e.g. 'Instances'; empty string for the root")] string groupPath,
@@ -223,7 +277,7 @@ public sealed partial class TiaTools
     });
 
     [McpServerTool(Name = "rename_plc_block")]
-    [Description("Rename an existing block (any language, including a GRAPH block or an instance-DB) in place. Fails if a block with the new name already exists (names are unique per-PLC). Safe even on a block with real dependents (callers, a bound instance-DB): TIA resolves block/DB references by internal object identity, not by name text, so callers automatically follow the rename. The block and its dependents go temporarily INCONSISTENT, same as any block edit - call compile_plc afterward to resolve that.")]
+    [Description("Rename an existing block (any language, including a GRAPH block or an instance-DB) in place. Fails if a block with the new name already exists (names are unique per-PLC). Safe even on a block with real dependents (callers, a bound instance-DB): TIA resolves block/DB references by internal object identity, not by name text, so callers automatically follow the rename. The block and its dependents go temporarily INCONSISTENT, same as any block edit - call compile afterward to resolve that.")]
     public Task<string> RenamePlcBlock(
         [Description("PLC software name, from list_project")] string plcName,
         [Description("Block name to rename, from list_project")] string blockName,
@@ -233,8 +287,59 @@ public sealed partial class TiaTools
         return result.Success ? "Success" : $"FAILED: {result.Error}";
     });
 
+    [McpServerTool(Name = "renumber_plc_blocks")]
+    [Description(@"Give blocks a fixed number, or set them back to automatic numbering - any number of blocks in one call. list_project shows each block's number (""block 'Group/Name' [SCL] FB44""); OBs, FBs, FCs and DBs each have their own numbers (instance, global and array DBs share the DB numbers). Callers follow by themselves (TIA Portal refers to blocks by identity), so call compile afterward.
+
+A number taken by a block that keeps it is refused for that block only; numbers swapped or shifted among the listed blocks are done in the right order. dryRun shows what would change. Each line of the result: 'Name: DB6 auto -> DB10 fixed' ('auto': numbered automatically). list_project filter=""auto"" lists the blocks still numbered automatically. Some blocks' numbering can't be changed (e.g. error OBs such as OB86, whose number comes with their type); a dry run reports those too.
+
+Confirm with the user first: in the PLC a renumbered block is a different block. Downloading it starts a DB with its start values (actual values lost), and anything that addresses a block by number (SCADA/HMI absolute addresses such as DB6.DBX3.2, an online view) has to follow. The blocks' files in a source tree carry the number (S7_BlockNumber, XML <Number>): read them again before writing them.")]
+    public Task<string> RenumberPlcBlocks(
+        [Description("PLC software name, from list_project")] string plcName,
+        [Description("One block per line: 'Name = 44', 'Name = DB44' (the type is then checked) or 'Name = auto'. The name may be the list_project label 'Group/Name'.")] string numbers,
+        [Description("Only show what would change. Default false.")] bool dryRun = false) => Safe(async () =>
+    {
+        var requests = new List<BlockNumberRequest>();
+        var bad = new List<string>();
+        foreach (var raw in numbers.Split('\n').Select(l => l.Trim()).Where(l => l.Length > 0))
+        {
+            var request = ParseNumberLine(raw);
+            if (request == null) bad.Add(raw); else requests.Add(request);
+        }
+        if (bad.Count > 0)
+            return $"Not understood: {string.Join(" | ", bad.Select(b => $"'{b}'"))}. Expected one block per line: 'Name = 44', 'Name = DB44' or 'Name = auto'. Nothing was changed.";
+        if (requests.Count == 0) return "No blocks given. Nothing was changed.";
+
+        var changes = await _session.RenumberBlocksAsync(plcName, requests, dryRun);
+        var done = changes.Where(c => c.Error == null && c.Note == null).ToList();
+        var result = new StringBuilder();
+        result.AppendLine($"{(dryRun ? "Dry run: would renumber" : "Renumbered")} {done.Count} of {changes.Count} block(s) in {plcName}" +
+                          $"{(changes.Count(c => c.Note != null) is > 0 and var same ? $", {same} unchanged" : "")}{(changes.Count(c => c.Error != null) is > 0 and var failed ? $", {failed} failed" : "")}.");
+        foreach (var c in changes)
+        {
+            if (c.Error != null) result.AppendLine($"  FAILED {c.Block}{(c.From == null ? "" : $" ({c.From})")}: {c.Error}");
+            else if (c.Note != null) result.AppendLine($"  {c.Block}: {c.From} ({c.Note})");
+            else result.AppendLine($"  {c.Block}: {c.From} -> {c.To}");
+        }
+        if (done.Count > 0 && !dryRun) result.AppendLine("Call compile. Read these blocks into the source tree again before writing them: their files carry the number.");
+        return result.ToString().TrimEnd();
+    });
+
+    // 'Name = 44', 'Name = DB44', 'Name = auto'; the name may be quoted. Null when not understood.
+    private static BlockNumberRequest? ParseNumberLine(string line)
+    {
+        var eq = line.LastIndexOf('=');
+        if (eq <= 0) return null;
+        var name = line.Substring(0, eq).Trim().Trim('"', '\'').Trim();
+        var value = line.Substring(eq + 1).Trim();
+        if (name.Length == 0) return null;
+        if (string.Equals(value, "auto", StringComparison.OrdinalIgnoreCase)) return new BlockNumberRequest(name, null);
+        var match = Regex.Match(value, @"^(?<space>OB|FB|FC|DB)?\s*(?<number>\d{1,6})$", RegexOptions.IgnoreCase);
+        if (!match.Success) return null;
+        return new BlockNumberRequest(name, int.Parse(match.Groups["number"].Value), match.Groups["space"].Success ? match.Groups["space"].Value.ToUpperInvariant() : null);
+    }
+
     [McpServerTool(Name = "rename_plc_tag")]
-    [Description("Rename a single PLC tag in place, in whichever tag table it lives. Unlike changing the name in a tag table CSV in the source tree (which makes a new tag), this keeps references to the tag in blocks intact; blocks show the new name only after compile_plc. Fails if a tag with the new name already exists (names are unique per-PLC).")]
+    [Description("Rename a single PLC tag in place, in whichever tag table it lives. Unlike changing the name in a tag table CSV in the source tree (which makes a new tag), this keeps references to the tag in blocks intact; blocks show the new name only after compile. Fails if a tag with the new name already exists (names are unique per-PLC).")]
     public Task<string> RenameTag(
         [Description("PLC software name, from list_project")] string plcName,
         [Description("Current tag name")] string tagName,
@@ -404,94 +509,155 @@ public sealed partial class TiaTools
         return result.Success ? "Success" : $"FAILED: {result.Error}";
     });
 
-    [McpServerTool(Name = "compile_plc")]
-    [Description("Compile a PLC's software and report errors/warnings.")]
-    public Task<string> Compile([Description("PLC software name, from list_project")] string plcName) => Safe(async () =>
+    [McpServerTool(Name = "delete_hmi_text_list")]
+    [Description("Delete a WinCC Unified text list by name. Screens that show it keep the name in their ResourceList. This is destructive - confirm with the user before calling.")]
+    public Task<string> DeleteHmiTextList(
+        [Description("HMI software name, from list_project")] string hmiName,
+        [Description("Text list name to delete, from list_project")] string listName) => Safe(async () =>
     {
-        var result = await _session.CompileAsync(plcName);
+        var result = await _session.DeleteHmiTextListAsync(hmiName, listName);
+        return result.Success ? "Success" : $"FAILED: {result.Error}";
+    });
+
+    [McpServerTool(Name = "delete_hmi_screen")]
+    [Description("Delete a WinCC Unified screen by name. This is destructive - confirm with the user before calling.")]
+    public Task<string> DeleteHmiScreen(
+        [Description("HMI software name, from list_project")] string hmiName,
+        [Description("Screen name to delete, from list_project")] string screenName) => Safe(async () =>
+    {
+        var result = await _session.DeleteHmiScreenAsync(hmiName, screenName);
+        return result.Success ? "Success" : $"FAILED: {result.Error}";
+    });
+
+    [McpServerTool(Name = "rename_hmi_screen")]
+    [Description("Rename a WinCC Unified screen in place. Fails if a screen with the new name already exists (names are unique per HMI). Screen windows and scripts refer to screens by name and are not updated.")]
+    public Task<string> RenameHmiScreen(
+        [Description("HMI software name, from list_project")] string hmiName,
+        [Description("Screen name to rename, from list_project")] string screenName,
+        [Description("New screen name")] string newName) => Safe(async () =>
+    {
+        var result = await _session.RenameHmiScreenAsync(hmiName, screenName, newName);
+        return result.Success ? "Success" : $"FAILED: {result.Error}";
+    });
+
+    [McpServerTool(Name = "create_hmi_screen_group")]
+    [Description("Create a new WinCC Unified screen group (folder) under a given parent group path.")]
+    public Task<string> CreateHmiScreenGroup(
+        [Description("HMI software name, from list_project")] string hmiName,
+        [Description("Parent group path; empty string for the root")] string parentGroupPath,
+        [Description("Name of the new group")] string groupName) => Safe(async () =>
+    {
+        var result = await _session.CreateHmiScreenGroupAsync(hmiName, parentGroupPath, groupName);
+        return result.Success ? "Success" : $"FAILED: {result.Error}";
+    });
+
+    [McpServerTool(Name = "delete_hmi_screen_group")]
+    [Description("Delete a WinCC Unified screen group (folder) and everything in it, including its screens and subgroups. This is destructive - confirm with the user before calling.")]
+    public Task<string> DeleteHmiScreenGroup(
+        [Description("HMI software name, from list_project")] string hmiName,
+        [Description("Full group path to delete")] string groupPath) => Safe(async () =>
+    {
+        var result = await _session.DeleteHmiScreenGroupAsync(hmiName, groupPath);
+        return result.Success ? "Success" : $"FAILED: {result.Error}";
+    });
+
+    [McpServerTool(Name = "rename_hmi_screen_group")]
+    [Description("Rename a WinCC Unified screen group (folder) in place, without moving it to a different parent.")]
+    public Task<string> RenameHmiScreenGroup(
+        [Description("HMI software name, from list_project")] string hmiName,
+        [Description("Full group path to rename")] string groupPath,
+        [Description("New group name")] string newName) => Safe(async () =>
+    {
+        var result = await _session.RenameHmiScreenGroupAsync(hmiName, groupPath, newName);
+        return result.Success ? "Success" : $"FAILED: {result.Error}";
+    });
+
+    [McpServerTool(Name = "describe_hmi_item_type")]
+    [Description("Describe a WinCC Unified screen item type for editing a .json: its settable properties (JSON key, value type, enum members), nested parts, events and dynamization options. Call without a type to list all item types; pass 'Screen' for the screen's own properties. Needs no connection.")]
+    public Task<string> DescribeHmiItemType(
+        [Description("Item type, e.g. 'Button', 'IOField', 'FaceplateContainer'; omit to list all types")] string? type = null) =>
+        Safe(() => Task.FromResult(TiaConnection.DescribeHmiItemType(type)));
+
+    [McpServerTool(Name = "list_library_types")]
+    [Description("List the types in the project library (folder path, name, kind, and per version: version number, default flag, state and the ContainedType string a FaceplateContainer in a .json uses). Faceplates must be in the project library to be placed on a screen; global libraries are not supported.")]
+    public Task<string> ListLibraryTypes(
+        [Description("Optional substring filter on the type name")] string? nameFilter = null) => Safe(async () =>
+    {
+        var types = await _session.ListProjectLibraryTypesAsync(nameFilter);
+        return Csv.Format(
+            new[] { "FolderPath", "Name", "Kind", "Version", "IsDefault", "State", "ContainedType" },
+            types.SelectMany(t => t.Versions.Count == 0
+                ? new[] { new[] { t.FolderPath, t.Name, t.Kind, "", "", "", "" } }
+                : t.Versions.Select(v => new[] { t.FolderPath, t.Name, t.Kind, v.Version, v.IsDefault.ToString(), v.State, v.ContainedType })));
+    });
+
+    [McpServerTool(Name = "read_faceplate_type")]
+    [Description("Show a faceplate type's interface (property names, value types, default values) and events, as needed for the \"Interface\" of a FaceplateContainer in a .json. Openness only exposes the interface on a placed instance, so this places one on a scratch screen inside a rolled-back transaction - the project is not changed.")]
+    public Task<string> ReadFaceplateType(
+        [Description("HMI software name, from list_project (the faceplate must be usable on this device)")] string hmiName,
+        [Description("Faceplate type + version as list_library_types shows it in ContainedType, e.g. 'V1.0.0\\MyFaceplate'")] string containedType) => Safe(async () =>
+    {
+        var result = await _session.ReadFaceplateTypeAsync(hmiName, containedType);
+        if (!result.Success) return $"FAILED: {result.Error}";
+        var csv = Csv.Format(
+            new[] { "PropertyName", "ValueType", "DefaultValue" },
+            result.Interface.Select(p => new[] { p.PropertyName, p.ValueType ?? "", p.DefaultValue ?? "" }));
+        return $"ContainedType: {result.ContainedType}\nEvents: {string.Join(", ", result.Events)}\nInterface:\n{csv}";
+    });
+
+    [McpServerTool(Name = "compile")]
+    [Description("Compile a PLC's or an HMI's software (WinCC Unified or classic WinCC) and report errors/warnings with their path (block > network, or screen > item > property for an HMI: e.g. screen items or alarms bound to tags that don't exist). An HMI can take minutes. On a Multiuser local session this compiles locally, can mark the session modified, and does not commit results to the server.")]
+    public Task<string> Compile([Description("PLC or HMI software name, from list_project")] string softwareName) => Safe(async () =>
+    {
+        var result = await _session.CompileAsync(softwareName);
         var messages = string.Join("\n", result.Messages);
         return $"State: {result.State}  Errors: {result.ErrorCount}  Warnings: {result.WarningCount}\n{messages}";
     });
 
     [McpServerTool(Name = "list_project")]
-    [Description(@"List what the connected project has, per PLC and HMI software ('=== name ===' - the plcName/hmiName other tools take): blocks with their language (INCONSISTENT: needs compile_plc, e.g. before a GRAPH or STL block can be read), UDTs, tag tables, empty tag table groups and alarm text lists; for WinCC Unified the HMI tag tables and alarm files, for classic WinCC the tag tables, text lists, screen templates, pop-up screens and screens. Fast: names only, no source - read_source_tree reads the source. Item lines are in _export_summary.txt's format and can be passed to read_source_tree's items as they are.
+    [Description(@"List what the connected project has, per PLC and HMI software ('=== name ===' - the plcName/hmiName other tools take): blocks with their language, number and numbering mode (""block 'Group/Name' [SCL] FB44 auto"": 'auto' numbered automatically, 'fixed' a fixed number), INCONSISTENT: needs compile_plc, e.g. before a GRAPH or STL block can be read), UDTs, tag tables, empty tag table groups and alarm text lists; for WinCC Unified the HMI tag tables, text lists, screens, global script modules and alarm files, for classic WinCC the tag tables, text lists, screen templates, pop-up screens and screens. Fast: names only, no source - read_source_tree reads the source. Each item line ends with the formats it can be read in, its own first, e.g. ""tag table 'Tags' [csv, xml]"" (""xml"" is the raw Openness export). Item lines are in _export_summary.txt's format and can be passed to read_source_tree's items as they are.
 
 Without filter or deviceName, a project of more than 200 items only gets counts per software back; pass targetDirectory to write the full list to '<targetDirectory>/_project_list.txt'.")]
     public Task<string> ListProject(
-        [Description("Optional: only items whose group path or name contains this text (case-insensitive)")] string? filter = null,
+        [Description("Optional: only items whose list line contains this text (case-insensitive): a name or group path, a language such as \"[SCL]\", a block number such as \"FB44\" or \"DB6\" (that block only, not FB440), \"auto\" or \"fixed\" for the blocks numbered that way, or \"INCONSISTENT\" for the blocks that need a compile")] string? filter = null,
         [Description("Optional: only this PLC or HMI software name")] string? deviceName = null,
         [Description("Optional: directory (e.g. the source tree root) to write the full list to as _project_list.txt")] string? targetDirectory = null) => Safe(async () =>
     {
         if (!_session.IsConnected) return "Not connected. Call tia_connect first.";
 
-        bool Matches(string groupPath, string name) => filter == null || Label(groupPath, name).IndexOf(filter, StringComparison.OrdinalIgnoreCase) >= 0;
-        bool IsSelectedDevice(string device) => deviceName == null || string.Equals(device, deviceName, StringComparison.OrdinalIgnoreCase);
-
+        // On the whole list line, so a filter can also pick a language ("[SCL]") or "INCONSISTENT". A
+        // block number ("FB44") matches as a whole word, so it finds that one block.
+        var numberFilter = filter != null && Regex.IsMatch(filter.Trim(), @"^(OB|FB|FC|DB)\s*\d+$", RegexOptions.IgnoreCase)
+            ? new Regex($@"\b{Regex.Replace(filter.Trim(), @"\s+", "")}\b", RegexOptions.IgnoreCase)
+            : null;
+        // "auto"/"fixed": the numbering mode after a block number, not a name that holds the word.
+        numberFilter ??= filter?.Trim().ToLowerInvariant() is "auto" or "fixed"
+            ? new Regex($@"\b(OB|FB|FC|DB)\d+ {filter.Trim()}\b", RegexOptions.IgnoreCase)
+            : null;
+        bool Matches(ListedEntry e) => filter == null
+            || (numberFilter != null ? numberFilter.IsMatch(e.Text) : e.Text.IndexOf(filter, StringComparison.OrdinalIgnoreCase) >= 0);
         var list = new StringBuilder();
         var counts = new StringBuilder();
         var total = 0;
-        var devices = 0;
-        foreach (var plc in (await _session.ListDevicesAsync()).Select(d => d.PlcSoftwareName).OfType<string>().Where(IsSelectedDevice))
+        var devices = await Devices(deviceName);
+        foreach (var (family, device) in devices)
         {
-            devices++;
-            var blocks = (await _session.ListBlocksAsync(plc)).Where(b => Matches(b.GroupPath, b.Name)).ToList();
-            var allTables = await _session.ListTagTablesAsync(plc);
-            var tables = allTables.Where(t => Matches(t.GroupPath, t.Name)).ToList();
-            var emptyGroups = EmptyGroups(allTables.Select(t => t.GroupPath), await _session.ListTagTableGroupsAsync(plc)).Where(g => Matches(g, "")).ToList();
-            var types = (await _session.ListPlcTypesAsync(plc)).Where(t => Matches(t.GroupPath, t.Name)).ToList();
-            var textLists = (await _session.ListPlcAlarmTextListNamesAsync(plc)).Where(n => Matches("", n)).ToList();
+            var kinds = new List<(ISourceKind Kind, List<ListedEntry> Entries)>();
+            foreach (var kind in SourceKinds.Of(family).OrderBy(k => SourceKinds.ListIndex(k.Name)))
+                kinds.Add((kind, (await kind.List(_session, device)).Where(Matches).ToList()));
 
-            var found = blocks.Count + tables.Count + emptyGroups.Count + types.Count + textLists.Count;
+            var found = kinds.Sum(k => k.Entries.Count);
             total += found;
-            counts.AppendLine($"{plc}: {blocks.Count} block(s) ({blocks.Count(b => !b.Consistent)} inconsistent), {types.Count} UDT(s), {tables.Count} tag table(s), {textLists.Count} alarm text list(s)");
+            counts.AppendLine($"{device}{(family == DeviceFamily.Plc ? "" : family == DeviceFamily.HmiClassic ? " (HMI, classic WinCC)" : " (HMI)")}: " +
+                              string.Join(", ", kinds.Where(k => k.Kind.FixedName == null).Select(k => CountLine(k.Kind, k.Entries))));
             if (found == 0 && filter != null) continue;
 
-            list.AppendLine($"=== {plc} ===");
-            foreach (var b in blocks) list.AppendLine($"  {Describe("block", b.GroupPath, b.Name)} [{b.Language}]{(b.Consistent ? "" : " INCONSISTENT")}");
-            foreach (var t in tables) list.AppendLine($"  {Describe("tag table", t.GroupPath, t.Name)}");
-            foreach (var g in emptyGroups) list.AppendLine($"  tag table group '{g}' (empty)");
-            foreach (var t in types) list.AppendLine($"  {Describe("udt", t.GroupPath, t.Name)}");
-            foreach (var n in textLists) list.AppendLine($"  {Describe(AlarmTextListKind, "", n)}");
+            list.AppendLine(Header(family, device));
+            foreach (var entry in kinds.SelectMany(k => k.Entries)) list.AppendLine($"  {entry.Text}{FormatList(entry.Formats)}");
             list.AppendLine();
         }
 
-        foreach (var hmi in (await _session.ListHmiDevicesAsync()).Select(h => h.HmiSoftwareName).Where(IsSelectedDevice))
-        {
-            devices++;
-            var allTables = await _session.ListHmiTagTablesAsync(hmi);
-            var tables = allTables.Where(t => Matches(t.GroupPath, t.Name)).ToList();
-            var emptyGroups = EmptyGroups(allTables.Select(t => t.GroupPath), await _session.ListHmiTagTableGroupsAsync(hmi)).Where(g => Matches(g, "")).ToList();
-            var alarms = HmiAlarmKinds.Where(k => Matches("HMI alarms", ItemStem(k, ""))).ToList();
-
-            var found = tables.Count + emptyGroups.Count + alarms.Count;
-            total += found;
-            counts.AppendLine($"{hmi} (HMI): {tables.Count} tag table(s), alarms");
-            if (found == 0 && filter != null) continue;
-
-            list.AppendLine($"=== {hmi} (HMI) ===");
-            foreach (var t in tables) list.AppendLine($"  {Describe("HMI tag table", t.GroupPath, t.Name)}");
-            foreach (var g in emptyGroups) list.AppendLine($"  HMI tag table group '{g}' (empty)");
-            foreach (var kind in alarms) list.AppendLine($"  {kind}");
-            list.AppendLine();
-        }
-
-        foreach (var hmi in (await _session.ListHmiClassicNamesAsync()).Where(IsSelectedDevice))
-        {
-            devices++;
-            var objects = (await _session.ListHmiClassicObjectsAsync(hmi))
-                .Where(o => o.Kind != HmiClassicKinds.GraphicList && Matches(o.FolderPath, o.Name))
-                .OrderBy(o => Array.IndexOf(KindOrder, TreeKindOf(o.Kind))).ThenBy(o => Label(o.FolderPath, o.Name), StringComparer.OrdinalIgnoreCase)
-                .ToList();
-            total += objects.Count;
-            counts.AppendLine($"{hmi} (HMI, classic WinCC): {string.Join(", ", ClassicKinds.Select(k => $"{objects.Count(o => o.Kind == k.ClassicKind)} {k.TreeKind.Substring(4)}(s)"))}");
-            if (objects.Count == 0 && filter != null) continue;
-
-            list.AppendLine($"=== {hmi} (HMI) ===");
-            foreach (var o in objects) list.AppendLine($"  {Describe(TreeKindOf(o.Kind), o.FolderPath, o.Name)}");
-            list.AppendLine();
-        }
-
-        if (devices == 0) return deviceName == null ? "No PLC or HMI software found." : $"No PLC or HMI software named '{deviceName}'.";
+        if (devices.Count == 0) return deviceName == null ? "No PLC or HMI software found." : $"No PLC or HMI software named '{deviceName}'.";
 
         string? listPath = null;
         if (!string.IsNullOrEmpty(targetDirectory))
@@ -507,25 +673,88 @@ Without filter or deviceName, a project of more than 200 items only gets counts 
             : "Pass filter or deviceName to list items, or targetDirectory to write the full list to a file.");
     });
 
-    // Groups with no tag table anywhere below them - otherwise empty groups would be invisible.
-    private static IEnumerable<string> EmptyGroups(IEnumerable<string> tableGroupPaths, IReadOnlyList<string> groups)
+    private static string CountLine(ISourceKind kind, List<ListedEntry> entries)
     {
-        var used = tableGroupPaths.ToList();
-        return groups.Where(g => !used.Any(p => p == g || p.StartsWith(g + "/")));
+        var inconsistent = entries.Count(e => e.Inconsistent);
+        return $"{entries.Count(e => e.IsItem)} {kind.Name}(s){(inconsistent > 0 ? $" ({inconsistent} inconsistent)" : "")}";
+    }
+
+    private static string Header(DeviceFamily family, string device) =>
+        family == DeviceFamily.Plc ? $"=== {device} ===" : $"=== {device} (HMI) ===";
+
+    // Every PLC and HMI software of the project, or only deviceName's (by either of its names), with
+    // its family - named as TIA Portal's project tree shows it (see ProjectSoftware).
+    private async Task<List<(DeviceFamily Family, string Name)>> Devices(string? deviceName)
+    {
+        bool IsSelected(ProjectSoftware s) => deviceName == null
+            || string.Equals(s.Name, deviceName, StringComparison.OrdinalIgnoreCase) || string.Equals(s.SoftwareName, deviceName, StringComparison.OrdinalIgnoreCase);
+        return (await _session.ListSoftwareAsync()).Where(IsSelected)
+            .OrderBy(s => s.Kind)
+            .Select(s => (s.Kind switch { SoftwareKind.Plc => DeviceFamily.Plc, SoftwareKind.HmiUnified => DeviceFamily.HmiUnified, _ => DeviceFamily.HmiClassic }, s.Name))
+            .ToList();
+    }
+
+    // Multiuser: the mark state of the given items, as TIA Portal has it now - an Openness call per
+    // object they are made of (~35 ms; a tag table costs one per tag). Items of a kind without a mark
+    // state, or not in the project, are left out. Empty outside a Multiuser local session.
+    private async Task<Dictionary<(string Device, string Kind, string Name), SourceTreeMarks>> MarkStates(IReadOnlyCollection<(string Device, string Kind, string Name)> items, ProgressLog? progress = null)
+    {
+        var result = new Dictionary<(string, string, string), SourceTreeMarks>();
+        if (!_session.IsMultiuser || items.Count == 0) return result;
+        foreach (var group in items.GroupBy(i => (i.Device, i.Kind)))
+        {
+            var family = (await Devices(group.Key.Device)).Select(d => (DeviceFamily?)d.Family).FirstOrDefault();
+            var target = family == null ? null : SourceKinds.All.FirstOrDefault(k => k.Name == group.Key.Kind && k.Family == family)?.MarkTarget;
+            if (target == null) continue;
+            progress?.Item($"{group.Key.Device}: {(SourceKinds.All.Any(k => k.Name == group.Key.Kind && k.FixedName != null) ? group.Key.Kind : $"{group.Count()} {group.Key.Kind}(s)")}");
+            var states = await _session.GetMarkStatesAsync(group.Key.Device, target.Value, group.Select(i => i.Name).ToList());
+            if (states == null) continue;
+            foreach (var item in group)
+            {
+                if (!states.TryGetValue(item.Name, out var s)) continue;
+                result[item] = new SourceTreeMarks
+                {
+                    Objects = s.Objects, ByMe = s.ByMe, ByOthers = s.ByOthers, NotUpToDate = s.NotUpToDate,
+                    ByOthersNames = s.ByOthersNames.Count == 0 ? null : s.ByOthersNames.ToList(),
+                    NotUpToDateNames = s.NotUpToDateNames.Count == 0 ? null : s.NotUpToDateNames.ToList(),
+                };
+            }
+        }
+        return result;
+    }
+
+    // Records the items' mark state in the manifest (see MarkStates).
+    private async Task RecordMarks(SourceTreeManifest manifest, IReadOnlyCollection<(string Device, string Kind, string Name)> items, ProgressLog? progress = null)
+    {
+        if (!_session.IsMultiuser) return;
+        progress?.Phase("Multiuser marks");
+        var marks = await MarkStates(items, progress);
+        foreach (var item in items)
+        {
+            var entry = manifest.Find(item.Device, item.Kind, item.Name);
+            if (entry != null) entry.Multiuser = marks.TryGetValue(item, out var m) ? m : null;
+        }
     }
 
     [McpServerTool(Name = "read_source_tree")]
-    [Description(@"Export project source to disk, into folders that mirror the TIA Portal project tree: <targetDirectory>/<PlcName>/Program blocks/<group path>/..., .../PLC tags/..., .../PLC data types/..., and .../PLC alarm text lists/<list>.csv; <targetDirectory>/<HmiSoftwareName>/HMI tags/... and .../HMI alarms/ (DiscreteAlarms.csv, AnalogAlarms.csv, AlarmClasses.csv - fixed files, alarms have no groups in Openness); for a classic WinCC HMI .../HMI tags/, Screens/, Screen templates/, Pop-up screens/ (each with its folders) and Text lists/, as native Openness XML. Classic graphic lists are skipped (exporting one crashes TIA Portal V21). Read the files with your file tools; edit them and call write_source_tree to write the changes back.
+    [Description(@"Export project source to disk, into folders that mirror the TIA Portal project tree: <targetDirectory>/<PLC>/Program blocks/<group path>/..., .../PLC tags/..., .../PLC data types/..., and .../PLC alarm text lists/<list>.csv; <targetDirectory>/<HMI>/HMI tags/..., .../Text lists/<list>.csv (WinCC Unified), .../Screens/<group path>/<screen>.json (WinCC Unified), .../Scripts/<module>.js (global modules; read-only) and .../HMI alarms/ (DiscreteAlarms.csv, AnalogAlarms.csv, AlarmClasses.csv - fixed files, alarms have no groups in Openness); for a classic WinCC HMI .../HMI tags/, Screens/, Screen templates/, Pop-up screens/ (each with their folders) and Text lists/, as native Openness XML. Classic graphic lists are skipped (exporting one crashes TIA Portal V21). <PLC> and <HMI> are the names TIA Portal's project tree shows (an HMI on a PC station by the station's name; project_status lists them), as in the '=== name ===' headers; tools also take the software's own name. Read the files with your file tools; edit them and call write_source_tree to write the changes back.
 
-Pass items to read only part of the project (much faster than a full read): e.g. one block to look at or refresh, or a group. A read overwrites the selected items' files, including unsaved edits to them. An item that no longer exists in the project (deleted or renamed in TIA Portal) has its files deleted.
+Pass items to read only part of the project (much faster than a full read): e.g. one block to look at or refresh, a group, or a section such as 'Screens' or 'HMI tags'. A read overwrites the selected items' files, including unsaved edits to them. An item that no longer exists in the project (deleted or renamed in TIA Portal) has its files deleted.
 
-Files per item: blocks and UDTs keep TIA Portal's own document format (.s7dcl, plus .s7res holding the comment/title texts its S7_MLC attributes refer to); a GRAPH block is '<name>.graph.il', a whole-block-STL block '<name>.awl' (TIA Portal's own 'Generate source' text). Read-only companions, never written back: '<name>.interface.txt' (an instance DB's resolved interface) and '<name>.stl-networks.awl'/'.xml' (the STL networks inside an otherwise FBD/LAD/SCL block; the .s7dcl keeps an empty placeholder NETWORK with S7_Language := ""STL"" at each one's position). Tag tables, alarms and alarm text lists (From, To, one Text [language] column per project language) are Excel-compatible CSV with a UTF-8 BOM.
+Files per item: blocks and UDTs keep TIA Portal's own document format (.s7dcl, plus .s7res holding the comment/title texts its S7_MLC attributes refer to); a GRAPH block is '<name>.graph.il', a whole-block-STL block '<name>.awl' (TIA Portal's own 'Generate source' text). Unified global script modules are exported as 'Scripts/<module>.js' and are read-only. Read-only companions, never written back: '<name>.interface.txt' (an instance DB's resolved interface) and '<name>.stl-networks.awl'/'.xml' (the STL networks inside an otherwise FBD/LAD/SCL block; the .s7dcl keeps an empty placeholder NETWORK with S7_Language := ""STL"" at each one's position). Tag tables, alarms and PLC alarm text lists and WinCC Unified text lists (From, To, one Text [language] column per project language) are Excel-compatible CSV with a UTF-8 BOM.
+Formats: blocks, UDTs and PLC tag tables can also be read as their raw Openness XML ('<name>.xml', SimaticML): complete where a converted format leaves something out, and writable too. An item is read in the formats it already has in the tree, else its own format; pass its list line with formats (""tag table 'Tags' [csv, xml]"", ""block 'Main' [xml]"") to choose. The XML costs no extra export where the own format is made from it (tag tables, GRAPH and code blocks); for data blocks, UDTs and whole-STL blocks it does. _manifest.json records each item's formats and each file's format.
 
-An item that fails to export (e.g. an inconsistent block - GRAPH blocks must be compiled first) is reported, and files from an earlier read of it are renamed with a '.stale' suffix rather than left looking current. '_export_summary.txt' lists every item in the tree; '_manifest.json' is write_source_tree's bookkeeping - don't edit it. Returns counts, failures, and for a partial read each item's files.")]
+An item that fails to export (e.g. an inconsistent block - GRAPH blocks must be compiled first) is reported, and files from an earlier read of it are renamed with a '.stale' suffix rather than left looking current. '_export_summary.txt' lists every item in the tree, with the formats it has there (list_project shows the formats it can be read in); '_manifest.json' and the '.base' folder are write_source_tree's bookkeeping - don't edit them. '_progress.log' shows what the read is doing while it runs (also sent as MCP progress notifications); a cancel during the export leaves the tree unchanged. Returns counts, failures, the items that read back different from the last read into this tree (changed in TIA Portal, or rendered differently by a newer TiaMcp), the time per phase, and for a partial read each item's files.
+
+In a Multiuser local session the read also checks each item's mark state (about 35 ms per block, UDT or screen, and per tag or alarm of a table - roughly a minute for a medium-sized project): items marked by another user or not up to date with the server are listed in the result, and every marked item in _export_summary.txt, e.g. ""(marked by another user: 2 of 240 (Tag_A, Tag_B))"". write_source_tree refuses to write those.")]
     public Task<string> ReadSourceTree(
         [Description("Root directory of the source tree. Created if it doesn't exist; keep using the same one for the project.")] string targetDirectory,
-        [Description("Optional: read only these items - 'Name', 'group/path/Name', 'group/path/' for everything below a group, or item lines as list_project shows them (case-insensitive; for HMI alarms 'DiscreteAlarms', 'AnalogAlarms', 'AlarmClasses' or 'HMI alarms/'). Omit to read everything.")] string[]? items = null,
-        [Description("Optional: read only this PLC or HMI software name")] string? deviceName = null) => Safe(async () =>
+        [Description("Optional: read only these items - 'Name', 'group/path/Name', 'group/path/' for everything below a group, a section of the tree such as 'Screens' or 'HMI tags', or item lines as list_project shows them, optionally ending with the formats to read, e.g. \"tag table 'Tags' [csv, xml]\" (case-insensitive; for HMI alarms 'DiscreteAlarms', 'AnalogAlarms' or 'AlarmClasses'). An entry that matches nothing is reported. Omit to read everything.")] string[]? items = null,
+        [Description("Optional: read only this PLC or HMI software name")] string? deviceName = null,
+        [Description("Read into a tree that has an _export_summary.txt but no _manifest.json (read by an older version, or generated), making it a working copy of the connected project. Default false.")] bool adoptExisting = false,
+        [Description("Give WinCC Unified HMI tag table CSVs a Length column (the maximum length of String/WString tags). SLOW: an extra Openness call per tag. Remembered for the tree; omit to keep the tree's setting (off for a new tree).")] bool? hmiTagLength = null,
+        IProgress<ProgressNotificationValue>? progress = null,
+        CancellationToken cancellationToken = default) => Safe(async () =>
     {
         if (!_session.IsConnected) return "Not connected. Call tia_connect first.";
 
@@ -536,11 +765,11 @@ An item that fails to export (e.g. an inconsistent block - GRAPH blocks must be 
         // A tree without a manifest is written as-is by write_source_tree (e.g. one a generator
         // script writes). A manifest would turn it into a working copy, whose written items are read
         // back into it - replacing generated files with TIA Portal's rendering of them.
-        if (previous == null && File.Exists(Path.Combine(targetDirectory, "_export_summary.txt")))
+        if (previous == null && !adoptExisting && File.Exists(Path.Combine(targetDirectory, "_export_summary.txt")))
         {
             return $"'{targetDirectory}' holds a source tree without {SourceTreeManifest.FileName} - a generated tree, or one read by an older version. " +
                    "Reading into it would make it a working copy of the project, and write_source_tree would then read written items back into it, replacing its files with TIA Portal's rendering. " +
-                   "Read into another directory - or, for an old read tree, delete its _export_summary.txt first.";
+                   "Read into another directory - or, for a tree read by an older version, pass adoptExisting=true.";
         }
         if (partial && previous?.Project != null && previous.Project != _session.ProjectName)
         {
@@ -548,20 +777,40 @@ An item that fails to export (e.g. an inconsistent block - GRAPH blocks must be 
                    "Read the whole project (no items/deviceName) to replace it, or use another directory.";
         }
 
+        var manifest = previous ?? new SourceTreeManifest();
+        var renamed = previous == null || previous.Project == _session.ProjectName
+            ? MoveToProjectTreeNames(targetDirectory, manifest, await _session.ListSoftwareAsync())
+            : new List<string>();
+        var lengthChanged = hmiTagLength != null && hmiTagLength != (manifest.HmiTagLength == true);
+        if (hmiTagLength != null) manifest.HmiTagLength = hmiTagLength.Value ? true : null;
+
         var startedAt = DateTime.Now;
-        var (exported, devices) = await ExportItems(selection == null ? null : (_, kind, groupPath, name) => Selects(selection, kind, groupPath, name), deviceName);
+        using var progressLog = new ProgressLog(targetDirectory, $"read_source_tree {(partial ? "(partial) " : "")}- project {_session.ProjectName}", progress, cancellationToken);
+        progressLog.Phase("export", cancellable: true);
+        var (exported, devices) = await ExportItems(selection == null ? null : (_, kind, groupPath, name) => RequestedFormats(selection, kind, groupPath, name), deviceName, manifest, progressLog);
         if (devices.Count == 0) return deviceName == null ? "No PLC or HMI devices found." : $"No PLC or HMI software named '{deviceName}'.";
 
-        var manifest = previous ?? new SourceTreeManifest();
+        // From here on the tree changes: a cancel no longer stops the read halfway.
+        progressLog.Phase("write files");
+
+        // What reads back different from the last read: changed in TIA Portal (by anyone), or
+        // rendered differently by a newer TiaMcp. Only formats both reads have are compared.
+        var changed = exported.Where(e => e.Ok && manifest.Find(e.Device, e.Kind, e.Name) is { Ok: true } before && Differs(before, e)).ToList();
         WriteExport(targetDirectory, manifest, exported);
 
         // Items in the part that was read which the project doesn't have (any more).
         var gone = manifest.Items
             .Where(i => (deviceName == null || string.Equals(i.Device, deviceName, StringComparison.OrdinalIgnoreCase))
-                        && (selection == null || Selects(selection, i.Kind, i.GroupPath, i.Name))
+                        && (selection == null || RequestedFormats(selection, i.Kind, i.GroupPath, i.Name) != null)
                         && !exported.Any(e => i.Is(e.Device, e.Kind, e.Name)))
             .ToList();
         foreach (var item in gone) RemoveFromTree(targetDirectory, manifest, item);
+        var unmatched = (selection ?? Array.Empty<string>()).Where(s => !exported.Select(e => (e.Kind, e.GroupPath, e.Name)).Concat(gone.Select(i => (i.Kind, i.GroupPath, i.Name)))
+            .Any(e => RequestedFormats(new[] { s }, e.Kind, e.GroupPath, e.Name) != null)).ToList();
+
+        // Multiuser: what this user can edit without conflicts, known before editing.
+        var read = exported.Where(e => e.Ok).Select(e => (e.Device, e.Kind, e.Name)).ToList();
+        await RecordMarks(manifest, read, progressLog);
 
         manifest.Project = _session.ProjectName;
         manifest.LastRead = startedAt;
@@ -572,93 +821,162 @@ An item that fails to export (e.g. an inconsistent block - GRAPH blocks must be 
         var result = new StringBuilder();
         result.AppendLine($"Read {exported.Count} item(s) into {targetDirectory} in {(DateTime.Now - startedAt).TotalSeconds:0} s: " +
                           $"{exported.Count(e => e.Ok)} ok, {exported.Count(e => !e.Ok)} failed, {gone.Count} removed.");
+        if (changed.Count > 0)
+        {
+            result.AppendLine($"  {changed.Count} item(s) read back different from the last read (changed in TIA Portal, or rendered differently by a newer TiaMcp):");
+            foreach (var item in changed.Take(MaxFailedLines)) result.AppendLine($"    CHANGED {Describe(item.Kind, item.GroupPath, item.Name)}");
+            if (changed.Count > MaxFailedLines) result.AppendLine($"    ... and {changed.Count - MaxFailedLines} more");
+        }
         foreach (var item in exported)
         {
             if (!item.Ok) result.AppendLine($"  FAILED  {Describe(item.Kind, item.GroupPath, item.Name)}: {item.Error}");
             else if (partial) result.AppendLine($"  OK      {Describe(item.Kind, item.GroupPath, item.Name)}: {string.Join(", ", item.Files.Select(f => f.Path))}");
         }
-        foreach (var item in gone) result.AppendLine($"  REMOVED {Describe(item)} - no longer in the project, its files were deleted");
+        foreach (var item in gone) result.AppendLine($"  REMOVED {Describe(item.Kind, item.GroupPath, item.Name)} - no longer in the project, its files were deleted");
+        foreach (var entry in unmatched) result.AppendLine($"  NOT FOUND '{entry}': no item matches it (expected 'Name', 'group/path/Name', 'group/path/' or a section such as 'Screens')");
+        // The same warning for many blocks (a library pattern) is explained once, its blocks below it.
+        var warnings = exported.SelectMany(e => e.Warnings.Select(w => (Describe(e.Kind, e.GroupPath, e.Name), w)));
+        foreach (var (text, names) in GroupSimilar(warnings))
+        {
+            if (names.Count == 1) { result.AppendLine($"  WARNING {names[0]}: write_source_tree refuses to write its .s7dcl as it is - {text}"); continue; }
+            result.AppendLine($"  WARNING {names.Count} items: write_source_tree refuses to write their .s7dcl as it is - {text}");
+            foreach (var name in names) result.AppendLine($"    {name}");
+        }
         foreach (var note in _exportNotes) result.AppendLine($"  {note}");
+        foreach (var note in renamed) result.AppendLine($"  {note}");
+        if (_session.IsMultiuser)
+        {
+            var marked = read.Select(r => manifest.Find(r.Device, r.Kind, r.Name)).Where(e => e?.Multiuser != null).Select(e => e!).ToList();
+            var blocked = marked.Where(e => e.Multiuser!.ByOthers > 0 || e.Multiuser.NotUpToDate > 0).ToList();
+            result.AppendLine($"  Multiuser: {marked.Count(e => e.Multiuser!.ByOthers > 0)} item(s) marked by another user, " +
+                              $"{marked.Count(e => e.Multiuser!.NotUpToDate > 0)} not up to date with the server, {marked.Count(e => e.Multiuser!.ByMe > 0)} marked by me" +
+                              (blocked.Count == 0 ? "." : " - write_source_tree refuses the first two unless force=true:"));
+            foreach (var e in blocked.Take(MaxFailedLines)) result.AppendLine($"    {Describe(e.Kind, e.GroupPath, e.Name)}: {e.Multiuser!.Describe()}");
+            if (blocked.Count > MaxFailedLines) result.AppendLine($"    ... and {blocked.Count - MaxFailedLines} more, see _export_summary.txt");
+        }
+        // The conflict check compares a fresh export with the read; a Unified table (csv) of the
+        // tree that this read left in the old shape would look changed in TIA Portal.
+        if (lengthChanged && manifest.Items.Any(i => i.Kind == "HMI tag table" && i.Formats.Contains(SourceFormat.Csv) && !exported.Any(e => i.Is(e.Device, e.Kind, e.Name))))
+            result.AppendLine("  NOTE hmiTagLength changed, but not every HMI tag table in the tree was read: read the other HMI tag tables again before writing them.");
+        result.AppendLine($"Time: {progressLog.Timings}.");
         result.AppendLine($"Full item list: {summaryPath}");
         return result.ToString();
     });
 
-    // One parsed 'OK'/'FAILED'/'STALE' line from read_source_tree's _export_summary.txt (or a
-    // hand-trimmed copy/inline excerpt of it) - see write_source_tree. A plain class rather than a
-    // record: this project (net48) has no IsExternalInit polyfill for record/init-only support.
-    private sealed class ImportListItem
-    {
-        public ImportListItem(string deviceName, string kind, string groupPath, string itemName, bool ok)
-        {
-            DeviceName = deviceName;
-            Kind = kind;
-            GroupPath = groupPath;
-            ItemName = itemName;
-            Ok = ok;
-        }
-
-        public string DeviceName { get; }
-        public string Kind { get; }
-        public string GroupPath { get; }
-        public string ItemName { get; }
-        public bool Ok { get; }
-
-        public bool Is(string device, string kind, string name) =>
-            string.Equals(DeviceName, device, StringComparison.OrdinalIgnoreCase)
-            && Kind == kind
-            && string.Equals(ItemName, name, StringComparison.OrdinalIgnoreCase);
-    }
-
     [McpServerTool(Name = "write_source_tree")]
-    [Description(@"Write a source tree from read_source_tree back into the connected project: every item whose files were edited since the last read, and every new file - a new block, UDT or tag table is created by adding its file in the right folder (the folder gives the group, the file name the item's name; for a new block or UDT start from an existing file of the same kind). Written items are read back into the tree afterward, so their files show what TIA Portal made of them. Not compiled - call compile_plc afterward, and after an FB interface change read the instance DBs again. Deleting a file does not delete the item in the project (use the delete_* tools).
+    [Description(@"Write a source tree from read_source_tree back into the connected project: every item whose files were edited since the last read, and every new file - a new block, UDT, tag table or WinCC Unified screen is created by adding its file in the right folder (the folder gives the group, the file name the item's name; for a new block or UDT start from an existing file of the same kind). Written items are read back into the tree afterward, so their files show what TIA Portal made of them. Not compiled - call compile afterward, and after an FB interface change read the instance DBs again - except that a PLC whose written items have an .xml in the tree is compiled before they are read back (an XML export needs a consistent object). Deleting a file does not delete the item in the project (use the delete_* tools).
 
 Refuses (FAILED, nothing written for that item) to overwrite an item that was changed in TIA Portal since it was read, or that exists in the project but was never read into the tree; force=true overwrites anyway. A tree read from another project (e.g. to restore it into an emptied copy) is written in full, without these checks. So is a tree without _manifest.json, such as one a generator script writes: everything its _export_summary.txt (or itemList) lists is written, and nothing is read back into it.
 
+An item in more than one format is written from the one format whose files were edited; an item edited in two formats is refused (FAILED) - only one can be written. All formats are read back afterward.
+
 Writing rules per file type:
 - SCL block: the '{ S7_EditorMode := ""SCL"" }' attribute block before FUNCTION/FUNCTION_BLOCK/DATA_BLOCK is required. FBD/LAD: never hand-write NETWORK/RUNG notation from scratch - copy a similar existing block's .s7dcl/.s7res and adapt it.
+- A block with a textual interface (S7_EditorMode := ""[SCL,TextualInterface]""): TIA Portal V21 terminates when it overwrites one that was read more than once since the project was opened or the block was last written, so such a write is refused then - every read, change check and read-back counts. After save_project, close_project and tia_connect with projectPath, one write with the change check goes through (don't read the block again first); after that, the next one needs force=true or another reopen.
+- What TIA Portal's .s7dcl import gets wrong is refused, with a workaround: an array access inside an index in a LAD/FBD network, and a project FB or UDT named like a system type (TON, TOF, TP, TONR, CTU, CTD, CTUD, R_TRIG, F_TRIG), and an AT overlay (.s7dcl has no AT: the read marks the overlay's declaration with a '// TiaMcp: AT' comment; the import would make it an independent variable). read_source_tree warns about them.
 - Comments and titles: an { S7_MLC := ""MLC_x"" } attribute (S7_NetworkTitle/S7_NetworkComment for networks) referring to an entry in the .s7res; '//' comments in the source are dropped by TIA Portal. Keep text ids unique within a .s7res.
 - GRAPH ('.graph.il'): step/transition attributes, actions and conditions are writable, steps/transitions can be added or removed, and BRANCHES/CONNECTIONS of a SEQUENCE are rewritten when present; INTERFACE and PREOPERATIONS are read-only. A condition still containing a construct shown as generic 'PartName(args)' is refused. A new GRAPH block is made by cloning an existing GRAPH block of the PLC (picked automatically) and reshaping it. The write recompiles the block and reports errors.
-- Whole-block STL ('.awl'): AWL text as TIA Portal's 'Generate source' produces it, block name in the header unchanged. A block with embedded STL networks can't be written.
-- Instance DB: its .s7dcl ('DATA_BLOCK ""x"" ... : FB_y'); the FB must exist.
-- PLC tag table CSV: Name, DataType, LogicalAddress, Comment, ExternalAccessible, ExternalVisible, ExternalWritable (True/False). Rows update or add tags; an empty cell leaves that value unchanged; removing a row deletes that tag (not when writing a tree read from another project). Renaming a tag in the CSV deletes it and makes a new one, breaking references - use rename_plc_tag.
-- HMI tag table CSV: Name, DataType, Address, Connection, PlcName, PlcTag, Comment, AcquisitionCycle. Bind to a PLC tag with Connection + PlcTag (dot-qualified for a DB member); DataType then follows from the PLC tag. PlcName is ignored on write. AcquisitionCycle (e.g. T1s) only on PLC-bound tags. Rows and removed rows as for PLC tag tables; rename with rename_hmi_tag.
+- Whole-block STL ('.awl'): AWL text as TIA Portal's 'Generate source' produces it, block name in the header unchanged. A block with embedded STL networks is only written through its raw XML.
+- Instance DB: its .s7dcl ('DATA_BLOCK ""x"" ... : FB_y'); the FB must exist or be in the same write. A write doesn't make the instance DB of a new FB by itself, but notes a called block that isn't there.
+- Raw XML ('<name>.xml' of a block, UDT or PLC tag table): SimaticML as read; replaces the whole object (a table's removed tags go too), or creates it - also GRAPH blocks and blocks with embedded STL networks. Its <Name> must match the file name.
+- PLC tag table CSV: Name, DataType, LogicalAddress, Comment, ExternalAccessible, ExternalVisible, ExternalWritable (True/False). Rows update or add tags; an empty cell leaves that value unchanged (but clears the Comment in a tree read from this project); removing a row deletes that tag (not when writing a tree read from another project). Renaming a tag in the CSV deletes it and makes a new one, breaking references - use rename_plc_tag.
+- HMI tag table CSV: Name, DataType, Address, Connection, PlcName, PlcTag, Comment, AcquisitionCycle, Length. Bind to a PLC tag with Connection + PlcTag (dot-qualified for a DB member); DataType then follows from the PLC tag. PlcName is ignored on write. AcquisitionCycle (e.g. T1s) only on PLC-bound tags. Length (only in a tree read with hmiTagLength=true; without the column lengths stay unchanged) is the maximum length of a String/WString tag, empty for other types; only writable on internal tags (a PLC-bound tag has its PLC tag's length). Rows and removed rows as for PLC tag tables; rename with rename_hmi_tag.
 - PLC alarm text list CSV ('PLC alarm text lists/<list>.csv'): From, To, Text [language]... Only existing user lists (create a new list in TIA Portal). The write patches a fresh export of all lists and imports it, so other lists are untouched; a removed row deletes that entry (not when writing a tree read from another project); a language column left out stays unchanged. Every list's language must be a project language.
+- WinCC Unified text list CSV ('Text lists/<list>.csv'): the same columns as a PLC alarm text list; To = From for a single value. The default entry (the text for any value no other row has) is the row From = Default, To empty - not 0,0, which is the value 0. A new file creates the list (the HMI needs at least one list already, made in TIA Portal). The write patches a fresh export of all lists of the HMI, imports it and checks the result, so other lists are untouched; a removed row deletes that entry (not when writing a tree read from another project); a language column left out stays unchanged. Show a list on a screen with a SymbolicIOField's ""ResourceList"": ""<list>"". Delete a list with delete_hmi_text_list.
 - Classic WinCC XML (screens, templates, pop-ups, tag tables, text lists): native Openness XML as read; <Name> must match the file name. A new screen needs a <Number> not used by another screen - checked before the import (a duplicate number makes TIA Portal V21 terminate itself).
-- HMI alarms CSV: rows update or add alarms by name; a removed row is not deleted (use delete_hmi_alarm). RaisedStateTag binds the trigger (a tag or member path whose base HMI tag exists); TriggerAddress is computed and read-only. EventText/InfoText are plain text. AlarmClasses.csv: Name, Priority, Log; system classes accept no Priority change.
+- WinCC Unified global script modules ('Scripts/<module>.js', TIA Portal's own export): read-only. write_source_tree refuses an edited or new module; create, change or delete it in TIA Portal, then read it again.
+- WinCC Unified screen ('.json', built from the Openness object model - there is no export format): the screen's properties plus ""items"", one object per screen item with ""name"", ""type"" (see describe_hmi_item_type) and its properties under their Openness names; parts are nested objects, part lists arrays. Colors '#AARRGGBB', enums by member name, texts plain text in the editing language. Reserved keys: ""dynamizations"" ({""<Property>"": ""<HMI tag>""} or {""type"": ""Script"", ...}), ""events"" ({""<EventType>"": ""<JS code>""}), ""propertyEvents"" ({""<Property>:Change"": ...}). A FaceplateContainer has ""ContainedType"" (see list_library_types) and ""Interface"" (see read_faceplate_type): a plain value is static - a UDT-typed property takes the HMI tag name - and a binding is an object, {""type"": ""Tag"", ""Tag"": ""<HMI tag>""} or a script. Only values that differ from a new item are shown; leaving a property, dynamization or event out of the file doesn't reset it - set the default value, or null to remove a dynamization/script. Items are matched by name: a new name creates the item (appended - Openness has no z-order control), a changed type recreates it, a removed item is deleted (not when writing a tree read from another project). A new screen is created from a new file. Each property is set on its own; failures are reported per property and the rest still applies. SLOW: a screen is written item by item through Openness - a new screen (also a copy of an existing one: Openness can't copy Unified screens) or a forced write takes about 0.2 s per item, close to a minute for a screen of a few hundred items. An edit to a screen read into this tree writes only the changed properties and is fast. The read before and after each write adds a few seconds per screen.
+- HMI alarms CSV: rows update or add alarms by name; in a tree read from this project a removed row deletes the alarm (a dry run names them). RaisedStateTag binds the trigger (a tag or member path whose base HMI tag exists); TriggerAddress is computed and read-only. EventText/InfoText are plain text in the editing language (formatted text stays a <body> fragment). AlarmClasses.csv: Name, Priority, Log; system classes accept no Priority change.
 
 Writes in dependency order: UDTs, then tag tables, then blocks, with UDTs and blocks each split into layers by what their source references (nested UDTs first; global DBs and called FBs before their callers and instance DBs), compiling the PLC between UDT layers - imports can fail, or a UDT can silently lose nested start values, when what they reference isn't there yet.
-Then the PLC alarm text lists. A classic HMI is written text lists first, then tag tables, templates and pop-ups, then screens.
+Then the PLC alarm text lists. An HMI is written tag tables and text lists before screens (a classic one text lists first, then tag tables, templates and pop-ups, then screens).
 
-itemList limits what is considered, as lines from list_project or _export_summary.txt (a file path, or the lines inline; the OK status column is optional); all=true writes those items even if unchanged. Set dryRun to preview what would be created/updated/skipped/refused.
+itemList limits what is considered, as lines from list_project or _export_summary.txt (a file path, or the lines inline; the OK status column is optional; the software header can be left out when only one software has items of that kind); all=true writes those items even if unchanged. Set dryRun to preview what would be created/updated/skipped/refused, including per existing tag table the new tags and the tags its CSV would delete.
 
-Writes '<sourceDirectory>/_import_report.txt' with one CREATED/UPDATED/SKIPPED/FAILED line per item (per row for alarms). Returns that report for a small write; for a larger one, the counts per software plus every SKIPPED/FAILED line.")]
+In a Multiuser local session, an item another user has marked, or that the server has newer changes of, is refused (FAILED) - checked again right before writing; force=true writes it anyway. Refresh the local session in the TIA Portal GUI and read the item again first.
+
+An item whose write FAILED but changed the project anyway (some tag rows or screen items written) keeps its edited file, and can be written again after fixing the cause without force=true.
+
+Writes '<sourceDirectory>/_import_report.txt' with one CREATED/UPDATED/SKIPPED/FAILED line per item (per row for alarms). Returns that report for a small write; for a larger one, the counts per software plus every SKIPPED line and the first FAILED lines. Tag rows that fail the same way are reported as one line. Both end with the time per phase. '_progress.log' shows what the write is doing while it runs (also sent as MCP progress notifications). A cancel before the first item is written changes nothing; after that, the items not written yet are SKIPPED and what was written is read back.")]
     public Task<string> WriteSourceTree(
-        [Description("Root directory of the source tree, as passed to read_source_tree.")] string sourceDirectory,
+        [Description("Root directory of the source tree, as passed to read_source_tree. A folder no read went into (e.g. a few files copied out of a read tree, laid out the same way) is written as a whole, without change checks.")] string sourceDirectory,
         [Description("Optional: consider only these items - lines from list_project or _export_summary.txt, as a file path or inline. Omit to consider the whole tree, including new files.")] string? itemList = null,
         [Description("Write every item considered, not only those changed or added since read_source_tree. Default false.")] bool all = false,
         [Description("Create items that don't yet exist in the connected project. Default true.")] bool createMissing = true,
         [Description("Overwrite items that already exist in the connected project. Default true.")] bool overwriteExisting = true,
         [Description("Also overwrite items that were changed in TIA Portal since read_source_tree, discarding those changes. Default false.")] bool force = false,
-        [Description("Preview only - report what would happen without writing any changes.")] bool dryRun = false) => Safe(async () =>
+        [Description("Preview only - report what would happen without writing any changes.")] bool dryRun = false,
+        IProgress<ProgressNotificationValue>? progress = null,
+        CancellationToken cancellationToken = default) => Safe(async () =>
     {
         if (!_session.IsConnected) return "Not connected. Call tia_connect first.";
+
+        using var progressLog = new ProgressLog(Directory.Exists(sourceDirectory) ? sourceDirectory : null, $"write_source_tree{(dryRun ? " (dry run)" : "")} - project {_session.ProjectName}", progress, cancellationToken);
+        progressLog.Phase("check files", cancellable: true);
 
         var manifest = SourceTreeManifest.Load(sourceDirectory);
         // A tree read from another project (e.g. restoring into an emptied copy) isn't a working
         // copy of this one: all of it is written, and nothing is compared with or refreshed from it.
         var workingCopy = manifest != null && manifest.Project == _session.ProjectName;
-        var notes = new List<string>();
+        var software = await _session.ListSoftwareAsync();
+        var notes = workingCopy ? MoveToProjectTreeNames(sourceDirectory, manifest!, software) : new List<string>();
+        var projectDevices = await Devices(null);
+        // By either name: a tree without a manifest (generated, or from another project) keeps the
+        // folder names it was made with.
+        DeviceFamily? FamilyOf(string device) =>
+            software.Where(s => string.Equals(s.Name, device, StringComparison.OrdinalIgnoreCase) || string.Equals(s.SoftwareName, device, StringComparison.OrdinalIgnoreCase))
+                .Select(s => (DeviceFamily?)projectDevices.First(d => d.Name == s.Name).Family).FirstOrDefault();
 
         List<ImportListItem> items;
         var invalidCount = 0;
         if (!string.IsNullOrEmpty(itemList) || manifest == null)
         {
             var listPath = string.IsNullOrEmpty(itemList) ? Path.Combine(sourceDirectory, "_export_summary.txt") : itemList!;
+            List<ImportListItem> allItems;
             if (string.IsNullOrEmpty(itemList) && !File.Exists(listPath))
-                return $"No itemList given and no source tree found at '{sourceDirectory}'. Run read_source_tree first, or pass itemList.";
-
-            var allItems = ParseSourceTreeList(File.Exists(listPath) ? File.ReadAllText(listPath) : itemList!);
-            if (allItems.Count == 0) return $"No items recognized in the given list. {ItemListExample}";
+            {
+                // No read here (e.g. a few files copied out of a read tree): the files laid out as
+                // a read lays them out, in a folder named after one of the project's PLCs or HMIs.
+                allItems = Directory.Exists(sourceDirectory)
+                    ? NewItemsInTree(sourceDirectory, new SourceTreeManifest(), FamilyOf).Where(i => FamilyOf(i.DeviceName) != null).ToList()
+                    : new List<ImportListItem>();
+                if (allItems.Count == 0)
+                    return $"No itemList given, and '{sourceDirectory}' holds no source tree: no _export_summary.txt, and no source files in a folder named after a PLC or HMI of this project (<PLC or HMI>/<section>/..., as read_source_tree lays them out). " +
+                           "Run read_source_tree first, or pass itemList - which also writes just some items of a read tree.";
+            }
+            else
+            {
+                var unknownLines = new List<string>();
+                var listFile = File.Exists(listPath);
+                allItems = ParseSourceTreeList(listFile ? File.ReadAllText(listPath) : itemList!, unknownLines);
+                if (allItems.Count == 0) return $"No items recognized in the given list. {ItemListExample}";
+                // TiaMcp's own lists hold other lines too.
+                if (unknownLines.Count > 0 && !(listFile && Path.GetFileName(listPath).ToLowerInvariant() is ("_export_summary.txt" or "_project_list.txt")))
+                    notes.Add($"{unknownLines.Count} line(s) of the list name no item and were left out: {string.Join(", ", unknownLines.Take(5).Select(l => $"'{l}'"))}{(unknownLines.Count > 5 ? ", ..." : "")}. {ItemListExample}");
+            }
+            // Lines above any software header: the software that alone has items of that kind.
+            for (var i = 0; i < allItems.Count; i++)
+            {
+                var item = allItems[i];
+                if (item.DeviceName != "") continue;
+                var candidates = projectDevices.Where(d => SourceKinds.All.Any(k => k.Name == item.Kind && k.Family == d.Family)).Select(d => d.Name).ToList();
+                if (candidates.Count != 1)
+                    return $"{Describe(item.Kind, item.GroupPath, item.ItemName)} has no software header above it, and the project has {(candidates.Count == 0 ? "no software" : $"more than one software ({string.Join(", ", candidates)})")} it can belong to. {ItemListExample}";
+                allItems[i] = new ImportListItem(candidates[0], item.Kind, item.GroupPath, item.ItemName, item.Ok);
+            }
+            // A working copy's folders are under the project-tree name; a line may still use the
+            // software name (an itemList from before the move).
+            if (workingCopy)
+                allItems = allItems.Select(i => software.FirstOrDefault(s => string.Equals(s.SoftwareName, i.DeviceName, StringComparison.OrdinalIgnoreCase)) is { } s && s.Name != i.DeviceName
+                    ? new ImportListItem(s.Name, i.Kind, i.GroupPath, i.ItemName, i.Ok)
+                    : i).ToList();
+            // A label is split at its last '/', but an item name can hold a '/' itself
+            // ("Group/Pump 1/2"): the manifest knows where the group path ends.
+            if (manifest != null)
+                allItems = allItems.Select(i => manifest.Items.FirstOrDefault(m => m.Device == i.DeviceName && m.Kind == i.Kind
+                        && string.Equals(Label(m.GroupPath, m.Name), Label(i.GroupPath, i.ItemName), StringComparison.OrdinalIgnoreCase)) is { } m
+                    ? new ImportListItem(i.DeviceName, i.Kind, m.GroupPath, m.Name, i.Ok)
+                    : i).ToList();
             invalidCount = allItems.Count(i => !i.Ok);
             items = allItems.Where(i => i.Ok).ToList();
         }
@@ -666,7 +984,7 @@ Writes '<sourceDirectory>/_import_report.txt' with one CREATED/UPDATED/SKIPPED/F
         {
             items = manifest.Items.Where(i => i.Ok)
                 .Select(i => new ImportListItem(i.Device, i.Kind, i.GroupPath, i.Name, true))
-                .Concat(NewItemsInTree(sourceDirectory, manifest))
+                .Concat(NewItemsInTree(sourceDirectory, manifest, FamilyOf))
                 .ToList();
         }
 
@@ -674,30 +992,70 @@ Writes '<sourceDirectory>/_import_report.txt' with one CREATED/UPDATED/SKIPPED/F
             notes.Add("No _manifest.json in the tree (generated, or read by an older version): every listed item is written, without change or conflict checks, and nothing is read back into the tree.");
         else if (!workingCopy)
             notes.Add($"The tree was read from project '{manifest.Project}', not the connected '{_session.ProjectName}': every listed item is written, and nothing is compared with or refreshed from this project.");
+        // Not moved (see MoveToProjectTreeNames), but worth knowing: a read names these folders differently.
+        if (!workingCopy)
+            foreach (var s in software.Where(s => !string.Equals(DirName(s.SoftwareName), DirName(s.Name), StringComparison.OrdinalIgnoreCase)
+                    && items.Any(i => string.Equals(i.DeviceName, s.SoftwareName, StringComparison.OrdinalIgnoreCase))))
+                notes.Add($"'{DirName(s.SoftwareName)}/' is named after the software; read_source_tree names it '{DirName(s.Name)}/', as TIA Portal's project tree shows it. Both work here; rename the folder (and a generator's output path) to match a read tree.");
 
-        if (workingCopy && !all)
+        // The format each item is written from; unchanged items are left out unless all is set.
+        var toWrite = new List<ImportListItem>();
+        var refused = new List<(ImportListItem Item, string Reason)>();
+        var unchanged = 0;
+        foreach (var item in items)
         {
-            var changed = new List<ImportListItem>();
-            var unchanged = 0;
-            foreach (var item in items)
+            // A working copy is checked against the project under the project-tree names; files
+            // left in a folder of the software name (one that couldn't be moved) would skip that check.
+            if (workingCopy && software.FirstOrDefault(s => string.Equals(s.SoftwareName, item.DeviceName, StringComparison.OrdinalIgnoreCase)
+                    && !string.Equals(s.Name, item.DeviceName, StringComparison.OrdinalIgnoreCase)) is { } renamed)
             {
-                var entry = manifest!.Find(item.DeviceName, item.Kind, item.ItemName);
-                var state = entry == null ? DiskState.Changed : CompareWithDisk(sourceDirectory, entry);
-                if (state == DiskState.Changed) changed.Add(item);
-                else if (state == DiskState.Unchanged) unchanged++;
-                else notes.Add($"{Describe(item.Kind, item.GroupPath, item.ItemName)}: its files were deleted from the tree. That doesn't delete it in the project - use the delete_* tool for that.");
+                refused.Add((item, $"is in '{DirName(item.DeviceName)}/', but this tree has '{renamed.SoftwareName}' under the name TIA Portal's project tree shows, '{DirName(renamed.Name)}/'. Move its files there (or remove them), and write again."));
+                continue;
             }
-            if (unchanged > 0) notes.Add($"{unchanged} item(s) unchanged since read_source_tree were not written (all=true writes them anyway).");
-            items = changed;
+            var entry = workingCopy ? manifest!.Find(item.DeviceName, item.Kind, item.ItemName) : null;
+            var (format, state, error) = WriteFormat(sourceDirectory, item, SourceKinds.Find(item.Kind, FamilyOf(item.DeviceName))!, entry, workingCopy);
+            if (error != null) { refused.Add((item, error)); continue; }
+            if (state == DiskState.Deleted)
+            {
+                notes.Add($"{Describe(item.Kind, item.GroupPath, item.ItemName)}: its files were deleted from the tree. That doesn't delete it in the project - use the delete_* tool for that.");
+                continue;
+            }
+            if (state == DiskState.Unchanged && !all) { unchanged++; continue; }
+            item.Format = format;
+            toWrite.Add(item);
         }
+        if (unchanged > 0) notes.Add($"{unchanged} item(s) unchanged since read_source_tree were not written (all=true writes them anyway).");
+        items = toWrite;
 
-        var classicHmis = new HashSet<string>(await _session.ListHmiClassicNamesAsync(), StringComparer.OrdinalIgnoreCase);
         await _session.ClearHmiClassicScreenNumbersAsync();
 
+        // Checked before the change check, which exports the block once more.
+        var checkChanges = workingCopy && !force;
+        refused.AddRange(await ExportedTooOften(sourceDirectory, items, checkChanges, FamilyOf));
+        items = items.Where(i => !refused.Any(r => r.Item == i)).ToList();
+
         var conflicts = new List<(ImportListItem Item, string Reason)>();
-        if (workingCopy && !force && items.Count > 0)
+        if (checkChanges && items.Count > 0)
         {
-            conflicts = await FindConflicts(manifest!, items);
+            conflicts = await FindConflicts(manifest!, items, progressLog);
+            items = items.Where(i => !conflicts.Any(c => c.Item == i)).ToList();
+        }
+        conflicts.AddRange(refused);
+
+        // Multiuser: an item another user has marked, or that the server has newer changes of,
+        // would conflict on commit - checked again now, the read's mark state may be old.
+        if (_session.IsMultiuser && !force && items.Count > 0)
+        {
+            progressLog.Phase("Multiuser marks", cancellable: true);
+            var marks = await MarkStates(items.Select(i => (i.DeviceName, i.Kind, i.ItemName)).ToList(), progressLog);
+            foreach (var item in items)
+            {
+                if (!marks.TryGetValue((item.DeviceName, item.Kind, item.ItemName), out var m)) continue;
+                if (m.ByOthers > 0)
+                    conflicts.Add((item, $"{m.Describe()}. Another user is working on it; writing it here would conflict when either of you commits. Coordinate with them - or pass force=true."));
+                else if (m.NotUpToDate > 0)
+                    conflicts.Add((item, $"{m.Describe()}. The server has newer changes of it: refresh the local session in the TIA Portal GUI, read the item again (keep a copy of your edit), merge and write again - or pass force=true."));
+            }
             items = items.Where(i => !conflicts.Any(c => c.Item == i)).ToList();
         }
 
@@ -713,46 +1071,62 @@ Writes '<sourceDirectory>/_import_report.txt' with one CREATED/UPDATED/SKIPPED/F
         // longer than a tool result may be.
         var compact = new StringBuilder();
         var written = new List<ImportListItem>();
+        var touched = new List<ImportListItem>();
         int totalCreated = 0, totalUpdated = 0, totalSkipped = 0, totalFailed = 0;
         foreach (var deviceGroup in items.Concat(conflicts.Select(c => c.Item)).GroupBy(i => i.DeviceName, StringComparer.OrdinalIgnoreCase))
         {
             var deviceName = deviceGroup.Key;
-            var deviceDir = Path.Combine(sourceDirectory, Sanitize(deviceName));
+            var deviceDir = Path.Combine(sourceDirectory, DirName(deviceName));
             var deviceItems = deviceGroup.Where(items.Contains).ToList();
-            var isHmi = deviceGroup.All(i => i.Kind.StartsWith("HMI"));
+            var family = FamilyOf(deviceName);
+            var isHmi = family is DeviceFamily.HmiUnified or DeviceFamily.HmiClassic || (family == null && deviceGroup.All(i => i.Kind.StartsWith("HMI")));
             summary.AppendLine(isHmi ? $"=== {deviceName} (HMI) ===" : $"=== {deviceName} ===");
 
-            var logs = new List<(List<string> Created, List<string> Updated, List<string> Skipped, List<string> Failed)>();
-            var conflictLines = conflicts.Where(c => deviceGroup.Contains(c.Item)).Select(c => $"{Describe(c.Item.Kind, c.Item.GroupPath, c.Item.ItemName)}: {c.Reason}").ToList();
-            if (conflictLines.Count > 0) logs.Add((new List<string>(), new List<string>(), new List<string>(), conflictLines));
+            var logs = new List<WriteLog>();
+            var conflictLog = new WriteLog();
+            conflictLog.Failed.AddRange(conflicts.Where(c => deviceGroup.Contains(c.Item)).Select(c => $"{Describe(c.Item.Kind, c.Item.GroupPath, c.Item.ItemName)}: {c.Reason}"));
+            logs.Add(conflictLog);
 
-            // Dependency order: tags can be UDT-typed, and blocks reference both UDTs and tags -
-            // a block imported before what it references fails to import.
-            var udtItems = deviceItems.Where(i => i.Kind == "udt").ToList();
-            if (udtItems.Count > 0) logs.Add(await ImportTypes(deviceName, deviceDir, udtItems, createMissing, overwriteExisting, dryRun, written));
-
-            var tagTableItems = deviceItems.Where(i => i.Kind == "tag table").ToList();
-            if (tagTableItems.Count > 0) logs.Add(await ImportTagTables(deviceName, deviceDir, tagTableItems, createMissing, overwriteExisting, dryRun, workingCopy, written));
-
-            var blockItems = deviceItems.Where(i => i.Kind == "block").ToList();
-            if (blockItems.Count > 0) logs.Add(await ImportBlocks(deviceName, deviceDir, blockItems, createMissing, overwriteExisting, dryRun, written));
-
-            // After the blocks: the text lists' messages belong to the alarms the blocks define.
-            var alarmTextListItems = deviceItems.Where(i => i.Kind == AlarmTextListKind).ToList();
-            if (alarmTextListItems.Count > 0) logs.Add(await ImportAlarmTextLists(deviceName, deviceDir, alarmTextListItems, createMissing, overwriteExisting, dryRun, workingCopy, written));
-
-            if (classicHmis.Contains(deviceName))
+            // Each kind in the registry's write order, which puts what an item references first.
+            var kinds = family == null ? new List<ISourceKind>() : SourceKinds.Of(family.Value).ToList();
+            var context = new WriteContext(_session, deviceName, sourceDirectory, deviceDir, createMissing, overwriteExisting, dryRun, workingCopy,
+                workingCopy ? manifest : null, workingCopy && !force ? manifest : null, written, progressLog);
+            // From here on the project changes: a cancel stops starting new writes, and what was
+            // written is still read back.
+            progressLog.Phase("write");
+            foreach (var kind in kinds)
             {
-                var classicItems = deviceItems.Where(i => IsClassicTreeKind(i.Kind)).ToList();
-                if (classicItems.Count > 0) logs.Add(await ImportHmiClassic(deviceName, deviceDir, classicItems, createMissing, overwriteExisting, dryRun, written));
-                deviceItems = deviceItems.Where(i => !IsClassicTreeKind(i.Kind)).ToList();
+                var kindItems = deviceItems.Where(i => i.Kind == kind.Name).ToList();
+                if (kindItems.Count == 0) continue;
+                if (progressLog.Cancelled)
+                {
+                    var cancelled = new WriteLog();
+                    cancelled.Skipped.AddRange(kindItems.Select(i => $"{Describe(i.Kind, i.GroupPath, i.ItemName)} - not written, the call was cancelled"));
+                    logs.Add(cancelled);
+                    continue;
+                }
+                progressLog.Note($"{deviceName}: {(kind.FixedName != null ? kind.Name : $"{kindItems.Count} {kind.Name}(s)")}");
+                logs.Add(await kind.Write(context, kindItems));
             }
+            touched.AddRange(context.Touched);
+            notes.AddRange(logs.SelectMany(l => l.Notes));
 
-            var hmiTagTableItems = deviceItems.Where(i => i.Kind == "HMI tag table").ToList();
-            if (hmiTagTableItems.Count > 0) logs.Add(await ImportHmiTagTables(deviceName, deviceDir, hmiTagTableItems, createMissing, overwriteExisting, dryRun, workingCopy, written));
+            var unknown = new WriteLog();
+            unknown.Failed.AddRange(deviceItems.Where(i => !kinds.Any(k => k.Name == i.Kind)).Select(i => family == null
+                ? $"{Describe(i.Kind, i.GroupPath, i.ItemName)}: the project has no PLC or HMI software named '{deviceName}'"
+                : $"{Describe(i.Kind, i.GroupPath, i.ItemName)}: a {i.Kind} can't be written to {(family == DeviceFamily.Plc ? "a PLC" : family == DeviceFamily.HmiClassic ? "a classic WinCC HMI" : "a WinCC Unified HMI")}"));
+            logs.Add(unknown);
 
-            var hmiAlarmItems = deviceItems.Where(i => HmiAlarmKinds.Contains(i.Kind)).ToList();
-            if (hmiAlarmItems.Count > 0) logs.Add(await ImportHmiAlarms(deviceName, deviceDir, hmiAlarmItems, createMissing, overwriteExisting, dryRun, written));
+            // See ISourceKind.XmlNeedsCompile.
+            if (workingCopy && written.Any(w => string.Equals(w.DeviceName, deviceName, StringComparison.OrdinalIgnoreCase)
+                    && kinds.Any(k => k.Name == w.Kind && k.XmlNeedsCompile)
+                    && (w.Format == SourceFormat.Xml || manifest!.Find(w.DeviceName, w.Kind, w.ItemName)?.WritableFiles.Any(f => f.Value.Format == SourceFormat.Xml) == true)))
+            {
+                progressLog.Phase("compile");
+                progressLog.Item(deviceName);
+                var compile = await _session.CompileAsync(deviceName);
+                notes.Add($"Compiled '{deviceName}' so the written items can be read back as XML: {compile.State}, {compile.ErrorCount} error(s), {compile.WarningCount} warning(s).");
+            }
 
             foreach (var log in logs)
             {
@@ -770,7 +1144,9 @@ Writes '<sourceDirectory>/_import_report.txt' with one CREATED/UPDATED/SKIPPED/F
             compact.AppendLine($"{(isHmi ? $"=== {deviceName} (HMI) ===" : $"=== {deviceName} ===")} {logs.Sum(l => l.Created.Count)} created, " +
                                $"{logs.Sum(l => l.Updated.Count)} updated, {logs.Sum(l => l.Skipped.Count)} skipped, {logs.Sum(l => l.Failed.Count)} failed");
             foreach (var line in logs.SelectMany(l => l.Skipped)) compact.AppendLine($"  SKIPPED  {line}");
-            foreach (var line in logs.SelectMany(l => l.Failed)) compact.AppendLine($"  FAILED   {line}");
+            var failed = logs.SelectMany(l => l.Failed).ToList();
+            foreach (var line in failed.Take(MaxFailedLines)) compact.AppendLine($"  FAILED   {line}");
+            if (failed.Count > MaxFailedLines) compact.AppendLine($"  ... and {failed.Count - MaxFailedLines} more FAILED, see the full report");
         }
 
         if (invalidCount > 0)
@@ -781,19 +1157,34 @@ Writes '<sourceDirectory>/_import_report.txt' with one CREATED/UPDATED/SKIPPED/F
 
         // What TIA Portal made of the written items (it normalizes e.g. quoting) becomes the tree's
         // new baseline, so the next write sees them as unchanged.
+        if (workingCopy && written.Count + touched.Count > 0) progressLog.Phase("read back", total: written.Count + touched.Count);
         if (workingCopy && written.Count > 0)
         {
-            var (exported, _) = await ExportItems((device, kind, _, name) => written.Any(w => w.Is(device, kind, name)), null);
+            var (exported, _) = await ExportItems((device, kind, _, name) => written.Any(w => w.Is(device, kind, name)) ? Array.Empty<string>() : null, null, manifest, progressLog);
             WriteExport(sourceDirectory, manifest!, exported);
+            notes.Add($"Refreshed the {exported.Count(e => e.Ok)} written item(s) in the tree from the project.");
+        }
+        // A partly failed write changed the project, not the tree: what was written would look
+        // like a change made in TIA Portal and make the next write of these items refuse.
+        if (workingCopy && touched.Count > 0)
+        {
+            var (exported, _) = await ExportItems((device, kind, _, name) => touched.Any(t => t.Is(device, kind, name)) ? Array.Empty<string>() : null, null, manifest, progressLog);
+            RecordProjectState(sourceDirectory, manifest!, exported);
+            notes.Add($"{exported.Count(e => e.Ok)} FAILED item(s) were partly written to the project. Their files still hold your edit; fix the cause and write them again (no force=true needed).");
+        }
+        if (workingCopy && written.Count + touched.Count > 0)
+        {
+            await RecordMarks(manifest!, written.Concat(touched).Select(i => (i.DeviceName, i.Kind, i.ItemName)).ToList(), progressLog);
             manifest!.Save(sourceDirectory);
             File.WriteAllText(Path.Combine(sourceDirectory, "_export_summary.txt"), FormatSummary(sourceDirectory, manifest));
-            notes.Add($"Refreshed the {exported.Count(e => e.Ok)} written item(s) in the tree from the project.");
         }
 
         var footer = new StringBuilder();
+        if (progressLog.Cancelled) notes.Add("Cancelled: the items not written yet are SKIPPED; what was written was read back into the tree.");
         foreach (var note in notes) footer.AppendLine(note);
         if (totalCreated + totalUpdated + totalFailed + totalSkipped == 0 && !dryRun) footer.AppendLine("Nothing to write.");
         footer.AppendLine($"Done: {totalCreated} created, {totalUpdated} updated, {totalSkipped} skipped, {totalFailed} failed. Finished {DateTime.Now:yyyy-MM-dd HH:mm:ss} (started {startedAt:HH:mm:ss}).");
+        footer.AppendLine($"Time: {progressLog.Timings}.");
 
         var summaryText = summary.Append(footer).ToString();
         var reportPath = Path.Combine(sourceDirectory, "_import_report.txt");
@@ -804,65 +1195,99 @@ Writes '<sourceDirectory>/_import_report.txt' with one CREATED/UPDATED/SKIPPED/F
 
     private enum DiskState { Unchanged, Changed, Deleted }
 
-    // Compares an item's files on disk with what read_source_tree last wrote for it. A writable
-    // file of the item that the read didn't produce (e.g. a .s7res added by hand) counts as a change.
-    private static DiskState CompareWithDisk(string root, SourceTreeItem entry)
+    // The format an item is written from, and whether it was edited since the last read. For an
+    // item of the working copy that the last read wrote (entry): the one format whose files were
+    // edited - an edit in two formats is refused, only one can be written - or, unedited, the first
+    // format it has in the tree. For anything else (a new file, a tree from another project or
+    // without manifest): the first format of the kind whose file is there - so its own format
+    // before the raw XML - except that a new item of the working copy in two formats is refused.
+    private static (string? Format, DiskState State, string? Error) WriteFormat(string root, ImportListItem item, ISourceKind kind, SourceTreeItem? entry, bool workingCopy)
     {
-        var expected = entry.WritableFiles.ToList();
-        var present = expected.Where(f => File.Exists(Path.Combine(root, f.Key))).ToList();
-        if (expected.Count > 0 && present.Count == 0) return DiskState.Deleted;
-        if (present.Count < expected.Count) return DiskState.Changed;
-        if (present.Any(f => SourceTreeManifest.Hash(File.ReadAllText(Path.Combine(root, f.Key))) != f.Value)) return DiskState.Changed;
+        var dir = ItemDir(item.DeviceName, item.Kind, item.GroupPath);
+        var stem = Sanitize(ItemStem(item.Kind, item.ItemName));
+        var present = kind.Formats.Where(f => File.Exists(Path.Combine(root, $"{dir}/{stem}{SourceFormat.Extension(f)}"))).ToList();
+        if (entry == null)
+        {
+            if (workingCopy && present.Count > 1)
+                return (null, DiskState.Changed, $"is new in the tree in more than one format ({string.Join(", ", present)}). Keep the file of one format only, and write again.");
+            return (present.FirstOrDefault(), DiskState.Changed, null);
+        }
 
-        var dir = ItemDir(entry.Device, entry.Kind, entry.GroupPath);
-        var stem = Sanitize(ItemStem(entry.Kind, entry.Name));
-        return SourceExtensions.Select(ext => $"{dir}/{stem}{ext}")
-            .Any(path => File.Exists(Path.Combine(root, path)) && !entry.Files.Keys.Contains(path, StringComparer.OrdinalIgnoreCase))
-            ? DiskState.Changed
-            : DiskState.Unchanged;
+        var edited = EditedFormats(root, entry, kind, dir, stem);
+        if (edited.Count > 1)
+            return (null, DiskState.Changed, $"was edited in more than one format ({string.Join(", ", edited)}), and only one can be written. Undo the edit in all but one of them, or read the item again to bring them in line.");
+        if (edited.Count == 1) return (edited[0], DiskState.Changed, null);
+        if (present.Count == 0 && entry.WritableFiles.Any()) return (null, DiskState.Deleted, null);
+        return (present.FirstOrDefault(), DiskState.Unchanged, null);
     }
 
-    private static readonly string[] SourceExtensions = { ".s7dcl", ".s7res", ".graph.il", ".awl", ".csv", ".xml" };
+    // The formats of an item whose files on disk differ from what read_source_tree last wrote: a
+    // changed or deleted file of a format that still has files, or a file the read didn't produce
+    // (e.g. a .s7res added next to a .s7dcl, or an .xml next to a .csv). A format whose files were
+    // all deleted is not an edit.
+    private static List<string> EditedFormats(string root, SourceTreeItem entry, ISourceKind kind, string dir, string stem)
+    {
+        var edited = new List<string>();
+        foreach (var format in entry.WritableFiles.GroupBy(f => f.Value.Format))
+        {
+            var present = format.Where(f => File.Exists(Path.Combine(root, f.Key))).ToList();
+            if (present.Count == 0) continue;
+            if (present.Count < format.Count() || present.Any(f => SourceTreeManifest.Hash(File.ReadAllText(Path.Combine(root, f.Key))) != f.Value.Hash))
+                edited.Add(format.Key);
+        }
+
+        foreach (var format in kind.Formats.Where(f => !edited.Contains(f)))
+        {
+            var files = new List<string> { $"{dir}/{stem}{SourceFormat.Extension(format)}" };
+            if (format == SourceFormat.S7dcl) files.Add($"{dir}/{stem}.s7res");
+            if (files.Any(path => File.Exists(Path.Combine(root, path)) && !entry.Files.Keys.Contains(path, StringComparer.OrdinalIgnoreCase)))
+                edited.Add(format);
+        }
+        return edited;
+    }
 
     // Source files in the tree that no read put there: new items to create. Kind and group path
     // follow from the folder (see ItemDir), the name from the file name.
-    private static List<ImportListItem> NewItemsInTree(string root, SourceTreeManifest manifest)
+    private static List<ImportListItem> NewItemsInTree(string root, SourceTreeManifest manifest, Func<string, DeviceFamily?> familyOf)
     {
+        // A file a read put there belongs to its item even when the file name doesn't give the
+        // item name back ('/' in a block name, replaced characters).
+        var readFiles = new HashSet<string>(manifest.Items.SelectMany(i => i.Files.Keys), StringComparer.OrdinalIgnoreCase);
         var found = new List<ImportListItem>();
-        foreach (var deviceDir in Directory.GetDirectories(root))
+        foreach (var deviceDir in Directory.GetDirectories(root).Where(d => Path.GetFileName(d) != BaseDirName))
         {
             var dirName = Path.GetFileName(deviceDir);
-            var device = manifest.Items.Select(i => i.Device).FirstOrDefault(d => Sanitize(d) == dirName) ?? dirName;
+            var device = manifest.Items.Select(i => i.Device).FirstOrDefault(d => DirName(d) == dirName) ?? dirName;
 
-            void Scan(string section, string kind, params string[] extensions)
+            // The group each folder holds per the last read: a folder doesn't always give the group
+            // path back ('/' in a group name, trailing spaces and dots, replaced characters).
+            var groupOf = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+            foreach (var item in manifest.Items.Where(i => i.Device == device && !string.IsNullOrEmpty(i.GroupPath)))
+                groupOf[ItemDir(item.Device, item.Kind, item.GroupPath)] = item.GroupPath;
+
+            // Two kinds can share a section (classic and Unified HMI screens and tag tables): a file
+            // is new for the first kind of the device's family it fits (any family for a device
+            // the project doesn't have).
+            var family = familyOf(device);
+            foreach (var kind in SourceKinds.All.Where(k => family == null || k.Family == family))
             {
-                var sectionDir = Path.Combine(deviceDir, section);
-                if (!Directory.Exists(sectionDir)) return;
+                var sectionDir = Path.Combine(deviceDir, kind.Section);
+                if (!Directory.Exists(sectionDir)) continue;
                 foreach (var file in Directory.GetFiles(sectionDir, "*", SearchOption.AllDirectories))
                 {
                     var fileName = Path.GetFileName(file);
-                    var ext = extensions.FirstOrDefault(e => fileName.EndsWith(e, StringComparison.OrdinalIgnoreCase));
+                    var ext = kind.Formats.Select(SourceFormat.Extension).FirstOrDefault(e => fileName.EndsWith(e, StringComparison.OrdinalIgnoreCase));
                     if (ext == null || SourceTreeManifest.IsReadOnlyCompanion(fileName)) continue;
+                    if (readFiles.Contains(file.Substring(root.Length).TrimStart(Path.DirectorySeparatorChar, '/').Replace(Path.DirectorySeparatorChar, '/'))) continue;
 
-                    var name = fileName.Substring(0, fileName.Length - ext.Length);
+                    var stem = fileName.Substring(0, fileName.Length - ext.Length);
                     var relDir = Path.GetDirectoryName(file)!.Substring(sectionDir.Length).Trim(Path.DirectorySeparatorChar).Replace(Path.DirectorySeparatorChar, '/');
-                    if (manifest.Find(device, kind, name) == null && !found.Any(i => i.Is(device, kind, name)))
-                        found.Add(new ImportListItem(device, kind, relDir, name, true));
-                }
-            }
+                    if (kind.FixedName != null && (relDir != "" || !string.Equals(stem, kind.FixedName, StringComparison.OrdinalIgnoreCase))) continue;
 
-            Scan("Program blocks", "block", ".s7dcl", ".graph.il", ".awl");
-            Scan("PLC data types", "udt", ".s7dcl");
-            Scan("PLC tags", "tag table", ".csv");
-            Scan("PLC alarm text lists", "alarm text list", ".csv");
-            Scan("HMI tags", "HMI tag table", ".csv", ".xml");
-            Scan("Text lists", "HMI text list", ".xml");
-            Scan("Screen templates", "HMI screen template", ".xml");
-            Scan("Pop-up screens", "HMI pop-up screen", ".xml");
-            Scan("Screens", "HMI screen", ".xml");
-            foreach (var kind in HmiAlarmKinds.Where(k => File.Exists(Path.Combine(deviceDir, "HMI alarms", ItemStem(k, "") + ".csv"))))
-            {
-                if (manifest.Find(device, kind, "") == null) found.Add(new ImportListItem(device, kind, "", "", true));
+                    var name = kind.FixedName == null ? stem : "";
+                    if (manifest.Find(device, kind.Name, name) == null && !found.Any(i => i.Is(device, kind.Name, name)))
+                        found.Add(new ImportListItem(device, kind.Name, groupOf.TryGetValue(ItemDir(device, kind.Name, relDir), out var groupPath) ? groupPath : relDir, name, true));
+                }
             }
         }
         return found;
@@ -871,9 +1296,10 @@ Writes '<sourceDirectory>/_import_report.txt' with one CREATED/UPDATED/SKIPPED/F
     // Items to write that were changed in TIA Portal since read_source_tree - their export now
     // differs from what the manifest recorded - or that are new in the tree but already exist in
     // the project. Writing them would discard what was done in TIA Portal.
-    private async Task<List<(ImportListItem Item, string Reason)>> FindConflicts(SourceTreeManifest manifest, List<ImportListItem> items)
+    private async Task<List<(ImportListItem Item, string Reason)>> FindConflicts(SourceTreeManifest manifest, List<ImportListItem> items, ProgressLog progress)
     {
-        var (current, _) = await ExportItems((device, kind, _, name) => items.Any(i => i.Is(device, kind, name)), null);
+        progress.Phase("change check", cancellable: true, total: items.Count);
+        var (current, _) = await ExportItems((device, kind, _, name) => items.Any(i => i.Is(device, kind, name)) ? Array.Empty<string>() : null, null, manifest, progress);
         var conflicts = new List<(ImportListItem, string)>();
         foreach (var exported in current.Where(e => e.Ok))
         {
@@ -888,467 +1314,52 @@ Writes '<sourceDirectory>/_import_report.txt' with one CREATED/UPDATED/SKIPPED/F
             var now = exported.Files.Where(f => !SourceTreeManifest.IsReadOnlyCompanion(f.Path))
                 .ToDictionary(f => f.Path, f => SourceTreeManifest.Hash(f.Content), StringComparer.OrdinalIgnoreCase);
             var then = entry.WritableFiles.ToList();
-            if (now.Count != then.Count || then.Any(f => !now.TryGetValue(f.Key, out var hash) || hash != f.Value))
+            if (now.Count != then.Count || then.Any(f => !now.TryGetValue(f.Key, out var hash) || hash != f.Value.Hash))
                 conflicts.Add((item, "changed in TIA Portal since read_source_tree. Read it again (read_source_tree with items; this overwrites the file, so keep a copy of your edit), merge, and write again - or pass force=true to overwrite the project's version."));
         }
         return conflicts;
     }
 
-    private async Task<(List<string> Created, List<string> Updated, List<string> Skipped, List<string> Failed)> ImportBlocks(
-        string plcName, string plcDir, List<ImportListItem> items, bool createMissing, bool overwriteExisting, bool dryRun, List<ImportListItem> written)
+    // Existing blocks with a textual interface that TIA Portal V21 would terminate on overwriting:
+    // exported more than once since the project was opened or the block last written, counting
+    // the change check's export (see TiaConnection.ExportsSinceImport). Created blocks are fine.
+    private async Task<List<(ImportListItem Item, string Reason)>> ExportedTooOften(string root, List<ImportListItem> items, bool changeCheck, Func<string, DeviceFamily?> familyOf)
     {
-        var created = new List<string>();
-        var updated = new List<string>();
-        var skipped = new List<string>();
-        var failed = new List<string>();
-
-        var existingBlocks = (await _session.ListBlocksAsync(plcName)).Select(b => b.Name).ToHashSet(StringComparer.OrdinalIgnoreCase);
-        var ensuredGroups = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        var writes = new List<PendingWrite>();
-        string? graphTemplateName = null;
-        var graphTemplateSearched = false;
-
-        foreach (var item in items)
+        var refused = new List<(ImportListItem, string)>();
+        var existing = new Dictionary<string, HashSet<string>>(StringComparer.OrdinalIgnoreCase);
+        foreach (var item in items.Where(i => i.Kind == "block" && familyOf(i.DeviceName) == DeviceFamily.Plc && HasTextualInterface(root, i)))
         {
-            var label = string.IsNullOrEmpty(item.GroupPath) ? item.ItemName : $"{item.GroupPath}/{item.ItemName}";
-            var dir = GroupDir(plcDir, "Program blocks", item.GroupPath);
-            var (docs, error) = ReadBlockDocuments(dir, item.ItemName);
-            if (docs == null)
-            {
-                failed.Add($"block '{label}': {error}");
-                continue;
-            }
+            if (!existing.TryGetValue(item.DeviceName, out var names))
+                existing[item.DeviceName] = names = (await _session.ListBlocksAsync(item.DeviceName)).Select(b => b.Name).ToHashSet(StringComparer.OrdinalIgnoreCase);
+            if (!names.Contains(item.ItemName)) continue;
 
-            var exists = existingBlocks.Contains(item.ItemName);
-            if (exists)
-            {
-                if (!overwriteExisting) { skipped.Add($"block '{label}' - already exists, overwriteExisting=false"); continue; }
-                if (dryRun) { updated.Add($"block '{label}' (dry run)"); continue; }
-
-                var name = item.ItemName;
-                writes.Add(new PendingWrite(item, $"block '{label}'", docs, false, () => _session.WriteBlockAsync(plcName, name, docs)));
-                continue;
-            }
-
-            if (!createMissing) { skipped.Add($"block '{label}' - does not exist, createMissing=false"); continue; }
-
-            var isGraph = docs.Count == 1 && docs[0].FileName.EndsWith(".graph.il", StringComparison.OrdinalIgnoreCase);
-            if (isGraph)
-            {
-                if (!graphTemplateSearched)
-                {
-                    graphTemplateName = (await _session.ListBlocksAsync(plcName)).FirstOrDefault(b => b.Language == "GRAPH")?.Name;
-                    graphTemplateSearched = true;
-                }
-                if (graphTemplateName == null)
-                {
-                    skipped.Add($"block '{label}' - no existing GRAPH block in PLC '{plcName}' to use as a clone template; create one manually first");
-                    continue;
-                }
-                if (dryRun) { created.Add($"block '{label}' (dry run, GRAPH via template '{graphTemplateName}')"); continue; }
-
-                var (graphGroup, graphName, template) = (item.GroupPath, item.ItemName, graphTemplateName);
-                writes.Add(new PendingWrite(item, $"block '{label}' (GRAPH, template '{template}')", docs, true,
-                    () => _session.CreateGraphBlockAsync(plcName, graphGroup, graphName, template, docs[0].Content)));
-                continue;
-            }
-
-            if (dryRun) { created.Add($"block '{label}' (dry run)"); continue; }
-
-            await EnsureBlockGroupPath(plcName, item.GroupPath, ensuredGroups);
-            var (groupPath, blockName) = (item.GroupPath, item.ItemName);
-            // Whole-block STL can't go through ImportFromDocuments - it goes through 'Generate blocks from source' (CreateStlBlock).
-            var isStl = docs.Count == 1 && docs[0].FileName.EndsWith(".awl", StringComparison.OrdinalIgnoreCase);
-            writes.Add(new PendingWrite(item, $"block '{label}'", docs, true, isStl
-                ? () => _session.CreateStlBlockAsync(plcName, groupPath, blockName, docs)
-                : () => _session.CreateBlockAsync(plcName, groupPath, blockName, docs, checkExisting: false)));
+            var exports = await _session.ExportsSinceImportAsync(item.DeviceName, item.ItemName);
+            if (exports != null && exports + (changeCheck ? 1 : 0) <= 1) continue;
+            var why = exports == null
+                ? "this server attached to a project that was already open, so it can't tell how often the block was exported since"
+                : $"this server exported it {exports} time(s) since{(changeCheck ? ", and the change check would export it once more" : "")}";
+            var orForce = exports == 1 && changeCheck
+                ? "; or, if the block wasn't changed in TIA Portal since it was read, write it with force=true (no change check)"
+                : "";
+            refused.Add((item, $"refused: it has a textual interface, and TIA Portal V21 terminates when it overwrites such a block that was exported (read) more than once since the project was opened or the block was last written - {why}. " +
+                               $"Save the project (save_project), close it (close_project), open it again (tia_connect with projectPath) and write right away{orForce}."));
         }
-
-        await WriteInDependencyOrder(plcName, writes, created, updated, failed, written, compileBetweenLayers: false);
-        return (created, updated, skipped, failed);
+        return refused;
     }
 
-    private async Task<(List<string> Created, List<string> Updated, List<string> Skipped, List<string> Failed)> ImportTypes(
-        string plcName, string plcDir, List<ImportListItem> items, bool createMissing, bool overwriteExisting, bool dryRun, List<ImportListItem> written)
+    // The block's .s7dcl in the tree declares a textual interface (S7_EditorMode := "[SCL,TextualInterface]").
+    private static bool HasTextualInterface(string root, ImportListItem item)
     {
-        var created = new List<string>();
-        var updated = new List<string>();
-        var skipped = new List<string>();
-        var failed = new List<string>();
-
-        var existingTypes = (await _session.ListPlcTypesAsync(plcName)).Select(t => t.Name).ToHashSet(StringComparer.OrdinalIgnoreCase);
-        var ensuredGroups = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        var writes = new List<PendingWrite>();
-
-        foreach (var item in items)
-        {
-            var label = string.IsNullOrEmpty(item.GroupPath) ? item.ItemName : $"{item.GroupPath}/{item.ItemName}";
-            var dir = GroupDir(plcDir, "PLC data types", item.GroupPath);
-            var sanitizedName = Sanitize(item.ItemName);
-            var file = Path.Combine(dir, sanitizedName + ".s7dcl");
-            if (!File.Exists(file)) file = Path.Combine(dir, sanitizedName + ".txt");
-            if (!File.Exists(file)) { failed.Add($"udt '{label}': no source file found in {dir}"); continue; }
-
-            var resFile = Path.Combine(dir, sanitizedName + ".s7res");
-            var docs = UdtDocuments(item.ItemName, File.ReadAllText(file), File.Exists(resFile) ? File.ReadAllText(resFile) : null);
-            var exists = existingTypes.Contains(item.ItemName);
-            if (exists)
-            {
-                if (!overwriteExisting) { skipped.Add($"udt '{label}' - already exists, overwriteExisting=false"); continue; }
-                if (dryRun) { updated.Add($"udt '{label}' (dry run)"); continue; }
-
-                var name = item.ItemName;
-                writes.Add(new PendingWrite(item, $"udt '{label}'", docs, false, () => _session.WriteUdtAsync(plcName, name, docs)));
-            }
-            else
-            {
-                if (!createMissing) { skipped.Add($"udt '{label}' - does not exist, createMissing=false"); continue; }
-                if (dryRun) { created.Add($"udt '{label}' (dry run)"); continue; }
-
-                await EnsureTypeGroupPath(plcName, item.GroupPath, ensuredGroups);
-                var (groupPath, typeName) = (item.GroupPath, item.ItemName);
-                writes.Add(new PendingWrite(item, $"udt '{label}'", docs, true, () => _session.CreateUdtAsync(plcName, groupPath, typeName, docs)));
-            }
-        }
-
-        await WriteInDependencyOrder(plcName, writes, created, updated, failed, written, compileBetweenLayers: true);
-        return (created, updated, skipped, failed);
+        var path = Path.Combine(root, ItemDir(item.DeviceName, item.Kind, item.GroupPath), Sanitize(item.ItemName) + SourceFormat.Extension(SourceFormat.S7dcl));
+        return File.Exists(path) && File.ReadAllText(path).IndexOf("TextualInterface", StringComparison.OrdinalIgnoreCase) >= 0;
     }
-
-    // One UDT or block write (update or create) decided by ImportTypes/ImportBlocks. A plain
-    // class rather than a record - see ImportListItem.
-    private sealed class PendingWrite
-    {
-        public PendingWrite(ImportListItem item, string label, List<BlockDocument> docs, bool isCreate, Func<Task<ImportResult>> write)
-        {
-            Item = item; Label = label; Docs = docs; IsCreate = isCreate; Write = write;
-        }
-        public ImportListItem Item { get; }
-        public string Name => Item.ItemName;
-        public string Label { get; }
-        public List<BlockDocument> Docs { get; }
-        public bool IsCreate { get; }
-        public Func<Task<ImportResult>> Write { get; }
-    }
-
-    // Writes UDTs/blocks after what they reference: an import that references something not
-    // imported yet fails ("Dependent object ... not found") or, for a UDT nesting another UDT,
-    // succeeds but silently drops the nested start values unless the nested UDT is also compiled
-    // - hence compileBetweenLayers for UDTs. Blocks only need the order (a full round trip of a
-    // ~500-block PLC came back identical without compiles between block layers). That gives UDTs in nesting
-    // order, and blocks as global DBs/FBs before the FBs that call them and the instance DBs on
-    // them. References are read from the source text (see DependencyLayers), so a create that
-    // still fails is retried after a compile, as long as a pass creates something.
-    private async Task WriteInDependencyOrder(string plcName, List<PendingWrite> writes, List<string> created, List<string> updated, List<string> failed, List<ImportListItem> written, bool compileBetweenLayers)
-    {
-        var lastError = new Dictionary<PendingWrite, string>();
-        var retry = new List<PendingWrite>();
-        var layers = DependencyLayers(writes);
-        for (var i = 0; i < layers.Count; i++)
-        {
-            if (i > 0 && compileBetweenLayers) await _session.CompileAsync(plcName);
-            foreach (var write in layers[i])
-            {
-                var result = await write.Write();
-                if (result.Success) { (write.IsCreate ? created : updated).Add(write.Label); written.Add(write.Item); }
-                else if (write.IsCreate) { retry.Add(write); lastError[write] = string.Join(" | ", result.Messages); }
-                else failed.Add($"{write.Label}: {string.Join(" | ", result.Messages)}");
-            }
-        }
-
-        while (retry.Count > 0)
-        {
-            await _session.CompileAsync(plcName);
-            var stillFailing = new List<PendingWrite>();
-            foreach (var write in retry)
-            {
-                var result = await write.Write();
-                if (result.Success) { created.Add(write.Label); written.Add(write.Item); }
-                else { stillFailing.Add(write); lastError[write] = string.Join(" | ", result.Messages); }
-            }
-            if (stillFailing.Count == retry.Count) break;
-            retry = stillFailing;
-        }
-        foreach (var write in retry) failed.Add($"{write.Label}: {lastError[write]}");
-    }
-
-    private static readonly Regex IdentifierToken = new("\"([^\"]+)\"|[A-Za-z_][A-Za-z0-9_]*", RegexOptions.Compiled);
-
-    // Groups writes into layers where each item only references items of earlier layers. A
-    // reference is any identifier in the item's source (not its .s7res texts) that names another
-    // item in the same set - e.g. "DATA_BLOCK "x" : FB_y", "member : _.UDT_z". A cycle, or a name
-    // that happens to match a variable, ends up in the last layer, where the retry in
-    // WriteInDependencyOrder still covers it.
-    private static List<List<PendingWrite>> DependencyLayers(List<PendingWrite> writes)
-    {
-        var names = new HashSet<string>(writes.Select(w => w.Name), StringComparer.OrdinalIgnoreCase);
-        var dependencies = writes.ToDictionary(w => w, w => IdentifierToken
-            .Matches(string.Join("\n", w.Docs.Where(d => !d.FileName.EndsWith(".s7res", StringComparison.OrdinalIgnoreCase)).Select(d => d.Content)))
-            .Cast<Match>()
-            .Select(m => m.Groups[1].Success ? m.Groups[1].Value : m.Value)
-            .Where(t => names.Contains(t) && !string.Equals(t, w.Name, StringComparison.OrdinalIgnoreCase))
-            .ToHashSet(StringComparer.OrdinalIgnoreCase));
-
-        var layers = new List<List<PendingWrite>>();
-        var placed = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        var remaining = writes;
-        while (remaining.Count > 0)
-        {
-            var layer = remaining.Where(w => dependencies[w].All(placed.Contains)).ToList();
-            if (layer.Count == 0) layer = remaining;
-            layers.Add(layer);
-            foreach (var w in layer) placed.Add(w.Name);
-            remaining = remaining.Except(layer).ToList();
-        }
-        return layers;
-    }
-
-    // deleteMissing: delete tags of an existing table that its CSV no longer has - for a working copy,
-    // where the CSV is the whole table as read and a removed row means a deleted tag.
-    private async Task<(List<string> Created, List<string> Updated, List<string> Skipped, List<string> Failed)> ImportTagTables(
-        string plcName, string plcDir, List<ImportListItem> items, bool createMissing, bool overwriteExisting, bool dryRun, bool deleteMissing, List<ImportListItem> written)
-    {
-        var created = new List<string>();
-        var updated = new List<string>();
-        var skipped = new List<string>();
-        var failed = new List<string>();
-
-        var existingTables = (await _session.ListTagTablesAsync(plcName)).Select(t => t.Name).ToHashSet(StringComparer.OrdinalIgnoreCase);
-        var ensuredGroups = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-
-        foreach (var item in items)
-        {
-            var label = string.IsNullOrEmpty(item.GroupPath) ? item.ItemName : $"{item.GroupPath}/{item.ItemName}";
-            var dir = GroupDir(plcDir, "PLC tags", item.GroupPath);
-            var file = Path.Combine(dir, Sanitize(item.ItemName) + ".csv");
-            if (!File.Exists(file)) { failed.Add($"tag table '{label}': no .csv file found at {file}"); continue; }
-
-            TagSpec[] tags;
-            try { tags = ParseTagCsv(File.ReadAllText(file)); }
-            catch (FormatException ex) { failed.Add($"tag table '{label}': {ex.Message}"); continue; }
-
-            var exists = existingTables.Contains(item.ItemName);
-            if (exists)
-            {
-                if (!overwriteExisting) { skipped.Add($"tag table '{label}' - already exists, overwriteExisting=false"); continue; }
-                if (dryRun) { updated.Add($"tag table '{label}' (dry run, {tags.Length} tag(s))"); continue; }
-
-                var result = await _session.WriteTagTableAsync(plcName, item.ItemName, tags, deleteMissing);
-                if (result.Success) { updated.Add($"tag table '{label}' ({tags.Length} tag(s){DeletedTags(result)})"); written.Add(item); }
-                else failed.Add($"tag table '{label}': {string.Join(" | ", result.Messages)}");
-            }
-            else
-            {
-                if (!createMissing) { skipped.Add($"tag table '{label}' - does not exist, createMissing=false"); continue; }
-                if (dryRun) { created.Add($"tag table '{label}' (dry run, {tags.Length} tag(s))"); continue; }
-
-                await EnsureTagTableGroupPath(plcName, item.GroupPath, ensuredGroups);
-                var createResult = await _session.CreateTagTableAsync(plcName, item.GroupPath, item.ItemName);
-                if (!createResult.Success) { failed.Add($"tag table '{label}': {createResult.Error}"); continue; }
-
-                var writeResult = await _session.WriteTagTableAsync(plcName, item.ItemName, tags);
-                if (writeResult.Success) { created.Add($"tag table '{label}' ({tags.Length} tag(s))"); written.Add(item); }
-                else failed.Add($"tag table '{label}': created empty, but writing tags failed: {string.Join(" | ", writeResult.Messages)}");
-            }
-        }
-
-        return (created, updated, skipped, failed);
-    }
-
-    private async Task<(List<string> Created, List<string> Updated, List<string> Skipped, List<string> Failed)> ImportHmiTagTables(
-        string hmiName, string hmiDir, List<ImportListItem> items, bool createMissing, bool overwriteExisting, bool dryRun, bool deleteMissing, List<ImportListItem> written)
-    {
-        var created = new List<string>();
-        var updated = new List<string>();
-        var skipped = new List<string>();
-        var failed = new List<string>();
-
-        var existingTables = (await _session.ListHmiTagTablesAsync(hmiName)).Select(t => t.Name).ToHashSet(StringComparer.OrdinalIgnoreCase);
-        var ensuredGroups = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-
-        foreach (var item in items)
-        {
-            var label = string.IsNullOrEmpty(item.GroupPath) ? item.ItemName : $"{item.GroupPath}/{item.ItemName}";
-            var dir = GroupDir(hmiDir, "HMI tags", item.GroupPath);
-            var file = Path.Combine(dir, Sanitize(item.ItemName) + ".csv");
-            if (!File.Exists(file)) { failed.Add($"HMI tag table '{label}': no .csv file found at {file}"); continue; }
-
-            HmiTagSpec[] tags;
-            try { tags = ParseHmiTagCsv(File.ReadAllText(file)); }
-            catch (FormatException ex) { failed.Add($"HMI tag table '{label}': {ex.Message}"); continue; }
-
-            var exists = existingTables.Contains(item.ItemName);
-            if (exists)
-            {
-                if (!overwriteExisting) { skipped.Add($"HMI tag table '{label}' - already exists, overwriteExisting=false"); continue; }
-                if (dryRun) { updated.Add($"HMI tag table '{label}' (dry run, {tags.Length} tag(s))"); continue; }
-
-                var result = await _session.WriteHmiTagTableAsync(hmiName, item.ItemName, tags, deleteMissing);
-                if (result.Success) { updated.Add($"HMI tag table '{label}' ({tags.Length} tag(s){DeletedTags(result)})"); written.Add(item); }
-                else failed.Add($"HMI tag table '{label}': {string.Join(" | ", result.Messages)}");
-            }
-            else
-            {
-                if (!createMissing) { skipped.Add($"HMI tag table '{label}' - does not exist, createMissing=false"); continue; }
-                if (dryRun) { created.Add($"HMI tag table '{label}' (dry run, {tags.Length} tag(s))"); continue; }
-
-                await EnsureHmiTagTableGroupPath(hmiName, item.GroupPath, ensuredGroups);
-                var createResult = await _session.CreateHmiTagTableAsync(hmiName, item.GroupPath, item.ItemName);
-                if (!createResult.Success) { failed.Add($"HMI tag table '{label}': {createResult.Error}"); continue; }
-
-                var writeResult = await _session.WriteHmiTagTableAsync(hmiName, item.ItemName, tags);
-                if (writeResult.Success) { created.Add($"HMI tag table '{label}' ({tags.Length} tag(s))"); written.Add(item); }
-                else failed.Add($"HMI tag table '{label}': created empty, but writing tags failed: {string.Join(" | ", writeResult.Messages)}");
-            }
-        }
-
-        return (created, updated, skipped, failed);
-    }
-
-    private static string DeletedTags(WriteTagsResult result)
-    {
-        var deleted = result.Messages.Where(m => m.StartsWith("Deleted '")).Select(m => m.Substring("Deleted ".Length).TrimEnd('.')).ToList();
-        return deleted.Count == 0 ? "" : $", deleted {string.Join(", ", deleted)}";
-    }
-
-    // Alarms/alarm classes are always upsert-by-name (see TiaConnection.WriteHmiAlarm/WriteHmiAlarmClass),
-    // so createMissing/overwriteExisting are applied per-row here rather than per-CSV-file, unlike
-    // every other section where one list item is one write call.
-    private async Task<(List<string> Created, List<string> Updated, List<string> Skipped, List<string> Failed)> ImportHmiAlarms(
-        string hmiName, string hmiDir, List<ImportListItem> items, bool createMissing, bool overwriteExisting, bool dryRun, List<ImportListItem> written)
-    {
-        var created = new List<string>();
-        var updated = new List<string>();
-        var skipped = new List<string>();
-        var failed = new List<string>();
-        var dir = Path.Combine(hmiDir, "HMI alarms");
-
-        foreach (var item in items)
-        {
-            // A file counts as written only if every row was - see write_source_tree's refresh.
-            var failedBefore = failed.Count;
-            var itemName = item.Kind.Substring("HMI ".Length); // "DiscreteAlarms" / "AnalogAlarms" / "AlarmClasses"
-            var file = Path.Combine(dir, itemName + ".csv");
-            if (!File.Exists(file)) { failed.Add($"HMI {itemName}: no .csv file found at {file}"); continue; }
-            var rows = ParseCsv(File.ReadAllText(file));
-
-            if (itemName == "AlarmClasses")
-            {
-                var existing = (await _session.ListHmiAlarmClassesAsync(hmiName)).Select(c => c.Name).ToHashSet(StringComparer.OrdinalIgnoreCase);
-                foreach (var row in rows)
-                {
-                    var name = row["Name"];
-                    var exists = existing.Contains(name);
-                    if (exists && !overwriteExisting) { skipped.Add($"HMI alarm class '{name}' - already exists, overwriteExisting=false"); continue; }
-                    if (!exists && !createMissing) { skipped.Add($"HMI alarm class '{name}' - does not exist, createMissing=false"); continue; }
-                    if (dryRun) { (exists ? updated : created).Add($"HMI alarm class '{name}' (dry run)"); continue; }
-
-                    var priority = int.TryParse(GetField(row, "Priority"), out var p) ? (int?)p : null;
-                    var result = await _session.WriteHmiAlarmClassAsync(hmiName, new HmiAlarmClassSpec(name, priority, NullIfEmpty(GetField(row, "Log"))));
-                    if (result.Success) (exists ? updated : created).Add($"HMI alarm class '{name}'");
-                    else failed.Add($"HMI alarm class '{name}': {result.Error}");
-                }
-                if (!dryRun && failed.Count == failedBefore) written.Add(item);
-                continue;
-            }
-
-            var type = itemName == "DiscreteAlarms" ? "Discrete" : "Analog";
-            var existingAlarms = (await _session.ListHmiAlarmsAsync(hmiName, type)).Select(a => a.Name).ToHashSet(StringComparer.OrdinalIgnoreCase);
-            foreach (var row in rows)
-            {
-                var name = row["Name"];
-                var exists = existingAlarms.Contains(name);
-                if (exists && !overwriteExisting) { skipped.Add($"HMI alarm '{name}' - already exists, overwriteExisting=false"); continue; }
-                if (!exists && !createMissing) { skipped.Add($"HMI alarm '{name}' - does not exist, createMissing=false"); continue; }
-                if (dryRun) { (exists ? updated : created).Add($"HMI alarm '{name}' (dry run)"); continue; }
-
-                // TriggerAddress is a read-only computed field (see write_source_tree) - it's
-                // exported for readability but never written back; RaisedStateTag is what
-                // actually (re)binds the trigger and recomputes it.
-                var spec = new HmiAlarmSpec(
-                    type, name,
-                    NullIfEmpty(GetField(row, "AlarmClass")), NullIfEmpty(GetField(row, "EventText")), NullIfEmpty(GetField(row, "InfoText")),
-                    null,
-                    NullIfEmpty(GetField(row, "Condition")), NullIfEmpty(GetField(row, "ConditionValue")), NullIfEmpty(GetField(row, "RaisedStateTag")),
-                    NullIfEmpty(GetField(row, "AuditClass")), NullIfEmpty(GetField(row, "Area")), NullIfEmpty(GetField(row, "Origin")));
-                var result = await _session.WriteHmiAlarmAsync(hmiName, spec);
-                if (result.Success) (exists ? updated : created).Add($"HMI alarm '{name}'");
-                else failed.Add($"HMI alarm '{name}': {result.Error}");
-            }
-            if (!dryRun && failed.Count == failedBefore) written.Add(item);
-        }
-
-        return (created, updated, skipped, failed);
-    }
-
-    // Locates the on-disk source file(s) read_source_tree wrote for one block and packages them as the
-    // BlockDocument(s) WriteBlock/CreateBlock expect - mirroring ExportBlocks' own
-    // extension priority (GRAPH's '.graph.il', whole-block STL's '.awl', else the normal
-    // '.s7dcl'[+'.s7res'] pair). '.interface.txt' and '.stl-networks.xml' are read-only companions
-    // (see read_source_tree) and are never picked up here.
-    private static (List<BlockDocument>? Docs, string? Error) ReadBlockDocuments(string dir, string blockName)
-    {
-        if (!Directory.Exists(dir)) return (null, $"directory not found: {dir}");
-        var sanitizedName = Sanitize(blockName);
-
-        var graphFile = Path.Combine(dir, sanitizedName + ".graph.il");
-        if (File.Exists(graphFile))
-            return (new List<BlockDocument> { new($"{blockName}.graph.il", File.ReadAllText(graphFile)) }, null);
-
-        var awlFile = Path.Combine(dir, sanitizedName + ".awl");
-        if (File.Exists(awlFile))
-            return (new List<BlockDocument> { new($"{blockName}.awl", File.ReadAllText(awlFile)) }, null);
-
-        var dclFile = Path.Combine(dir, sanitizedName + ".s7dcl");
-        if (!File.Exists(dclFile))
-        {
-            var txtFile = Path.Combine(dir, sanitizedName + ".txt");
-            if (File.Exists(txtFile))
-                return (new List<BlockDocument> { new($"{blockName}.s7dcl", File.ReadAllText(txtFile)) }, null);
-            return (null, $"no source file found in '{dir}' (expected {sanitizedName}.s7dcl, .graph.il, or .awl)");
-        }
-
-        var docs = new List<BlockDocument> { new($"{blockName}.s7dcl", File.ReadAllText(dclFile)) };
-        var resFile = Path.Combine(dir, sanitizedName + ".s7res");
-        if (File.Exists(resFile)) docs.Add(new BlockDocument($"{blockName}.s7res", File.ReadAllText(resFile)));
-        return (docs, null);
-    }
-
-    // Best-effort recursive group creation so the create calls' "group must already
-    // exist" requirement doesn't block restoring a full
-    // tree into an empty/new PLC or HMI. Failures (including "already exists") are ignored here - a
-    // genuine problem still surfaces from the subsequent create call itself right after this runs.
-    // ensured: group paths already handled in this import, so each folder is created (or found to
-    // exist - a create that throws, which is slow over Openness) once rather than once per item.
-    private static async Task EnsureGroupPath(string groupPath, Func<string, string, Task> createGroup, ISet<string> ensured)
-    {
-        if (string.IsNullOrEmpty(groupPath)) return;
-        var current = "";
-        foreach (var segment in groupPath.Split('/'))
-        {
-            var path = string.IsNullOrEmpty(current) ? segment : $"{current}/{segment}";
-            if (ensured.Add(path)) await createGroup(current, segment);
-            current = path;
-        }
-    }
-
-    private Task EnsureBlockGroupPath(string plcName, string groupPath, ISet<string> ensured) =>
-        EnsureGroupPath(groupPath, (parent, segment) => _session.CreateBlockGroupAsync(plcName, parent, segment), ensured);
-
-    private Task EnsureTypeGroupPath(string plcName, string groupPath, ISet<string> ensured) =>
-        EnsureGroupPath(groupPath, (parent, segment) => _session.CreateTypeGroupAsync(plcName, parent, segment), ensured);
-
-    private Task EnsureTagTableGroupPath(string plcName, string groupPath, ISet<string> ensured) =>
-        EnsureGroupPath(groupPath, (parent, segment) => _session.CreateTagTableGroupAsync(plcName, parent, segment), ensured);
-
-    private Task EnsureHmiTagTableGroupPath(string hmiName, string groupPath, ISet<string> ensured) =>
-        EnsureGroupPath(groupPath, (parent, segment) => _session.CreateHmiTagTableGroupAsync(hmiName, parent, segment), ensured);
 
     // Parses an item list - _export_summary.txt or list_project output, or a trimmed copy/excerpt of
     // either - into importable items; see write_source_tree. The status column is optional (a line
     // without one counts as OK). Unrecognized lines (headers, blank lines, the trailing 'Done: ...'
     // line, empty groups) are silently skipped, so callers don't need to strip them out first.
-    private static List<ImportListItem> ParseSourceTreeList(string text)
+    // unknownLines gets the lines that are no header or item.
+    private static List<ImportListItem> ParseSourceTreeList(string text, List<string> unknownLines)
     {
         var items = new List<ImportListItem>();
         string? currentDevice = null;
@@ -1366,8 +1377,15 @@ Writes '<sourceDirectory>/_import_report.txt' with one CREATED/UPDATED/SKIPPED/F
                 continue;
             }
 
-            var itemMatch = ListedItem.Match(trimmed);
-            if (!itemMatch.Success || currentDevice == null) continue;
+            // A fixed-file kind by its file name, as read_source_tree's items take it.
+            if (SourceKinds.All.FirstOrDefault(k => string.Equals(k.FixedName, trimmed, StringComparison.OrdinalIgnoreCase)) is { } fixedKind)
+            {
+                items.Add(new ImportListItem(currentDevice ?? "", fixedKind.Name, "", "", true));
+                continue;
+            }
+
+            var itemMatch = SourceKinds.ListedItem.Match(trimmed);
+            if (!itemMatch.Success) { unknownLines.Add(trimmed); continue; }
 
             var ok = itemMatch.Groups["status"].Value is "" or "OK";
             var label = itemMatch.Groups["label"].Value;
@@ -1375,209 +1393,119 @@ Writes '<sourceDirectory>/_import_report.txt' with one CREATED/UPDATED/SKIPPED/F
             var groupPath = slash >= 0 ? label[..slash] : "";
             var itemName = slash >= 0 ? label[(slash + 1)..] : label;
 
-            items.Add(new ImportListItem(currentDevice, itemMatch.Groups["kind"].Value, groupPath, itemName, ok));
+            // "": no header above it yet - write_source_tree picks the software by the kind.
+            items.Add(new ImportListItem(currentDevice ?? "", itemMatch.Groups["kind"].Value, groupPath, itemName, ok));
         }
 
         return items;
     }
 
     private const string ItemListExample =
-        "Expected lines as list_project or _export_summary.txt show them, under their software's header, e.g.:\n" +
+        "Expected lines as list_project or _export_summary.txt show them, under their software's header (it can be left out when only one software has items of that kind), e.g.:\n" +
         "=== PLC_1 ===\n  block 'Group/Main'\n  OK     udt 'Types/UDT_Motor'\n=== HMI_1 (HMI) ===\n  HMI tag table 'Tags'\n  HMI DiscreteAlarms";
-
-    // Reverse of FormatCsv/CsvField: RFC 4180 quoting, CRLF or LF line endings, header row used as
-    // each returned row's keys.
-    private static List<Dictionary<string, string>> ParseCsv(string text)
-    {
-        var rows = ParseCsvRows(text);
-        if (rows.Count == 0) return new List<Dictionary<string, string>>();
-
-        var headers = rows[0];
-        var result = new List<Dictionary<string, string>>();
-        for (var i = 1; i < rows.Count; i++)
-        {
-            var row = rows[i];
-            var dict = new Dictionary<string, string>();
-            for (var c = 0; c < headers.Count; c++)
-                dict[headers[c]] = c < row.Count ? row[c] : "";
-            result.Add(dict);
-        }
-        return result;
-    }
-
-    private static List<List<string>> ParseCsvRows(string text)
-    {
-        var rows = new List<List<string>>();
-        var row = new List<string>();
-        var field = new StringBuilder();
-        var inQuotes = false;
-        var i = 0;
-        while (i < text.Length)
-        {
-            var c = text[i];
-            if (inQuotes)
-            {
-                if (c == '"')
-                {
-                    if (i + 1 < text.Length && text[i + 1] == '"') { field.Append('"'); i += 2; continue; }
-                    inQuotes = false; i++; continue;
-                }
-                field.Append(c); i++; continue;
-            }
-
-            switch (c)
-            {
-                case '"': inQuotes = true; i++; continue;
-                case ',': row.Add(field.ToString()); field.Clear(); i++; continue;
-                case '\r': i++; continue;
-                case '\n':
-                    row.Add(field.ToString()); field.Clear();
-                    rows.Add(row); row = new List<string>();
-                    i++; continue;
-                default: field.Append(c); i++; continue;
-            }
-        }
-        if (field.Length > 0 || row.Count > 0)
-        {
-            row.Add(field.ToString());
-            rows.Add(row);
-        }
-        return rows.Where(r => r.Count > 1 || r[0].Length > 0).ToList();
-    }
-
-    private static string? NullIfEmpty(string? s) => string.IsNullOrEmpty(s) ? null : s;
-
-    // net48's Dictionary<TKey, TValue> has no GetValueOrDefault.
-    private static string? GetField(Dictionary<string, string> row, string key) => row.TryGetValue(key, out var v) ? v : null;
-
-    // One item as exported from TIA Portal: its files (root-relative path, content, whether it is
-    // written with a UTF-8 BOM), or why it couldn't be exported. HMI alarms are three fixed items
-    // per HMI with Kind 'HMI DiscreteAlarms'/'HMI AnalogAlarms'/'HMI AlarmClasses' and no name -
-    // alarms and alarm classes have no folder/group concept in Openness.
-    private sealed class ExportedItem
-    {
-        public ExportedItem(string device, string kind, string groupPath, string name, List<(string Path, string Content, bool Bom)> files, string? error)
-        {
-            Device = device; Kind = kind; GroupPath = groupPath; Name = name; Files = files; Error = error;
-        }
-        public string Device { get; }
-        public string Kind { get; }
-        public string GroupPath { get; }
-        public string Name { get; }
-        public List<(string Path, string Content, bool Bom)> Files { get; }
-        public string? Error { get; }
-        public bool Ok => Error == null;
-    }
-
-    private static readonly string[] HmiAlarmKinds = { "HMI DiscreteAlarms", "HMI AnalogAlarms", "HMI AlarmClasses" };
 
     // Exports every item include (device, kind, group path, name) selects - all of them when it's
     // null - from every PLC and HMI, or only deviceName's. Also returns the devices it went
     // through, so a caller can tell which manifest items it would have seen if they still existed.
-    private async Task<(List<ExportedItem> Items, List<string> Devices)> ExportItems(Func<string, string, string, string, bool>? include, string? deviceName)
+    // formats (device, kind, group path, name) returns null to skip an item, or the formats to
+    // read it in; an empty list (and no formats function) means the formats the tree already has
+    // it in (manifest), else its own format. Formats a kind doesn't have are left out.
+    // progress gets each item right before its export, counted per kind.
+    private async Task<(List<ExportedItem> Items, List<string> Devices)> ExportItems(Func<string, string, string, string, IReadOnlyCollection<string>?>? formats, string? deviceName, SourceTreeManifest? manifest, ProgressLog? progress = null)
     {
+        var options = ExportOptions.Of(manifest);
         var items = new List<ExportedItem>();
-        var devices = new List<string>();
+        var devices = await Devices(deviceName);
         _exportNotes.Clear();
-        bool Includes(string device, string kind, string groupPath, string name) => include == null || include(device, kind, groupPath, name);
-        bool IsSelectedDevice(string device) => deviceName == null || string.Equals(device, deviceName, StringComparison.OrdinalIgnoreCase);
-
-        foreach (var plc in (await _session.ListDevicesAsync()).Select(d => d.PlcSoftwareName).OfType<string>().Where(IsSelectedDevice))
+        foreach (var (family, device) in devices)
         {
-            devices.Add(plc);
-            foreach (var (b, result) in await _session.ReadAllBlocksAsync(plc, (g, n) => Includes(plc, "block", g, n)))
-                items.Add(FromDocuments(plc, "block", b.GroupPath, b.Name, result));
-            foreach (var (t, result) in await _session.ReadAllTagTablesAsync(plc, (g, n) => Includes(plc, "tag table", g, n)))
-                items.Add(FromCsv(plc, "tag table", t.GroupPath, t.Name, result.Success ? FormatTagTable(result.Tags) : null, result.Error));
-            foreach (var (t, result) in await _session.ReadAllUdtsAsync(plc, (g, n) => Includes(plc, "udt", g, n)))
-                items.Add(FromDocuments(plc, "udt", t.GroupPath, t.Name, result));
-            await ExportPlcAlarmTextLists(plc, Includes, items);
-        }
-
-        foreach (var hmi in (await _session.ListHmiDevicesAsync()).Select(h => h.HmiSoftwareName).Where(IsSelectedDevice))
-        {
-            devices.Add(hmi);
-            foreach (var table in (await _session.ListHmiTagTablesAsync(hmi)).Where(t => Includes(hmi, "HMI tag table", t.GroupPath, t.Name)))
+            foreach (var kind in SourceKinds.Of(family))
             {
-                try
+                IReadOnlyCollection<string>? Formats(string groupPath, string name)
                 {
-                    var result = await _session.ReadHmiTagTableAsync(hmi, table.Name);
-                    items.Add(FromCsv(hmi, "HMI tag table", table.GroupPath, table.Name, result.Success ? FormatHmiTagTable(result.Tags) : null, result.Error));
+                    var requested = formats == null ? Array.Empty<string>() : formats(device, kind.Name, groupPath, name);
+                    if (requested == null) return null;
+                    if (requested.Count == 0)
+                        requested = manifest?.Find(device, kind.Name, name)?.WritableFiles.Select(f => f.Value.Format).Distinct().ToList() ?? new List<string>();
+                    return requested.Where(kind.Formats.Contains).ToList();
                 }
-                catch (Exception ex)
-                {
-                    items.Add(FromCsv(hmi, "HMI tag table", table.GroupPath, table.Name, null, ex.Message));
-                }
+                await kind.Export(_session, device, Formats, options, items, progress == null ? null
+                    : (index, count, groupPath, name) => progress.Item($"{device}: {kind.Name}", index, count, name == "" ? kind.Name : Label(groupPath, name)));
             }
 
-            foreach (var kind in HmiAlarmKinds.Where(k => Includes(hmi, k, "", "")))
+            if (family == DeviceFamily.HmiClassic && formats == null)
             {
-                try
-                {
-                    var csv = kind == "HMI AlarmClasses"
-                        ? FormatHmiAlarmClasses(await _session.ListHmiAlarmClassesAsync(hmi))
-                        : FormatHmiAlarms(await _session.ListHmiAlarmsAsync(hmi, kind == "HMI DiscreteAlarms" ? "Discrete" : "Analog"));
-                    items.Add(FromCsv(hmi, kind, "", "", csv, null));
-                }
-                catch (Exception ex)
-                {
-                    items.Add(FromCsv(hmi, kind, "", "", null, ex.Message));
-                }
+                var graphicLists = await _session.CountHmiClassicGraphicListsAsync(device);
+                if (graphicLists > 0)
+                    _exportNotes.Add($"SKIPPED {graphicLists} graphic list(s) of '{device}' - exporting a classic graphic list crashes TIA Portal V21 (InvalidCastException in UpdateOpenLinks)");
             }
         }
 
-        foreach (var hmi in (await _session.ListHmiClassicNamesAsync()).Where(IsSelectedDevice))
+        return (items, devices.Select(d => d.Name).ToList());
+    }
+
+    // A tree read before software was named as TIA Portal's project tree shows it has its folders
+    // under the software name ('HMI_RT_1' instead of its PC station 'PC_1'): those folders (and
+    // their .base copies) and the manifest's entries move to the new name. A folder whose new name
+    // is taken already is left where it is, with a note.
+    private static List<string> MoveToProjectTreeNames(string root, SourceTreeManifest manifest, IReadOnlyList<ProjectSoftware> software)
+    {
+        var notes = new List<string>();
+        foreach (var s in software)
         {
-            devices.Add(hmi);
-            await ExportHmiClassic(hmi, Includes, include == null, items);
+            var (from, to) = (DirName(s.SoftwareName), DirName(s.Name));
+            if (string.Equals(from, to, StringComparison.OrdinalIgnoreCase)) continue;
+            var dirs = new[] { root, Path.Combine(root, BaseDirName) }.Select(d => (From: Path.Combine(d, from), To: Path.Combine(d, to))).Where(d => Directory.Exists(d.From)).ToList();
+            var entries = manifest.Items.Where(i => string.Equals(i.Device, s.SoftwareName, StringComparison.OrdinalIgnoreCase)).ToList();
+            if (dirs.Count == 0 && entries.Count == 0) continue;
+            if (dirs.Any(d => Directory.Exists(d.To)) || manifest.Items.Any(i => string.Equals(i.Device, s.Name, StringComparison.OrdinalIgnoreCase)))
+            {
+                notes.Add($"NOTE '{from}/' holds '{s.SoftwareName}', which TIA Portal's project tree names '{s.Name}' - but '{to}/' exists too, so it was left as it is. Merge or remove one of them.");
+                continue;
+            }
+            foreach (var d in dirs) Directory.Move(d.From, d.To);
+            foreach (var entry in entries)
+            {
+                entry.Device = s.Name;
+                entry.Files = entry.Files.ToDictionary(f => f.Key.StartsWith(from + "/", StringComparison.OrdinalIgnoreCase) ? to + f.Key.Substring(from.Length) : f.Key, f => f.Value);
+            }
+            notes.Add($"Moved '{from}/' to '{to}/': software '{s.SoftwareName}' is now named as TIA Portal's project tree shows it.");
         }
-
-        return (items, devices);
+        // Saved right away: the folders have moved, whatever happens next.
+        if (notes.Count > 0 && manifest.Project != null)
+        {
+            manifest.Save(root);
+            File.WriteAllText(Path.Combine(root, "_export_summary.txt"), FormatSummary(root, manifest));
+        }
+        return notes;
     }
 
-    private static ExportedItem FromDocuments(string device, string kind, string groupPath, string name, ExportResult result)
+    // Whether an export differs from the item as the manifest recorded it, in the formats both have.
+    private static bool Differs(SourceTreeItem before, ExportedItem now)
     {
-        var dir = ItemDir(device, kind, groupPath);
-        var files = result.Documents.Select(d => ($"{dir}/{Sanitize(EnsureExtension(d.FileName))}", d.Content, false)).ToList();
-        return new ExportedItem(device, kind, groupPath, name, files, result.Success ? null : result.Error ?? "export failed");
+        var formats = before.Files.Values.Select(f => f.Format).Intersect(now.Files.Select(f => SourceTreeManifest.FormatOf(f.Path))).ToHashSet();
+        var then = before.Files.Where(f => formats.Contains(f.Value.Format)).ToDictionary(f => f.Key, f => f.Value.Hash, StringComparer.OrdinalIgnoreCase);
+        var after = now.Files.Where(f => formats.Contains(SourceTreeManifest.FormatOf(f.Path))).ToDictionary(f => f.Path, f => SourceTreeManifest.Hash(f.Content), StringComparer.OrdinalIgnoreCase);
+        return then.Count != after.Count || then.Any(f => !after.TryGetValue(f.Key, out var hash) || hash != f.Value);
     }
 
-    // CSV gets a UTF-8 BOM so Excel auto-detects the encoding and opening the file directly
-    // (double-click) renders non-ASCII comment/tag text correctly instead of mangling it.
-    private static ExportedItem FromCsv(string device, string kind, string groupPath, string name, string? csv, string? error)
-    {
-        var files = csv == null
-            ? new List<(string, string, bool)>()
-            : new List<(string, string, bool)> { ($"{ItemDir(device, kind, groupPath)}/{Sanitize(ItemStem(kind, name))}.csv", csv, true) };
-        return new ExportedItem(device, kind, groupPath, name, files, csv == null ? error ?? "export failed" : null);
-    }
+    // FAILED lines per software in write_source_tree's tool result; the full report has them all.
+    private const int MaxFailedLines = 40;
 
-    private static string SectionOf(string kind) => kind switch
+    // Records items as the project has them now in the manifest (and the base copies the screen
+    // diff works from), but leaves their files alone: they hold edits not yet in the project.
+    private static void RecordProjectState(string root, SourceTreeManifest manifest, IEnumerable<ExportedItem> items)
     {
-        "block" => "Program blocks",
-        "udt" => "PLC data types",
-        "tag table" => "PLC tags",
-        "HMI tag table" => "HMI tags",
-        "alarm text list" => "PLC alarm text lists",
-        "HMI screen" => "Screens",
-        "HMI screen template" => "Screen templates",
-        "HMI pop-up screen" => "Pop-up screens",
-        "HMI text list" => "Text lists",
-        _ => "HMI alarms",
-    };
-
-    // The file name (without extension) an item's files start with: its name, or for an HMI
-    // alarms item the fixed 'DiscreteAlarms'/'AnalogAlarms'/'AlarmClasses'.
-    private static string ItemStem(string kind, string name) =>
-        HmiAlarmKinds.Contains(kind) ? kind.Substring("HMI ".Length) : name;
-
-    // Root-relative, '/'-separated folder of an item: <device>/<section>/<group path>.
-    private static string ItemDir(string device, string kind, string groupPath)
-    {
-        var segments = new List<string> { Sanitize(device), SectionOf(kind) };
-        if (!string.IsNullOrEmpty(groupPath))
-            segments.AddRange(groupPath.Split('/').Select(Sanitize));
-        return string.Join("/", segments);
+        foreach (var item in items.Where(i => i.Ok))
+        {
+            var entry = new SourceTreeItem { Device = item.Device, Kind = item.Kind, GroupPath = item.GroupPath, Name = item.Name, Formats = item.Formats.ToList(), Number = item.Number };
+            foreach (var file in item.Files)
+            {
+                entry.Files[file.Path] = new SourceTreeFile { Hash = SourceTreeManifest.Hash(file.Content), Format = SourceTreeManifest.FormatOf(file.Path) };
+                if (KeepsBase(file.Path)) WriteBase(root, file.Path, file.Content);
+            }
+            manifest.Set(entry);
+        }
     }
 
     // Writes exported items to disk and records them in the manifest. A failed item keeps no file
@@ -1589,11 +1517,12 @@ Writes '<sourceDirectory>/_import_report.txt' with one CREATED/UPDATED/SKIPPED/F
             var dir = Path.Combine(root, ItemDir(item.Device, item.Kind, item.GroupPath));
             var stem = ItemStem(item.Kind, item.Name);
             var previous = manifest.Find(item.Device, item.Kind, item.Name);
-            var entry = new SourceTreeItem { Device = item.Device, Kind = item.Kind, GroupPath = item.GroupPath, Name = item.Name };
+            var entry = new SourceTreeItem { Device = item.Device, Kind = item.Kind, GroupPath = item.GroupPath, Name = item.Name, Formats = item.Formats.ToList(), Number = item.Number };
             if (!item.Ok)
             {
                 entry.Ok = false;
                 entry.Error = item.Error;
+                entry.Formats = previous?.Formats ?? new List<string>();
                 entry.Stale = MarkStale(dir, stem);
                 manifest.Set(entry);
                 continue;
@@ -1604,7 +1533,10 @@ Writes '<sourceDirectory>/_import_report.txt' with one CREATED/UPDATED/SKIPPED/F
             if (previous != null)
             {
                 foreach (var old in previous.Files.Keys.Where(k => !item.Files.Any(f => string.Equals(f.Path, k, StringComparison.OrdinalIgnoreCase))))
+                {
                     DeleteFile(Path.Combine(root, old));
+                    DeleteFile(BasePath(root, old));
+                }
             }
 
             Directory.CreateDirectory(dir);
@@ -1612,7 +1544,8 @@ Writes '<sourceDirectory>/_import_report.txt' with one CREATED/UPDATED/SKIPPED/F
             foreach (var file in item.Files)
             {
                 File.WriteAllText(Path.Combine(root, file.Path), file.Content, new UTF8Encoding(file.Bom));
-                entry.Files[file.Path] = SourceTreeManifest.Hash(file.Content);
+                entry.Files[file.Path] = new SourceTreeFile { Hash = SourceTreeManifest.Hash(file.Content), Format = SourceTreeManifest.FormatOf(file.Path) };
+                if (KeepsBase(file.Path)) WriteBase(root, file.Path, file.Content);
             }
             manifest.Set(entry);
         }
@@ -1622,7 +1555,11 @@ Writes '<sourceDirectory>/_import_report.txt' with one CREATED/UPDATED/SKIPPED/F
     // its files go too, or write_source_tree would later create it again as a new item.
     private static void RemoveFromTree(string root, SourceTreeManifest manifest, SourceTreeItem item)
     {
-        foreach (var file in item.Files.Keys) DeleteFile(Path.Combine(root, file));
+        foreach (var file in item.Files.Keys)
+        {
+            DeleteFile(Path.Combine(root, file));
+            DeleteFile(BasePath(root, file));
+        }
         manifest.Items.Remove(item);
     }
 
@@ -1630,17 +1567,6 @@ Writes '<sourceDirectory>/_import_report.txt' with one CREATED/UPDATED/SKIPPED/F
     {
         try { if (File.Exists(path)) File.Delete(path); } catch { /* best effort - a leftover file is reported by the next write_source_tree */ }
     }
-
-    private static string Label(string groupPath, string name) =>
-        string.IsNullOrEmpty(groupPath) ? name : $"{groupPath}/{name}";
-
-    // How an item appears in _export_summary.txt and tool results - the format ParseSourceTreeList reads back.
-    private static string Describe(string kind, string groupPath, string name) =>
-        HmiAlarmKinds.Contains(kind) ? kind : $"{kind} '{Label(groupPath, name)}'";
-
-    private static string Describe(SourceTreeItem item) => Describe(item.Kind, item.GroupPath, item.Name);
-
-    private static readonly string[] KindOrder = { "block", "tag table", "udt", "alarm text list", "HMI tag table", "HMI text list", "HMI screen template", "HMI pop-up screen", "HMI screen", "HMI DiscreteAlarms", "HMI AnalogAlarms", "HMI AlarmClasses" };
 
     // _export_summary.txt: every item in the tree, so it stays the full list for write_source_tree
     // after a read of only part of the project.
@@ -1655,11 +1581,13 @@ Writes '<sourceDirectory>/_import_report.txt' with one CREATED/UPDATED/SKIPPED/F
         foreach (var device in manifest.Items.GroupBy(i => i.Device, StringComparer.OrdinalIgnoreCase).OrderBy(g => g.Key, StringComparer.OrdinalIgnoreCase))
         {
             summary.AppendLine(device.All(i => i.Kind.StartsWith("HMI")) ? $"=== {device.Key} (HMI) ===" : $"=== {device.Key} ===");
-            foreach (var item in device.OrderBy(i => Array.IndexOf(KindOrder, i.Kind)).ThenBy(i => Label(i.GroupPath, i.Name), StringComparer.OrdinalIgnoreCase))
+            foreach (var item in device.OrderBy(i => SourceKinds.ListIndex(i.Kind)).ThenBy(i => Label(i.GroupPath, i.Name), StringComparer.OrdinalIgnoreCase))
             {
-                if (item.Ok) { summary.AppendLine($"  OK     {Describe(item)}"); continue; }
-                summary.AppendLine($"  FAILED {Describe(item)}: {item.Error}");
-                if (item.Stale) summary.AppendLine($"  STALE  {Describe(item)} - previous export left on disk with a '.stale' suffix, does not reflect current state");
+                var marks = item.Multiuser?.Describe() is { Length: > 0 } m ? $" ({m})" : "";
+                var number = item.Number == null ? "" : " " + item.Number;
+                if (item.Ok) { summary.AppendLine($"  OK     {Describe(item.Kind, item.GroupPath, item.Name)}{number}{FormatList(item.Files.Values.Select(f => f.Format).Distinct().ToList())}{marks}"); continue; }
+                summary.AppendLine($"  FAILED {Describe(item.Kind, item.GroupPath, item.Name)}{number}: {item.Error}");
+                if (item.Stale) summary.AppendLine($"  STALE  {Describe(item.Kind, item.GroupPath, item.Name)} - previous export left on disk with a '.stale' suffix, does not reflect current state");
             }
             summary.AppendLine();
         }
@@ -1668,152 +1596,58 @@ Writes '<sourceDirectory>/_import_report.txt' with one CREATED/UPDATED/SKIPPED/F
         return summary.ToString();
     }
 
-    // read_source_tree's items: 'Name', 'group/path/Name', or 'group/path/' for everything below a
-    // group, case-insensitive. HMI alarms are 'DiscreteAlarms', 'AnalogAlarms', 'AlarmClasses', or
-    // 'HMI alarms/' for all three. A line as list_project or _export_summary.txt shows an item
-    // ("block 'group/Name' [SCL]", "OK     udt 'Name'", "HMI DiscreteAlarms") selects that item.
-    private static bool Selects(IReadOnlyList<string> selection, string kind, string groupPath, string name)
+    // read_source_tree's items: 'Name', 'group/path/Name', 'group/path/' for everything below a
+    // group, or a section of the tree ('Screens', 'HMI tags/'), which can also start a path
+    // ('Screens/group/'); case-insensitive. A fixed-file kind (the HMI alarm files) is selected by
+    // its file name ('DiscreteAlarms') or its section ('HMI alarms'). A line as list_project or
+    // _export_summary.txt shows an item ("block 'group/Name' [SCL] [s7dcl, xml]", "OK     udt
+    // 'Name'", "HMI DiscreteAlarms") selects that item, in the formats at its end if any. Returns
+    // null when the item isn't selected, else the requested formats - empty for the default.
+    private static IReadOnlyCollection<string>? RequestedFormats(IReadOnlyList<string> selection, string kind, string groupPath, string name)
     {
         foreach (var raw in selection)
         {
-            var line = ListedItem.Match(raw.Trim());
+            var line = SourceKinds.ListedItem.Match(raw.Trim());
             if (line.Success && line.Groups["kind"].Value == kind
-                && (HmiAlarmKinds.Contains(kind) || string.Equals(line.Groups["label"].Value, Label(groupPath, name), StringComparison.OrdinalIgnoreCase)))
-                return true;
+                && (SourceKinds.IsFixed(kind) || string.Equals(line.Groups["label"].Value, Label(groupPath, name), StringComparison.OrdinalIgnoreCase)))
+                return FormatsInLine(raw);
         }
 
-        if (HmiAlarmKinds.Contains(kind)) (groupPath, name) = ("HMI alarms", ItemStem(kind, name));
+        if (SourceKinds.IsFixed(kind)) (groupPath, name) = (SectionOf(kind), ItemStem(kind, name));
         var label = Label(groupPath, name);
+        var section = SectionOf(kind);
+        bool Selects(string path, string item)
+        {
+            if (!path.EndsWith("/")) return string.Equals(path, item, StringComparison.OrdinalIgnoreCase);
+            var group = path.TrimEnd('/');
+            return string.Equals(groupPath, group, StringComparison.OrdinalIgnoreCase) || groupPath.StartsWith(group + "/", StringComparison.OrdinalIgnoreCase);
+        }
         foreach (var raw in selection)
         {
             var entry = raw.Trim().Replace('\\', '/');
-            if (ListedItem.IsMatch(entry)) continue;
-            if (entry.EndsWith("/"))
-            {
-                var group = entry.TrimEnd('/');
-                if (string.Equals(groupPath, group, StringComparison.OrdinalIgnoreCase) || groupPath.StartsWith(group + "/", StringComparison.OrdinalIgnoreCase)) return true;
-            }
-            else if (string.Equals(entry, entry.Contains("/") ? label : name, StringComparison.OrdinalIgnoreCase))
-            {
-                return true;
-            }
+            if (SourceKinds.ListedItem.IsMatch(entry)) continue;
+            if (string.Equals(entry.TrimEnd('/'), section, StringComparison.OrdinalIgnoreCase)) return Array.Empty<string>();
+            if (Selects(entry, entry.Contains("/") ? label : name)) return Array.Empty<string>();
+            if (entry.StartsWith(section + "/", StringComparison.OrdinalIgnoreCase) && Selects(entry.Substring(section.Length + 1), label)) return Array.Empty<string>();
         }
-        return false;
+        return null;
     }
 
-    private static readonly Regex ListedItem = new(@"^(?:(?<status>OK|FAILED|STALE)\s+)?(?:(?<kind>HMI (?:DiscreteAlarms|AnalogAlarms|AlarmClasses))\b|(?<kind>block|udt|tag table|alarm text list|HMI tag table|HMI screen template|HMI pop-up screen|HMI screen|HMI text list) '(?<label>[^']*)')", RegexOptions.Compiled);
-
-    private static string FormatHmiAlarms(IReadOnlyList<HmiAlarmInfo> alarms) =>
-        FormatCsv(
-            new[] { "Type", "Name", "AlarmClass", "EventText", "InfoText", "TriggerAddress", "Condition", "ConditionValue", "RaisedStateTag", "AuditClass", "Area", "Origin" },
-            alarms.Select(a => new[]
-            {
-                a.Type, a.Name, a.AlarmClass ?? "", a.EventText ?? "", a.InfoText ?? "", a.TriggerAddress ?? "",
-                a.Condition ?? "", a.ConditionValue ?? "", a.RaisedStateTag ?? "", a.AuditClass ?? "", a.Area ?? "", a.Origin ?? ""
-            }));
-
-    private static string FormatHmiAlarmClasses(IReadOnlyList<HmiAlarmClassInfo> classes) =>
-        FormatCsv(
-            new[] { "Name", "Priority", "Log", "Id", "IsSystem" },
-            classes.Select(c => new[] { c.Name, c.Priority.ToString(), c.Log ?? "", c.Id.ToString(), c.IsSystem.ToString() }));
-
-    // RFC 4180 CSV, CRLF line endings and a header row - what Excel expects when opening a .csv
-    // directly rather than going through its text-import wizard.
-    private static string FormatTagTable(IReadOnlyList<TagInfo> tags) =>
-        FormatCsv(
-            new[] { "Name", "DataType", "LogicalAddress", "Comment", "ExternalAccessible", "ExternalVisible", "ExternalWritable" },
-            tags.Select(t => new[] { t.Name, t.DataType, t.LogicalAddress, t.Comment ?? "",
-                t.ExternalAccessible.ToString(), t.ExternalVisible.ToString(), t.ExternalWritable.ToString() }));
-
-    // Inverse of FormatTagTable. Missing columns and empty cells map to null ("leave unchanged"),
-    // so CSVs from before the flag columns existed still import. Throws FormatException on bad input.
-    private static TagSpec[] ParseTagCsv(string csv)
+    // The formats of an item line: its last bracket that holds only format names, e.g. the
+    // '[csv, xml]' in "tag table 'Tags' [csv, xml]" - not the '[SCL]' of a block.
+    private static IReadOnlyCollection<string> FormatsInLine(string line)
     {
-        var rows = ParseCsv(csv);
-        var tags = new List<TagSpec>();
-        for (var i = 0; i < rows.Count; i++)
+        foreach (Match bracket in Regex.Matches(line, @"\[([^\]]*)\]").Cast<Match>().Reverse())
         {
-            var r = rows[i];
-            var line = i + 2; // 1-based, after the header row
-            var name = GetField(r, "Name");
-            var dataType = GetField(r, "DataType");
-            if (string.IsNullOrEmpty(name) && string.IsNullOrEmpty(dataType)) continue; // blank line
-            if (string.IsNullOrEmpty(name) || string.IsNullOrEmpty(dataType))
-                throw new FormatException($"CSV line {line}: Name and DataType are required.");
-
-            tags.Add(new TagSpec(name!, dataType!,
-                NullIfEmpty(GetField(r, "LogicalAddress")), NullIfEmpty(GetField(r, "Comment")),
-                ParseCsvBool(r, "ExternalAccessible", line), ParseCsvBool(r, "ExternalVisible", line), ParseCsvBool(r, "ExternalWritable", line)));
+            var names = bracket.Groups[1].Value.Split(',').Select(f => f.Trim().ToLowerInvariant()).ToList();
+            if (names.All(SourceFormat.All.Contains)) return names;
         }
-        return tags.ToArray();
+        return Array.Empty<string>();
     }
 
-    private static bool? ParseCsvBool(Dictionary<string, string> row, string column, int line)
-    {
-        var value = GetField(row, column)?.Trim();
-        if (string.IsNullOrEmpty(value)) return null;
-        if (value == "1" || value!.Equals("true", StringComparison.OrdinalIgnoreCase)) return true;
-        if (value == "0" || value.Equals("false", StringComparison.OrdinalIgnoreCase)) return false;
-        throw new FormatException($"CSV line {line}: {column} must be True/False/1/0, got '{value}'.");
-    }
-
-    private static string FormatHmiTagTable(IReadOnlyList<HmiTagInfo> tags) =>
-        FormatCsv(
-            new[] { "Name", "DataType", "Address", "Connection", "PlcName", "PlcTag", "Comment", "AcquisitionCycle" },
-            tags.Select(t => new[] { t.Name, t.DataType, t.Address ?? "", t.Connection ?? "", t.PlcName ?? "", t.PlcTag ?? "", t.Comment ?? "", t.AcquisitionCycle ?? "" }));
-
-    // Inverse of FormatHmiTagTable, same rules as ParseTagCsv.
-    private static HmiTagSpec[] ParseHmiTagCsv(string csv)
-    {
-        var rows = ParseCsv(csv);
-        var tags = new List<HmiTagSpec>();
-        for (var i = 0; i < rows.Count; i++)
-        {
-            var r = rows[i];
-            var line = i + 2; // 1-based, after the header row
-            var name = GetField(r, "Name");
-            var dataType = GetField(r, "DataType");
-            if (string.IsNullOrEmpty(name) && string.IsNullOrEmpty(dataType)) continue; // blank line
-            if (string.IsNullOrEmpty(name) || string.IsNullOrEmpty(dataType))
-                throw new FormatException($"CSV line {line}: Name and DataType are required.");
-
-            tags.Add(new HmiTagSpec(name!, dataType!,
-                NullIfEmpty(GetField(r, "Address")), NullIfEmpty(GetField(r, "Connection")),
-                NullIfEmpty(GetField(r, "PlcName")), NullIfEmpty(GetField(r, "PlcTag")), NullIfEmpty(GetField(r, "Comment")),
-                NullIfEmpty(GetField(r, "AcquisitionCycle"))));
-        }
-        return tags.ToArray();
-    }
-
-    private static string FormatCsv(string[] headers, IEnumerable<string[]> rows)
-    {
-        var sb = new StringBuilder();
-        sb.Append(string.Join(",", headers.Select(CsvField))).Append("\r\n");
-        foreach (var row in rows)
-        {
-            sb.Append(string.Join(",", row.Select(CsvField))).Append("\r\n");
-        }
-        return sb.ToString();
-    }
-
-    private static string CsvField(string? value)
-    {
-        value ??= "";
-        return value.IndexOfAny(new[] { ',', '"', '\n', '\r' }) >= 0
-            ? "\"" + value.Replace("\"", "\"\"") + "\""
-            : value;
-    }
-
-    private static string GroupDir(string plcDir, string sectionName, string groupPath)
-    {
-        var segments = new List<string> { plcDir, sectionName };
-        if (!string.IsNullOrEmpty(groupPath))
-            segments.AddRange(groupPath.Split('/').Select(Sanitize));
-        return Path.Combine(segments.ToArray());
-    }
-
-    private static string EnsureExtension(string fileName) =>
-        string.IsNullOrEmpty(Path.GetExtension(fileName)) ? fileName + ".txt" : fileName;
+    // ' [csv, xml]' after an item line, or nothing for a line without formats.
+    private static string FormatList(IReadOnlyCollection<string> formats) =>
+        formats.Count == 0 ? "" : $" [{string.Join(", ", formats)}]";
 
     // Renames leftover files from a previous successful export of this item to "<name>.stale" so
     // a failed re-export (e.g. the block went inconsistent) can't leave a same-named file on disk
@@ -1844,10 +1678,4 @@ Writes '<sourceDirectory>/_import_report.txt' with one CREATED/UPDATED/SKIPPED/F
             File.Delete(file);
     }
 
-    private static string Sanitize(string name)
-    {
-        foreach (var c in Path.GetInvalidFileNameChars())
-            name = name.Replace(c, '_');
-        return name;
-    }
 }

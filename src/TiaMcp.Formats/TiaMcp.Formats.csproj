@@ -1,0 +1,16 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- Pure file formats: the converters (CSV, GRAPH DSL) and the records they convert, and the source
+       tree's manifest. No Openness or MCP dependency, so they can be unit tested without TIA Portal. -->
+  <PropertyGroup>
+    <TargetFramework>net48</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <LangVersion>latest</LangVersion>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="System.Text.Json" Version="10.0.10" />
+  </ItemGroup>
+
+</Project>

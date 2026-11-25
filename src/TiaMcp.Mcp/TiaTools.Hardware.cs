@@ -7,6 +7,7 @@ using System.Text;
 using System.Text.RegularExpressions;
 using System.Threading.Tasks;
 using ModelContextProtocol.Server;
+using TiaMcp.Formats;
 using TiaMcp.Openness;
 
 namespace TiaMcp.Mcp;
@@ -93,10 +94,13 @@ public sealed partial class TiaTools
         foreach (var (table, result) in await _session.ReadAllTagTablesAsync(plcName))
         {
             if (!result.Success) continue;
-            foreach (var tag in result.Tags)
+            var csv = result.Documents.FirstOrDefault(d => d.FileName.EndsWith(".csv", StringComparison.OrdinalIgnoreCase));
+            if (csv == null) continue;
+            foreach (var spec in TagTableCsv.Parse(csv.Content))
             {
+                var tag = new TagInfo(spec.Name, spec.DataType, spec.LogicalAddress ?? "", spec.Comment, false, false, false);
                 var parsed = IoTagAddress.Parse(tag.LogicalAddress);
-                if (parsed != null) tags.Add((parsed, tag, Label(table.GroupPath, table.Name)));
+                if (parsed != null) tags.Add((parsed, tag, (string.IsNullOrEmpty(table.GroupPath) ? table.Name : $"{table.GroupPath}/{table.Name}")));
                 else otherTags++;
             }
         }

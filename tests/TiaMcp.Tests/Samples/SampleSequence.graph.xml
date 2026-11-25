@@ -1,0 +1,143 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Hand-written, made-up GRAPH block export: the minimal SimaticML structure GraphConverter reads.
+     Never replace this with an export from a customer project. -->
+<Document>
+  <SW.Blocks.FB ID="0">
+    <AttributeList>
+      <Interface>
+        <Sections xmlns="http://www.siemens.com/automation/Openness/SW/Interface/v5">
+          <Section Name="Base" />
+          <Section Name="Input">
+            <Member Name="Start" Datatype="Bool">
+              <Comment>
+                <MultiLanguageText Lang="en-US">Start the sequence</MultiLanguageText>
+              </Comment>
+            </Member>
+            <Member Name="Ready" Datatype="Bool" />
+            <Member Name="Done" Datatype="Bool" />
+          </Section>
+          <Section Name="Output">
+            <Member Name="Motor" Datatype="Bool" />
+          </Section>
+          <Section Name="Static">
+            <Member Name="Step1" Datatype="G7_StepPlus_V6" />
+            <Member Name="Step2" Datatype="G7_StepPlus_V6" />
+            <Member Name="Trans1" Datatype="G7_TransitionPlus_V6" />
+            <Member Name="Trans2" Datatype="G7_TransitionPlus_V6" />
+          </Section>
+        </Sections>
+      </Interface>
+      <Name>SampleSequence</Name>
+      <ProgrammingLanguage>GRAPH</ProgrammingLanguage>
+    </AttributeList>
+    <ObjectList>
+      <SW.Blocks.CompileUnit ID="1" CompositionName="CompileUnits">
+        <AttributeList>
+          <NetworkSource>
+            <Graph xmlns="http://www.siemens.com/automation/Openness/SW/NetworkSource/Graph/v6">
+              <Sequence>
+                <Title>
+                  <MultiLanguageText Lang="en-US">Main</MultiLanguageText>
+                </Title>
+                <Steps>
+                  <Step Number="1" Init="true" Name="Idle" MaximumStepTime="T#10S" WarningTime="T#7S">
+                    <Actions>
+                      <Action Qualifier="R">
+                        <Token Text="#Motor" />
+                      </Action>
+                    </Actions>
+                  </Step>
+                  <Step Number="2" Init="false" Name="Running">
+                    <Actions>
+                      <Action Qualifier="N">
+                        <Token Text="#Motor" />
+                      </Action>
+                    </Actions>
+                  </Step>
+                </Steps>
+                <Transitions>
+                  <Transition Number="1" Name="StartRequested">
+                    <FlgNet>
+                      <Parts>
+                        <Access Scope="LocalVariable" UId="21">
+                          <Symbol>
+                            <Component Name="Start" />
+                          </Symbol>
+                        </Access>
+                        <Access Scope="LocalVariable" UId="22">
+                          <Symbol>
+                            <Component Name="Ready" />
+                          </Symbol>
+                        </Access>
+                        <Part Name="A" UId="23">
+                          <TemplateValue Name="Card" Type="Cardinality">2</TemplateValue>
+                          <Negated Name="in2" />
+                        </Part>
+                        <Part Name="TrCoil" UId="24" />
+                      </Parts>
+                      <Wires>
+                        <Wire UId="25">
+                          <IdentCon UId="21" />
+                          <NameCon UId="23" Name="in1" />
+                        </Wire>
+                        <Wire UId="26">
+                          <IdentCon UId="22" />
+                          <NameCon UId="23" Name="in2" />
+                        </Wire>
+                        <Wire UId="27">
+                          <NameCon UId="23" Name="out" />
+                          <NameCon UId="24" Name="in" />
+                        </Wire>
+                      </Wires>
+                    </FlgNet>
+                  </Transition>
+                  <Transition Number="2" Name="Finished">
+                    <FlgNet>
+                      <Parts>
+                        <Access Scope="LocalVariable" UId="21">
+                          <Symbol>
+                            <Component Name="Done" />
+                          </Symbol>
+                        </Access>
+                        <Part Name="TrCoil" UId="22" />
+                      </Parts>
+                      <Wires>
+                        <Wire UId="23">
+                          <IdentCon UId="21" />
+                          <NameCon UId="22" Name="in" />
+                        </Wire>
+                      </Wires>
+                    </FlgNet>
+                  </Transition>
+                </Transitions>
+                <Branches />
+                <Connections>
+                  <Connection>
+                    <NodeFrom><StepRef Number="1" /></NodeFrom>
+                    <NodeTo><TransitionRef Number="1" /></NodeTo>
+                    <LinkType>Direct</LinkType>
+                  </Connection>
+                  <Connection>
+                    <NodeFrom><TransitionRef Number="1" /></NodeFrom>
+                    <NodeTo><StepRef Number="2" /></NodeTo>
+                    <LinkType>Direct</LinkType>
+                  </Connection>
+                  <Connection>
+                    <NodeFrom><StepRef Number="2" /></NodeFrom>
+                    <NodeTo><TransitionRef Number="2" /></NodeTo>
+                    <LinkType>Direct</LinkType>
+                  </Connection>
+                  <Connection>
+                    <NodeFrom><TransitionRef Number="2" /></NodeFrom>
+                    <NodeTo><StepRef Number="1" /></NodeTo>
+                    <LinkType>Jump</LinkType>
+                  </Connection>
+                </Connections>
+              </Sequence>
+            </Graph>
+          </NetworkSource>
+        </AttributeList>
+      </SW.Blocks.CompileUnit>
+    </ObjectList>
+  </SW.Blocks.FB>
+</Document>

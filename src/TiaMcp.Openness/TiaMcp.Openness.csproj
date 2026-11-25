@@ -11,6 +11,8 @@
   <ItemGroup>
     <Reference Include="System.IO.Compression" />
     <Reference Include="System.IO.Compression.FileSystem" />
+    <PackageReference Include="System.Text.Json" Version="10.0.10" />
+    <Reference Include="System.Drawing" />
   </ItemGroup>
 
   <ItemGroup>
@@ -34,6 +36,11 @@
       <HintPath>C:\Program Files\Siemens\Automation\Portal V21\PublicAPI\V21\net48\Siemens.Engineering.WinCCUnified.dll</HintPath>
       <Private>False</Private>
     </Reference>
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\TiaMcp.Formats\TiaMcp.Formats.csproj" />
+    <Using Include="TiaMcp.Formats" />
   </ItemGroup>
 
 </Project>

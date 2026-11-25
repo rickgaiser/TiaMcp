@@ -54,14 +54,6 @@ public sealed partial class TiaConnection
 {
     private readonly Dictionary<string, HmiTarget> _hmiTargetByName = new(StringComparer.OrdinalIgnoreCase);
 
-    private void IndexHmiClassic(SoftwareContainer? container)
-    {
-        if (container?.Software is HmiTarget hmiTarget)
-        {
-            _hmiTargetByName[hmiTarget.Name] = hmiTarget;
-        }
-    }
-
     private HmiTarget GetHmiTarget(string hmiName)
     {
         if (!_hmiTargetByName.TryGetValue(hmiName, out var target))
@@ -171,16 +163,15 @@ public sealed partial class TiaConnection
         }
     }
 
+    // A folder name may contain '/' itself: see FindByPath.
     private static ClassicFolder? FindClassicFolder(ClassicFolder root, string folderPath)
     {
-        var current = root;
-        foreach (var segment in SplitFolderPath(folderPath))
-        {
-            current = current.Children().FirstOrDefault(c => string.Equals(c.Name, segment, StringComparison.Ordinal));
-            if (current == null) return null;
-        }
-        return current;
+        var path = NormalizeFolderPath(folderPath);
+        return path.Length == 0 ? root : FindByPath<ClassicFolder>(path, ChildNamed(root), ChildNamed);
     }
+
+    private static Func<string, ClassicFolder?> ChildNamed(ClassicFolder folder) =>
+        name => folder.Children().FirstOrDefault(c => string.Equals(c.Name, name, StringComparison.Ordinal));
 
     private static string[] SplitFolderPath(string? folderPath) =>
         (folderPath ?? "").Split(new[] { '/', '\\' }, StringSplitOptions.RemoveEmptyEntries);
@@ -188,12 +179,6 @@ public sealed partial class TiaConnection
     private static string NormalizeFolderPath(string? folderPath) => string.Join("/", SplitFolderPath(folderPath));
 
     // ---- source tree support (read_source_tree / write_source_tree / list_project) ----
-
-    public IReadOnlyList<string> ListHmiClassicNames()
-    {
-        EnsureConnected();
-        return _hmiTargetByName.Keys.OrderBy(n => n, StringComparer.OrdinalIgnoreCase).ToList();
-    }
 
     /// <summary>Every object of the given kinds (graphic lists excluded, see ReadHmiClassicObjects) with its folder path.</summary>
     public IReadOnlyList<HmiClassicObjectSummary> ListHmiClassicObjects(string hmiName)
@@ -217,7 +202,7 @@ public sealed partial class TiaConnection
     /// Graphic lists are never exported: in TIA Portal V21 that crashed the whole TIA Portal
     /// process (InvalidCastException String -> HmiOpenLink in UpdateOpenLinks).
     /// </summary>
-    public IReadOnlyList<HmiClassicObjectXml> ReadHmiClassicObjects(string hmiName, Func<string, string, string, bool>? include)
+    public IReadOnlyList<HmiClassicObjectXml> ReadHmiClassicObjects(string hmiName, Func<string, string, string, bool>? include, ExportingItem? exporting = null)
     {
         EnsureConnected();
         var target = GetHmiTarget(hmiName);
@@ -226,28 +211,32 @@ public sealed partial class TiaConnection
         Directory.CreateDirectory(tempDir);
         try
         {
-            var index = 0;
+            // Everything to export first, so exporting gets the count.
+            var selected = new List<(string Kind, string Path, ClassicItem Item)>();
             foreach (var kind in HmiClassicKinds.All.Where(k => k != HmiClassicKinds.GraphicList))
             {
                 WalkClassic(GetClassicRoot(target, kind), "", (path, folder) =>
                 {
                     foreach (var item in folder.Items())
-                    {
-                        if (include != null && !include(kind, path, item.Name)) continue;
-                        var file = new FileInfo(Path.Combine(tempDir, $"{index++}.xml"));
-                        try
-                        {
-                            item.Export(file);
-                            var doc = XDocument.Load(file.FullName);
-                            doc.Root?.Element("DocumentInfo")?.Remove();
-                            result.Add(new HmiClassicObjectXml(kind, path, item.Name, doc.ToString(), null));
-                        }
-                        catch (Exception ex)
-                        {
-                            result.Add(new HmiClassicObjectXml(kind, path, item.Name, null, DescribeException(ex)));
-                        }
-                    }
+                        if (include == null || include(kind, path, item.Name)) selected.Add((kind, path, item));
                 });
+            }
+            for (var index = 0; index < selected.Count; index++)
+            {
+                var (kind, path, item) = selected[index];
+                exporting?.Invoke(index + 1, selected.Count, path, item.Name);
+                var file = new FileInfo(Path.Combine(tempDir, $"{index}.xml"));
+                try
+                {
+                    item.Export(file);
+                    var doc = XDocument.Load(file.FullName);
+                    doc.Root?.Element("DocumentInfo")?.Remove();
+                    result.Add(new HmiClassicObjectXml(kind, path, item.Name, doc.ToString(), null));
+                }
+                catch (Exception ex)
+                {
+                    result.Add(new HmiClassicObjectXml(kind, path, item.Name, null, DescribeException(ex)));
+                }
             }
         }
         finally

@@ -10,15 +10,16 @@ For object types TiaMcp doesn't support yet, the notes say what the Openness API
 
 | Object | List | Create | Read | Update | Rename | Delete | Notes |
 |---|---|---|---|---|---|---|---|
-| Block: SCL / FBD / LAD / global DB | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | `.s7dcl` / `.s7res` |
+| Block: SCL / FBD / LAD / global DB | ✅ | ✅ | ✅ | ⚠️ | ✅ | ✅ | `.s7dcl` / `.s7res`, or `.xml` (every block). A `.s7dcl` the import would get wrong (nested index in LAD/FBD, project type named like a system type, AT overlay) is refused; so is overwriting a textual-interface block exported more than once since the project was opened (TIA Portal terminates) - see README, Known limitations |
 | Block: GRAPH | ✅ | ⚠️ | ✅ | ⚠️ | ✅ | ✅ | `.graph.il`; create clones an existing GRAPH block as template; topology editing is limited |
 | Block: STL (whole block) | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | `.awl` |
-| Block: embedded STL networks | ✅ | ❌ | ✅ | ❌ | ✅ | ✅ | Read-only sidecar (`.stl-networks.awl`); rename/delete act on the whole block |
+| Block: embedded STL networks | ✅ | ⚠️ | ✅ | ⚠️ | ✅ | ✅ | Read-only sidecar (`.stl-networks.awl`); the block is writable through its `.xml` only; rename/delete act on the whole block |
 | Instance-DB | ✅ | ✅ | ✅ | ❌ | ✅ | ✅ | Created from its `.s7dcl` or bound to an FB; read adds the resolved member list (`.interface.txt`) |
+| Block number | ✅ | — | ✅ | ✅ | — | — | Shown by `list_project` and `_export_summary.txt` (`FB44`); changed with `renumber_plc_blocks` (fixed or automatic, many blocks per call), not through the files |
 | Block group | ⚠️ | ✅ | — | — | ✅ | ✅ | Only visible through the group paths of the blocks in it; empty groups are not listed |
-| UDT (PLC data type) | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | `.s7dcl` / `.s7res` |
+| UDT (PLC data type) | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | `.s7dcl` / `.s7res`, or `.xml` |
 | UDT group | ⚠️ | ✅ | — | — | ✅ | ✅ | Empty groups are not listed |
-| Tag table | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | `.csv` |
+| Tag table | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | `.csv`, or `.xml` (replaces the whole table) |
 | Tag | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | Through the tag table CSV (a removed row deletes the tag); rename via `rename_plc_tag` (keeps references) |
 | Tag table group | ✅ | ✅ | — | — | ✅ | ✅ | Empty groups are listed as `Group/` |
 | User constant | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | Openness: create, delete, import/export |
@@ -40,15 +41,17 @@ For object types TiaMcp doesn't support yet, the notes say what the Openness API
 | Object | List | Create | Read | Update | Rename | Delete | Notes |
 |---|---|---|---|---|---|---|---|
 | HMI tag table | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | `.csv` |
-| HMI tag | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | Through the tag table CSV (a removed row deletes the tag); rename via `rename_hmi_tag` (keeps alarm references) |
+| HMI tag | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | Through the tag table CSV (a removed row deletes the tag); rename via `rename_hmi_tag` (keeps alarm references). The Connection must exist in the HMI |
 | HMI tag table group | ✅ | ✅ | — | — | ✅ | ✅ | Empty groups are listed as `Group/` |
 | Alarm class | ✅ | ✅ | ✅ | ✅ | ❌ | ✅ | `AlarmClasses.csv` |
-| Alarm (discrete / analog) | ✅ | ✅ | ✅ | ✅ | ❌ | ✅ | `DiscreteAlarms.csv` / `AnalogAlarms.csv` |
-| Screen | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | Openness: create, delete; content via properties (no text export) |
-| Screen group | ❌ | ❌ | — | — | ❌ | ❌ | Openness: create, delete |
-| Script module (global) | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | Openness: import/export |
-| Text list / graphic list | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | Openness: delete, import/export |
-| HMI connection | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | Openness: create, delete |
+| Alarm (discrete / analog) | ✅ | ✅ | ✅ | ✅ | ❌ | ✅ | `DiscreteAlarms.csv` / `AnalogAlarms.csv` (a removed row deletes the alarm). Texts in the editing language only |
+| Screen | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | `.json`, built from the object model (Openness has no screen export) |
+| Screen item (incl. faceplate) | ✅ | ✅ | ✅ | ✅ | ❌ | ✅ | Through the screen JSON: properties, dynamizations, events, faceplate interface. No z-order control |
+| Screen group | ✅ | ✅ | — | — | ✅ | ✅ | Empty groups are listed as `Group/` |
+| Script module (global) | ✅ | ❌ | ✅ | ❌ | ❌ | ❌ | `Scripts/<module>.js`, native Openness export; read-only |
+| Text list | ✅ | ✅ | ✅ | ✅ | ❌ | ✅ | `.csv` per list, the columns of a PLC alarm text list (the default entry is a `Default` row); written by patching a fresh YAML export of all lists (a removed row deletes the entry). The HMI needs one list made in TIA Portal before others can be created. Openness has no rename |
+| Graphic list | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | Openness: delete, import/export |
+| HMI connection | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | Only checked when writing tags. Openness: create, delete |
 | Data log / alarm log / logging tag | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | Openness: create, delete |
 
 ## HMI (classic WinCC: Comfort / Advanced / RT Advanced)
@@ -67,9 +70,10 @@ For object types TiaMcp doesn't support yet, the notes say what the Openness API
 
 | Object | List | Create | Read | Update | Rename | Delete | Notes |
 |---|---|---|---|---|---|---|---|
-| TIA Portal instance | ✅ | — | — | — | — | — | |
-| Project | — | ❌ | ✅ | ✅ | ❌ | ❌ | Open/close, status, save, save as |
-| Source tree | — | — | ✅ | ✅ | — | — | All source is read and written through it; partial reads; writes back only changes, refuses items changed in TIA Portal since the read; never deletes items |
+| TIA Portal instance | ✅ | ✅ | — | — | — | — | Create: start the GUI (`tia_connect` `startPortal`) |
+| Project | — | ❌ | ✅ | ✅ | ❌ | ❌ | Open/close, status, save, save as. Protected projects (user management) can't be opened through Openness yet |
+| Multiuser local session | — | ❌ | ✅ | ❌ | — | — | Open with `tia_connect`; `project_status` tells whether the server has newer changes and lists marked objects. The source tree records each item's mark state and refuses writing items marked by others or not up to date. Refresh: not in Openness (use the GUI); commit: not exposed yet |
+| Source tree | — | — | ✅ | ✅ | — | — | All source is read and written through it; partial reads; writes back only changes, refuses items changed in TIA Portal since the read; never deletes items. Progress window with a Cancel button, `_progress.log` and MCP progress notifications; time per phase in the result |
 
 ## Hardware & library
 
@@ -81,4 +85,4 @@ For object types TiaMcp doesn't support yet, the notes say what the Openness API
 | Sync domain / MRP domain | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | Openness: create, delete |
 | Web server / OPC UA user | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | Openness: create, delete |
 | Library master copy + folder | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | Openness: create, delete |
-| Library type + version + folder | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | Openness: create from blocks/UDTs, delete, export |
+| Library type + version + folder | ⚠️ | ❌ | ⚠️ | ❌ | ❌ | ❌ | Project library only: `list_library_types`, faceplate interface via `read_faceplate_type`. Openness: create from blocks/UDTs, delete, export |
