@@ -413,6 +413,59 @@ Confirm with the user first: in the PLC a renumbered block is a different block.
         return result.Success ? "Success" : $"FAILED: {result.Error}";
     });
 
+    [McpServerTool(Name = "delete_plc_watch_table")]
+    [Description("Delete a PLC watch table by name. This is destructive - confirm with the user before calling. The force table can't be deleted.")]
+    public Task<string> DeleteWatchTable(
+        [Description("PLC software name, from list_project")] string plcName,
+        [Description("Watch table name, from list_project")] string tableName) => Safe(async () =>
+    {
+        var result = await _session.DeleteWatchTableAsync(plcName, tableName);
+        return result.Success ? "Success" : $"FAILED: {result.Error}";
+    });
+
+    [McpServerTool(Name = "rename_plc_watch_table")]
+    [Description("Rename a PLC watch table in place. Fails if a watch table with the new name already exists (names are unique per PLC).")]
+    public Task<string> RenameWatchTable(
+        [Description("PLC software name, from list_project")] string plcName,
+        [Description("Watch table name to rename, from list_project")] string tableName,
+        [Description("New watch table name")] string newName) => Safe(async () =>
+    {
+        var result = await _session.RenameWatchTableAsync(plcName, tableName, newName);
+        return result.Success ? "Success" : $"FAILED: {result.Error}";
+    });
+
+    [McpServerTool(Name = "create_plc_watch_table_group")]
+    [Description("Create a PLC watch table group (folder) under a given parent group path. A watch table written into a group that doesn't exist creates the group too.")]
+    public Task<string> CreateWatchTableGroup(
+        [Description("PLC software name, from list_project")] string plcName,
+        [Description("Parent group path, e.g. 'Sequences'; empty string for the root")] string parentGroupPath,
+        [Description("Name of the new group")] string groupName) => Safe(async () =>
+    {
+        var result = await _session.CreateWatchTableGroupAsync(plcName, parentGroupPath, groupName);
+        return result.Success ? "Success" : $"FAILED: {result.Error}";
+    });
+
+    [McpServerTool(Name = "delete_plc_watch_table_group")]
+    [Description("Delete a PLC watch table group (folder) and everything in it, including its watch tables and subgroups. This is destructive - confirm with the user before calling.")]
+    public Task<string> DeleteWatchTableGroup(
+        [Description("PLC software name, from list_project")] string plcName,
+        [Description("Full group path to delete, e.g. 'Sequences/Conveyor'")] string groupPath) => Safe(async () =>
+    {
+        var result = await _session.DeleteWatchTableGroupAsync(plcName, groupPath);
+        return result.Success ? "Success" : $"FAILED: {result.Error}";
+    });
+
+    [McpServerTool(Name = "rename_plc_watch_table_group")]
+    [Description("Rename a PLC watch table group (folder) in place, without moving it to a different parent.")]
+    public Task<string> RenameWatchTableGroup(
+        [Description("PLC software name, from list_project")] string plcName,
+        [Description("Full group path to rename, e.g. 'Sequences/Conveyor'")] string groupPath,
+        [Description("New group name")] string newName) => Safe(async () =>
+    {
+        var result = await _session.RenameWatchTableGroupAsync(plcName, groupPath, newName);
+        return result.Success ? "Success" : $"FAILED: {result.Error}";
+    });
+
     [McpServerTool(Name = "rename_hmi_tag")]
     [Description("Rename a single WinCC Unified HMI tag in place, in whichever tag table it lives. Unlike changing the name in an HMI tag table CSV in the source tree (which makes a new tag), this renames the existing tag object. Fails if a tag with the new name already exists (names are unique per-HMI).")]
     public Task<string> RenameHmiTag(
@@ -615,7 +668,7 @@ Confirm with the user first: in the PLC a renumbered block is a different block.
     });
 
     [McpServerTool(Name = "list_project")]
-    [Description(@"List what the connected project has, per PLC and HMI software ('=== name ===' - the plcName/hmiName other tools take): blocks with their language, number and numbering mode (""block 'Group/Name' [SCL] FB44 auto"": 'auto' numbered automatically, 'fixed' a fixed number), INCONSISTENT: needs compile_plc, e.g. before a GRAPH or STL block can be read), UDTs, tag tables, empty tag table groups and alarm text lists; for WinCC Unified the HMI tag tables, text lists, screens, global script modules and alarm files, for classic WinCC the tag tables, text lists, screen templates, pop-up screens and screens. Fast: names only, no source - read_source_tree reads the source. Each item line ends with the formats it can be read in, its own first, e.g. ""tag table 'Tags' [csv, xml]"" (""xml"" is the raw Openness export). Item lines are in _export_summary.txt's format and can be passed to read_source_tree's items as they are.
+    [Description(@"List what the connected project has, per PLC and HMI software ('=== name ===' - the plcName/hmiName other tools take): blocks with their language, number and numbering mode (""block 'Group/Name' [SCL] FB44 auto"": 'auto' numbered automatically, 'fixed' a fixed number), INCONSISTENT: needs compile_plc, e.g. before a GRAPH or STL block can be read), UDTs, tag tables, empty tag table groups, alarm text lists, watch tables (with empty groups) and the force table; for WinCC Unified the HMI tag tables, text lists, screens, global script modules and alarm files, for classic WinCC the tag tables, text lists, screen templates, pop-up screens and screens. Fast: names only, no source - read_source_tree reads the source. Each item line ends with the formats it can be read in, its own first, e.g. ""tag table 'Tags' [csv, xml]"" (""xml"" is the raw Openness export). Item lines are in _export_summary.txt's format and can be passed to read_source_tree's items as they are.
 
 Without filter or deviceName, a project of more than 200 items only gets counts per software back; pass targetDirectory to write the full list to '<targetDirectory>/_project_list.txt'.")]
     public Task<string> ListProject(
@@ -737,11 +790,11 @@ Without filter or deviceName, a project of more than 200 items only gets counts 
     }
 
     [McpServerTool(Name = "read_source_tree")]
-    [Description(@"Export project source to disk, into folders that mirror the TIA Portal project tree: <targetDirectory>/<PLC>/Program blocks/<group path>/..., .../PLC tags/..., .../PLC data types/..., and .../PLC alarm text lists/<list>.csv; <targetDirectory>/<HMI>/HMI tags/..., .../Text lists/<list>.csv (WinCC Unified), .../Screens/<group path>/<screen>.json (WinCC Unified), .../Scripts/<module>.js (global modules; read-only) and .../HMI alarms/ (DiscreteAlarms.csv, AnalogAlarms.csv, AlarmClasses.csv - fixed files, alarms have no groups in Openness); for a classic WinCC HMI .../HMI tags/, Screens/, Screen templates/, Pop-up screens/ (each with their folders) and Text lists/, as native Openness XML. Classic graphic lists are skipped (exporting one crashes TIA Portal V21). <PLC> and <HMI> are the names TIA Portal's project tree shows (an HMI on a PC station by the station's name; project_status lists them), as in the '=== name ===' headers; tools also take the software's own name. Read the files with your file tools; edit them and call write_source_tree to write the changes back.
+    [Description(@"Export project source to disk, into folders that mirror the TIA Portal project tree: <targetDirectory>/<PLC>/Program blocks/<group path>/..., .../PLC tags/..., .../PLC data types/..., .../PLC alarm text lists/<list>.csv and .../Watch and force tables/<group path>/<table>.csv; <targetDirectory>/<HMI>/HMI tags/..., .../Text lists/<list>.csv (WinCC Unified), .../Screens/<group path>/<screen>.json (WinCC Unified), .../Scripts/<module>.js (global modules; read-only) and .../HMI alarms/ (DiscreteAlarms.csv, AnalogAlarms.csv, AlarmClasses.csv - fixed files, alarms have no groups in Openness); for a classic WinCC HMI .../HMI tags/, Screens/, Screen templates/, Pop-up screens/ (each with their folders) and Text lists/, as native Openness XML. Classic graphic lists are skipped (exporting one crashes TIA Portal V21). <PLC> and <HMI> are the names TIA Portal's project tree shows (an HMI on a PC station by the station's name; project_status lists them), as in the '=== name ===' headers; tools also take the software's own name. Read the files with your file tools; edit them and call write_source_tree to write the changes back.
 
 Pass items to read only part of the project (much faster than a full read): e.g. one block to look at or refresh, a group, or a section such as 'Screens' or 'HMI tags'. A read overwrites the selected items' files, including unsaved edits to them. An item that no longer exists in the project (deleted or renamed in TIA Portal) has its files deleted.
 
-Files per item: blocks and UDTs keep TIA Portal's own document format (.s7dcl, plus .s7res holding the comment/title texts its S7_MLC attributes refer to); a GRAPH block is '<name>.graph.il', a whole-block-STL block '<name>.awl' (TIA Portal's own 'Generate source' text). Unified global script modules are exported as 'Scripts/<module>.js' and are read-only. Read-only companions, never written back: '<name>.interface.txt' (an instance DB's resolved interface) and '<name>.stl-networks.awl'/'.xml' (the STL networks inside an otherwise FBD/LAD/SCL block; the .s7dcl keeps an empty placeholder NETWORK with S7_Language := ""STL"" at each one's position). Tag tables, alarms and PLC alarm text lists and WinCC Unified text lists (From, To, one Text [language] column per project language) are Excel-compatible CSV with a UTF-8 BOM.
+Files per item: blocks and UDTs keep TIA Portal's own document format (.s7dcl, plus .s7res holding the comment/title texts its S7_MLC attributes refer to); a GRAPH block is '<name>.graph.il', a whole-block-STL block '<name>.awl' (TIA Portal's own 'Generate source' text). Unified global script modules are exported as 'Scripts/<module>.js' and are read-only. Read-only companions, never written back: '<name>.interface.txt' (an instance DB's resolved interface) and '<name>.stl-networks.awl'/'.xml' (the STL networks inside an otherwise FBD/LAD/SCL block; the .s7dcl keeps an empty placeholder NETWORK with S7_Language := ""STL"" at each one's position). Tag tables, alarms, PLC alarm text lists, watch tables and WinCC Unified text lists (From, To, one Text [language] column per project language) are Excel-compatible CSV with a UTF-8 BOM.
 Formats: blocks, UDTs and PLC tag tables can also be read as their raw Openness XML ('<name>.xml', SimaticML): complete where a converted format leaves something out, and writable too. An item is read in the formats it already has in the tree, else its own format; pass its list line with formats (""tag table 'Tags' [csv, xml]"", ""block 'Main' [xml]"") to choose. The XML costs no extra export where the own format is made from it (tag tables, GRAPH and code blocks); for data blocks, UDTs and whole-STL blocks it does. _manifest.json records each item's formats and each file's format.
 
 An item that fails to export (e.g. an inconsistent block - GRAPH blocks must be compiled first) is reported, and files from an earlier read of it are renamed with a '.stale' suffix rather than left looking current. '_export_summary.txt' lists every item in the tree, with the formats it has there (list_project shows the formats it can be read in); '_manifest.json' and the '.base' folder are write_source_tree's bookkeeping - don't edit them. '_progress.log' shows what the read is doing while it runs (also sent as MCP progress notifications); a cancel during the export leaves the tree unchanged. Returns counts, failures, the items that read back different from the last read into this tree (changed in TIA Portal, or rendered differently by a newer TiaMcp), the time per phase, and for a partial read each item's files.
@@ -753,6 +806,7 @@ In a Multiuser local session the read also checks each item's mark state (about 
         [Description("Optional: read only this PLC or HMI software name")] string? deviceName = null,
         [Description("Read into a tree that has an _export_summary.txt but no _manifest.json (read by an older version, or generated), making it a working copy of the connected project. Default false.")] bool adoptExisting = false,
         [Description("Give WinCC Unified HMI tag table CSVs a Length column (the maximum length of String/WString tags). SLOW: an extra Openness call per tag. Remembered for the tree; omit to keep the tree's setting (off for a new tree).")] bool? hmiTagLength = null,
+        [Description("Open the selected PLC watch tables that TIA Portal reports inconsistent in its editor, then read them: TIA Portal can refuse to export a valid table until it has been opened. The editor tabs stay open and the project may show unsaved changes. Default false.")] bool openWatchTables = false,
         IProgress<ProgressNotificationValue>? progress = null,
         CancellationToken cancellationToken = default) => Safe(async () =>
     {
@@ -787,7 +841,7 @@ In a Multiuser local session the read also checks each item's mark state (about 
         var startedAt = DateTime.Now;
         using var progressLog = new ProgressLog(targetDirectory, $"read_source_tree {(partial ? "(partial) " : "")}- project {_session.ProjectName}", progress, cancellationToken);
         progressLog.Phase("export", cancellable: true);
-        var (exported, devices) = await ExportItems(selection == null ? null : (_, kind, groupPath, name) => RequestedFormats(selection, kind, groupPath, name), deviceName, manifest, progressLog);
+        var (exported, devices) = await ExportItems(selection == null ? null : (_, kind, groupPath, name) => RequestedFormats(selection, kind, groupPath, name), deviceName, manifest, progressLog, openWatchTables);
         if (devices.Count == 0) return deviceName == null ? "No PLC or HMI devices found." : $"No PLC or HMI software named '{deviceName}'.";
 
         // From here on the tree changes: a cancel no longer stops the read halfway.
@@ -881,6 +935,7 @@ Writing rules per file type:
 - Raw XML ('<name>.xml' of a block, UDT or PLC tag table): SimaticML as read; replaces the whole object (a table's removed tags go too), or creates it - also GRAPH blocks and blocks with embedded STL networks. Its <Name> must match the file name.
 - PLC tag table CSV: Name, DataType, LogicalAddress, Comment, ExternalAccessible, ExternalVisible, ExternalWritable (True/False). Rows update or add tags; an empty cell leaves that value unchanged (but clears the Comment in a tree read from this project); removing a row deletes that tag (not when writing a tree read from another project). Renaming a tag in the CSV deletes it and makes a new one, breaking references - use rename_plc_tag.
 - HMI tag table CSV: Name, DataType, Address, Connection, PlcName, PlcTag, Comment, AcquisitionCycle, Length. Bind to a PLC tag with Connection + PlcTag (dot-qualified for a DB member); DataType then follows from the PLC tag. PlcName is ignored on write. AcquisitionCycle (e.g. T1s) only on PLC-bound tags. Length (only in a tree read with hmiTagLength=true; without the column lengths stay unchanged) is the maximum length of a String/WString tag, empty for other types; only writable on internal tags (a PLC-bound tag has its PLC tag's length). Rows and removed rows as for PLC tag tables; rename with rename_hmi_tag.
+- Watch table CSV ('Watch and force tables/<group path>/<table>.csv'): Name (symbol or address as typed in TIA Portal, e.g. ""Motor_DB"".Status.Running or %M10.0), DisplayFormat (Bool, DEC_signed, DEC_unsigned, Hex, Bin, Float, ...; empty: TIA Portal picks one by data type), ModifyValue, MonitorTrigger and ModifyTrigger (empty: Permanent), and one 'Comment [culture]' column per language. A comment row has // as Name and its text in the Comment columns ('// text' in Name also works for the first language); a blank row is all empty. Rows keep their order. The modify checkbox isn't exported and Openness can't set it: after a write, which replaces the whole table, every box is unticked and the user ticks it in TIA Portal. A write replaces the whole table (or creates it): TIA Portal must first resolve every row - otherwise nothing is written and the rows it can't resolve are listed (a symbol that doesn't exist yet, or a block member of a block not yet compiled: compile and write again); a dry run skips that check. The force table ('Force table.csv', same columns with ForceValue, no ModifyTrigger) is read-only.
 - PLC alarm text list CSV ('PLC alarm text lists/<list>.csv'): From, To, Text [language]... Only existing user lists (create a new list in TIA Portal). The write patches a fresh export of all lists and imports it, so other lists are untouched; a removed row deletes that entry (not when writing a tree read from another project); a language column left out stays unchanged. Every list's language must be a project language.
 - WinCC Unified text list CSV ('Text lists/<list>.csv'): the same columns as a PLC alarm text list; To = From for a single value. The default entry (the text for any value no other row has) is the row From = Default, To empty - not 0,0, which is the value 0. A new file creates the list (the HMI needs at least one list already, made in TIA Portal). The write patches a fresh export of all lists of the HMI, imports it and checks the result, so other lists are untouched; a removed row deletes that entry (not when writing a tree read from another project); a language column left out stays unchanged. Show a list on a screen with a SymbolicIOField's ""ResourceList"": ""<list>"". Delete a list with delete_hmi_text_list.
 - Classic WinCC XML (screens, templates, pop-ups, tag tables, text lists): native Openness XML as read; <Name> must match the file name. A new screen needs a <Number> not used by another screen - checked before the import (a duplicate number makes TIA Portal V21 terminate itself).
@@ -889,7 +944,7 @@ Writing rules per file type:
 - HMI alarms CSV: rows update or add alarms by name; in a tree read from this project a removed row deletes the alarm (a dry run names them). RaisedStateTag binds the trigger (a tag or member path whose base HMI tag exists); TriggerAddress is computed and read-only. EventText/InfoText are plain text in the editing language (formatted text stays a <body> fragment). AlarmClasses.csv: Name, Priority, Log; system classes accept no Priority change.
 
 Writes in dependency order: UDTs, then tag tables, then blocks, with UDTs and blocks each split into layers by what their source references (nested UDTs first; global DBs and called FBs before their callers and instance DBs), compiling the PLC between UDT layers - imports can fail, or a UDT can silently lose nested start values, when what they reference isn't there yet.
-Then the PLC alarm text lists. An HMI is written tag tables and text lists before screens (a classic one text lists first, then tag tables, templates and pop-ups, then screens).
+Then the PLC alarm text lists, then the watch tables. An HMI is written tag tables and text lists before screens (a classic one text lists first, then tag tables, templates and pop-ups, then screens).
 
 itemList limits what is considered, as lines from list_project or _export_summary.txt (a file path, or the lines inline; the OK status column is optional; the software header can be left out when only one software has items of that kind); all=true writes those items even if unchanged. Set dryRun to preview what would be created/updated/skipped/refused, including per existing tag table the new tags and the tags its CSV would delete.
 
@@ -1265,9 +1320,10 @@ Writes '<sourceDirectory>/_import_report.txt' with one CREATED/UPDATED/SKIPPED/F
             foreach (var item in manifest.Items.Where(i => i.Device == device && !string.IsNullOrEmpty(i.GroupPath)))
                 groupOf[ItemDir(item.Device, item.Kind, item.GroupPath)] = item.GroupPath;
 
-            // Two kinds can share a section (classic and Unified HMI screens and tag tables): a file
-            // is new for the first kind of the device's family it fits (any family for a device
-            // the project doesn't have).
+            // Two kinds can share a section (classic and Unified HMI screens and tag tables; watch
+            // and force tables): a file is new for the first kind of the device's family it fits
+            // (any family for a device the project doesn't have), not for the ones after it.
+            var claimed = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             var family = familyOf(device);
             foreach (var kind in SourceKinds.All.Where(k => family == null || k.Family == family))
             {
@@ -1277,7 +1333,7 @@ Writes '<sourceDirectory>/_import_report.txt' with one CREATED/UPDATED/SKIPPED/F
                 {
                     var fileName = Path.GetFileName(file);
                     var ext = kind.Formats.Select(SourceFormat.Extension).FirstOrDefault(e => fileName.EndsWith(e, StringComparison.OrdinalIgnoreCase));
-                    if (ext == null || SourceTreeManifest.IsReadOnlyCompanion(fileName)) continue;
+                    if (ext == null || SourceTreeManifest.IsReadOnlyCompanion(fileName) || claimed.Contains(file)) continue;
                     if (readFiles.Contains(file.Substring(root.Length).TrimStart(Path.DirectorySeparatorChar, '/').Replace(Path.DirectorySeparatorChar, '/'))) continue;
 
                     var stem = fileName.Substring(0, fileName.Length - ext.Length);
@@ -1285,6 +1341,7 @@ Writes '<sourceDirectory>/_import_report.txt' with one CREATED/UPDATED/SKIPPED/F
                     if (kind.FixedName != null && (relDir != "" || !string.Equals(stem, kind.FixedName, StringComparison.OrdinalIgnoreCase))) continue;
 
                     var name = kind.FixedName == null ? stem : "";
+                    claimed.Add(file);
                     if (manifest.Find(device, kind.Name, name) == null && !found.Any(i => i.Is(device, kind.Name, name)))
                         found.Add(new ImportListItem(device, kind.Name, groupOf.TryGetValue(ItemDir(device, kind.Name, relDir), out var groupPath) ? groupPath : relDir, name, true));
                 }
@@ -1301,6 +1358,11 @@ Writes '<sourceDirectory>/_import_report.txt' with one CREATED/UPDATED/SKIPPED/F
         progress.Phase("change check", cancellable: true, total: items.Count);
         var (current, _) = await ExportItems((device, kind, _, name) => items.Any(i => i.Is(device, kind, name)) ? Array.Empty<string>() : null, null, manifest, progress);
         var conflicts = new List<(ImportListItem, string)>();
+        // A block that can't be exported (inconsistent) may be written to repair it. A watch table
+        // also fails while it is valid but not opened, so it could hide changes made in TIA Portal.
+        foreach (var failed in current.Where(e => !e.Ok && e.Kind == WatchTableKind.Watch.Name))
+            conflicts.Add((items.First(i => i.Is(failed.Device, failed.Kind, failed.Name)),
+                $"can't be checked for changes in TIA Portal: {failed.Error} Keep a copy of your edit before reading it again - or pass force=true to overwrite the project's version."));
         foreach (var exported in current.Where(e => e.Ok))
         {
             var item = items.First(i => i.Is(exported.Device, exported.Kind, exported.Name));
@@ -1411,9 +1473,9 @@ Writes '<sourceDirectory>/_import_report.txt' with one CREATED/UPDATED/SKIPPED/F
     // read it in; an empty list (and no formats function) means the formats the tree already has
     // it in (manifest), else its own format. Formats a kind doesn't have are left out.
     // progress gets each item right before its export, counted per kind.
-    private async Task<(List<ExportedItem> Items, List<string> Devices)> ExportItems(Func<string, string, string, string, IReadOnlyCollection<string>?>? formats, string? deviceName, SourceTreeManifest? manifest, ProgressLog? progress = null)
+    private async Task<(List<ExportedItem> Items, List<string> Devices)> ExportItems(Func<string, string, string, string, IReadOnlyCollection<string>?>? formats, string? deviceName, SourceTreeManifest? manifest, ProgressLog? progress = null, bool openWatchTables = false)
     {
-        var options = ExportOptions.Of(manifest);
+        var options = ExportOptions.Of(manifest, openWatchTables);
         var items = new List<ExportedItem>();
         var devices = await Devices(deviceName);
         _exportNotes.Clear();

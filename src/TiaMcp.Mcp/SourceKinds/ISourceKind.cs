@@ -53,15 +53,17 @@ internal interface ISourceKind
     Task<WriteLog> Write(WriteContext context, IReadOnlyList<ImportListItem> items);
 }
 
-// Read settings of a source tree, kept in its manifest so that every export of an item - the read,
+// Read settings of a source tree, kept in its manifest (except OpenWatchTables) so that every export of an item - the read,
 // the conflict check and the read-back of a write - gives the same files.
 // HmiTagLength: the Length column of HMI tag table CSVs (slow: an Openness call per tag).
+// OpenWatchTables: of one read only; open inconsistent watch tables in TIA Portal's editor first.
 internal sealed class ExportOptions
 {
-    public ExportOptions(bool hmiTagLength) { HmiTagLength = hmiTagLength; }
+    public ExportOptions(bool hmiTagLength, bool openWatchTables) { HmiTagLength = hmiTagLength; OpenWatchTables = openWatchTables; }
     public bool HmiTagLength { get; }
+    public bool OpenWatchTables { get; }
 
-    public static ExportOptions Of(SourceTreeManifest? manifest) => new(manifest?.HmiTagLength == true);
+    public static ExportOptions Of(SourceTreeManifest? manifest, bool openWatchTables = false) => new(manifest?.HmiTagLength == true, openWatchTables);
 }
 
 // One line of list_project, with the item's formats (none for a group line). A group line

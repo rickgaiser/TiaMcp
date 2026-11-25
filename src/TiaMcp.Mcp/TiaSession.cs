@@ -282,6 +282,61 @@ public sealed class TiaSession
         return Change(() => _connection.RenameTagTable(plcName, tableName, newName));
     }
 
+    public Task<IReadOnlyList<WatchTableSummary>> ListWatchTablesAsync(string plcName)
+    {
+        return Read(() => _connection.ListWatchTables(plcName));
+    }
+
+    public Task<IReadOnlyList<string>> ListWatchTableGroupsAsync(string plcName)
+    {
+        return Read(() => _connection.ListWatchTableGroups(plcName));
+    }
+
+    public Task<IReadOnlyList<(WatchTableSummary Table, ExportResult Result)>> ReadAllWatchTablesAsync(string plcName, bool forceTables, bool open, Func<string, string, IReadOnlyCollection<string>?>? formats = null, ExportingItem? exporting = null)
+    {
+        return Read(() => _connection.ReadAllWatchTables(plcName, forceTables, open, formats, exporting));
+    }
+
+    public Task<WatchTableWriteResult> WriteWatchTableAsync(string plcName, string groupPath, WatchTable table)
+    {
+        return Change(() => _connection.WriteWatchTable(plcName, groupPath, table));
+    }
+
+    public Task<WatchTableWriteResult> WriteWatchTableXmlAsync(string plcName, string groupPath, string tableName, string xml)
+    {
+        return Change(() => _connection.WriteWatchTableXml(plcName, groupPath, tableName, xml));
+    }
+
+    public Task<SimpleResult> DeleteWatchTableAsync(string plcName, string tableName)
+    {
+        return Change(() => _connection.DeleteWatchTable(plcName, tableName));
+    }
+
+    public Task<SimpleResult> RenameWatchTableAsync(string plcName, string tableName, string newName)
+    {
+        return Change(() => _connection.RenameWatchTable(plcName, tableName, newName));
+    }
+
+    public Task<bool> WatchTableGroupExistsAsync(string plcName, string groupPath)
+    {
+        return Read(() => _connection.WatchTableGroupExists(plcName, groupPath));
+    }
+
+    public Task<SimpleResult> CreateWatchTableGroupAsync(string plcName, string parentGroupPath, string groupName)
+    {
+        return Change(() => _connection.CreateWatchTableGroup(plcName, parentGroupPath, groupName));
+    }
+
+    public Task<SimpleResult> DeleteWatchTableGroupAsync(string plcName, string groupPath)
+    {
+        return Change(() => _connection.DeleteWatchTableGroup(plcName, groupPath));
+    }
+
+    public Task<SimpleResult> RenameWatchTableGroupAsync(string plcName, string groupPath, string newName)
+    {
+        return Change(() => _connection.RenameWatchTableGroup(plcName, groupPath, newName));
+    }
+
     public Task<ImportResult> CreateBlockAsync(string plcName, string groupPath, string blockName, IReadOnlyList<BlockDocument> documents, bool checkExisting = true)
     {
         return Change(() => _connection.CreateBlock(plcName, groupPath, blockName, documents, checkExisting));

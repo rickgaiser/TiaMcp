@@ -23,9 +23,9 @@ For object types TiaMcp doesn't support yet, the notes say what the Openness API
 | Tag | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | Through the tag table CSV (a removed row deletes the tag); rename via `rename_plc_tag` (keeps references) |
 | Tag table group | ✅ | ✅ | — | — | ✅ | ✅ | Empty groups are listed as `Group/` |
 | User constant | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | Openness: create, delete, import/export |
-| Watch table | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | Openness: create, delete, import/export |
-| Watch/force table group | ❌ | ❌ | — | — | ❌ | ❌ | Openness: create, delete |
-| Force table | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | Openness: import/export only |
+| Watch table | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | `.csv` (rows, comment rows, display format, modify value, triggers, comments per language), or `.xml`; a write replaces the whole table after TIA Portal resolved every row (unresolved rows are listed, nothing written). The modify checkbox can't be set through Openness. A table TIA Portal reports inconsistent can't be read; opening it in the editor can fix that (`openWatchTables`) |
+| Watch/force table group | ✅ | ✅ | — | — | ✅ | ✅ | Empty groups are listed; created by a write into a new folder too |
+| Force table | ✅ | — | ✅ | ❌ | — | — | Read-only `.csv` / `.xml` (Openness can import it, but writing it would set up forcing) |
 | External source (`.scl` / `.awl` / `.db`) | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | Openness: create from file, delete, generate blocks from a source |
 | External source group | ❌ | ❌ | — | — | ❌ | ❌ | Openness: create, delete |
 | Technology object (PID, motion, counter) | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | Openness: create, delete, import/export |

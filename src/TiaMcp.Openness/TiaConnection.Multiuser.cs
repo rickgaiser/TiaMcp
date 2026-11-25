@@ -70,6 +70,8 @@ public sealed partial class TiaConnection
                 return new[] { ("", (IEnumerable<IEngineeringObject>)GetHmiSoftware(device).DiscreteAlarms) };
             case MarkTarget.HmiAnalogAlarms:
                 return new[] { ("", (IEnumerable<IEngineeringObject>)GetHmiSoftware(device).AnalogAlarms) };
+            case MarkTarget.WatchTable:
+                return AllWatchTableObjects(GetSoftware(device)).Select(t => (t.Name, One(t)));
             default:
                 throw new ArgumentOutOfRangeException(nameof(target), target, null);
         }
