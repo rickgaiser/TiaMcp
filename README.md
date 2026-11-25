@@ -31,6 +31,7 @@ Special features that make TiaMcp fast for LLM's and human-readable friendly:
 | PLC watch table, force table | `.csv`, Excel-compatible (synthesized from the Openness XML) | Yes | Yes (force table read-only) |
 | Text list (WinCC Unified) | `.csv`, Excel-compatible (synthesized from TIA's YAML export) | Yes | Yes |
 | Classic WinCC (Comfort/Advanced/RT Advanced): screens, screen templates, pop-up screens, tag tables, text lists | `.xml`, native Openness XML | Yes | Yes |
+| VB script (classic WinCC) | `.vbs` (the code, from the XML export), or `.xml` | Yes | Yes (new scripts from `.xml`) |
 | Raw export of any block, UDT, PLC tag table or watch table, next to or instead of the formats above | `.xml`, SimaticML as Openness exports it | Yes | Yes |
 
 Each item line of `list_project` ends with the formats it can be read in, e.g. `tag table 'Tags' [csv, xml]`; pass such a line to `read_source_tree` to read those formats. A write uses the one format whose files were edited, and refuses an item edited in two.
@@ -209,7 +210,7 @@ A new `.graph.il` file in the source tree is created by cloning an existing GRAP
 
 ## Source tree
 
-`read_source_tree` exports PLC blocks, tag tables, UDTs, alarm text lists, watch tables and the force table, WinCC Unified HMI tag tables, text lists, screens, global script modules and alarms, and classic WinCC screens, screen templates, pop-up screens, tag tables and text lists to disk, in folders mirroring the TIA Portal project tree — the whole project, or only the items, groups or sections (`Screens`, `HMI tags`) you name:
+`read_source_tree` exports PLC blocks, tag tables, UDTs, alarm text lists, watch tables and the force table, WinCC Unified HMI tag tables, text lists, screens, global script modules and alarms, and classic WinCC screens, screen templates, pop-up screens, tag tables, VB scripts and text lists to disk, in folders mirroring the TIA Portal project tree — the whole project, or only the items, groups or sections (`Screens`, `HMI tags`) you name:
 
 ```
 <targetDirectory>/
@@ -235,6 +236,8 @@ A new `.graph.il` file in the source tree is created by cloning an existing GRAP
       AlarmClasses.csv
     Scripts/                                      (Unified global modules; read-only)
       GlobalModule.js
+    VB scripts/<folder path>/                     (classic only)
+      SomeScript.vbs/xml
     Screens/<group path>/
       Overview.json/xml                           (Unified/classic)
     Screen templates/<group path>/                (classic only)
@@ -267,7 +270,7 @@ PLC watch tables: one CSV per table in `Watch and force tables/<group path>/`, r
 
 WinCC Unified text lists: one CSV per list in `Text lists/`, with the same columns as a PLC alarm text list (`From`, `To`, one `Text [language]` column per project language); the list's default entry (the text for every value no other row has) is the row with `From` = `Default` and an empty `To`. Openness only reads and writes all lists of an HMI at once (as TIA Portal's YAML export), so a write starts from a fresh export, changes only the lists being written, imports that and checks what TIA Portal made of it; removing a row deletes that entry (not when writing a tree read from another project). A new CSV creates a list, but only next to an existing one: create the HMI's first list in TIA Portal. Show a list on a screen with a SymbolicIOField's `"ResourceList": "<list>"`. System text lists are not exported.
 
-Classic WinCC objects are native Openness XML (the `DocumentInfo` block is left out so an unchanged object reads back identically). They are written in dependency order (text lists, tag tables, templates and pop-ups, screens); a screen whose `<Number>` is already used by another screen is refused before the import, since TIA Portal V21 terminates itself on that. Graphic lists are not exported: exporting one crashed TIA Portal V21 (`InvalidCastException` in `UpdateOpenLinks`); a full read reports them as SKIPPED.
+Classic WinCC objects are native Openness XML (the `DocumentInfo` block is left out so an unchanged object reads back identically). They are written in dependency order (text lists, tag tables, VB scripts, templates and pop-ups, screens); a screen whose `<Number>` is already used by another screen is refused before the import, since TIA Portal V21 terminates itself on that. A VB script is read as `.vbs`, its code only; writing it patches the code into a fresh export, so name, Sub/Function type and parameters stay as they are. A new script needs its `.xml` (copy a similar script's and rename it); edit the `.xml` to change the parameters. Graphic lists are not exported: exporting one crashed TIA Portal V21 (`InvalidCastException` in `UpdateOpenLinks`); a full read reports them as SKIPPED.
 
 `_manifest.json` (version 2; an older version 1 manifest is still read) records what each item looked like when it was read, and in which formats. An item that was changed in TIA Portal since then is refused rather than overwritten (`force` overrides this). To write only a few items, pass `itemList` with the tree; a folder holding just some files in the same layout (no `_manifest.json`) is also written, but without these checks.
 
