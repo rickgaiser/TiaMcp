@@ -7,7 +7,8 @@ Read [DESIGN.md](DESIGN.md) before adding or changing an object type or file for
 
 # Build and install
 The MCP server runs straight from the build output (`src\TiaMcp.Host\bin\Debug\net48`), so a running `TiaMcp.Host.exe` (from this or another agent session) locks its DLLs and the build fails.
-1. `Stop-Process -Name TiaMcp.Host -Force`
+1. Stop only the `TiaMcp.Host` processes that run from this tree's build output. Other sessions (or other users on the same machine) may run TiaMcp from another folder; never kill those:
+   `Get-Process TiaMcp.Host -ErrorAction SilentlyContinue | Where-Object { $_.Path -like "$PWD\src\TiaMcp.Host\bin\*" } | Stop-Process -Force`
 2. `dotnet build TiaMcp.sln`
 3. Restart the TiaMcp MCP server in your client (Claude Code: `/mcp`), then call `tia_connect` again.
 

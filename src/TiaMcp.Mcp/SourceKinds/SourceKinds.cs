@@ -8,7 +8,7 @@ internal static class SourceKinds
     // Per family in write order - what an item references is written before it: tags can be
     // UDT-typed, and blocks reference both UDTs and tags (a block imported before what it
     // references fails to import); the PLC alarm text lists' messages belong to the alarms the
-    // blocks define. An HMI's screens use its tags (a classic HMI's also its text lists, templates and
+    // blocks define; watch tables refer to tags and blocks. An HMI's screens use its tags (a classic HMI's also its text lists, templates and
     // pop-ups; a Unified HMI's also its text lists), and Unified alarms their alarm classes.
     public static IReadOnlyList<ISourceKind> All { get; } = new ISourceKind[]
     {
@@ -16,6 +16,8 @@ internal static class SourceKinds
         new PlcTagTableKind(),
         new BlockKind(),
         new PlcAlarmTextListKind(),
+        WatchTableKind.Watch,
+        WatchTableKind.Force,
 
         new HmiTagTableKind(),
         new HmiTextListKind(),
@@ -33,7 +35,7 @@ internal static class SourceKinds
     };
 
     // The order of list_project and _export_summary.txt, which differs from the write order.
-    private static readonly string[] ListOrder = { "block", "tag table", "udt", "alarm text list", "HMI tag table", "HMI text list", "HMI screen template", "HMI pop-up screen", "HMI screen", "HMI global script module", "HMI DiscreteAlarms", "HMI AnalogAlarms", "HMI AlarmClasses" };
+    private static readonly string[] ListOrder = { "block", "tag table", "udt", "alarm text list", "watch table", "force table", "HMI tag table", "HMI text list", "HMI screen template", "HMI pop-up screen", "HMI screen", "HMI global script module", "HMI DiscreteAlarms", "HMI AnalogAlarms", "HMI AlarmClasses" };
 
     public static IEnumerable<ISourceKind> Of(DeviceFamily family) => All.Where(k => k.Family == family);
 

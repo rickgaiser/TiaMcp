@@ -28,9 +28,10 @@ Special features that make TiaMcp fast for LLM's and human-readable friendly:
 | Screen (WinCC Unified), incl. faceplates | `.json` (synthesized from the object model) | Yes | Yes |
 | Global script module (WinCC Unified) | `.js`, native Openness export | Yes | Read-only |
 | PLC alarm text list (user list) | `.csv`, Excel-compatible (synthesized from TIA's Excel export) | Yes | Yes (existing lists) |
+| PLC watch table, force table | `.csv`, Excel-compatible (synthesized from the Openness XML) | Yes | Yes (force table read-only) |
 | Text list (WinCC Unified) | `.csv`, Excel-compatible (synthesized from TIA's YAML export) | Yes | Yes |
 | Classic WinCC (Comfort/Advanced/RT Advanced): screens, screen templates, pop-up screens, tag tables, text lists | `.xml`, native Openness XML | Yes | Yes |
-| Raw export of any block, UDT or PLC tag table, next to or instead of the formats above | `.xml`, SimaticML as Openness exports it | Yes | Yes |
+| Raw export of any block, UDT, PLC tag table or watch table, next to or instead of the formats above | `.xml`, SimaticML as Openness exports it | Yes | Yes |
 
 Each item line of `list_project` ends with the formats it can be read in, e.g. `tag table 'Tags' [csv, xml]`; pass such a line to `read_source_tree` to read those formats. A write uses the one format whose files were edited, and refuses an item edited in two.
 
@@ -98,6 +99,13 @@ All MCP tools exposed by the server, grouped by area.
 | `create_plc_tag_table` | Create a new, empty PLC tag table in a group (or the root) |
 | `delete_plc_tag_table` / `rename_plc_tag_table` | Delete or rename a PLC tag table by name |
 | `create_plc_tag_table_group` / `delete_plc_tag_table_group` / `rename_plc_tag_table_group` | Manage PLC tag table group folders |
+
+### PLC watch tables
+
+| Tool | Purpose |
+|---|---|
+| `delete_plc_watch_table` / `rename_plc_watch_table` | Delete or rename a watch table by name (a new CSV in the tree creates one) |
+| `create_plc_watch_table_group` / `delete_plc_watch_table_group` / `rename_plc_watch_table_group` | Manage watch table group folders |
 
 ### PLC UDTs (data types)
 
@@ -201,7 +209,7 @@ A new `.graph.il` file in the source tree is created by cloning an existing GRAP
 
 ## Source tree
 
-`read_source_tree` exports PLC blocks, tag tables, UDTs and alarm text lists, WinCC Unified HMI tag tables, text lists, screens, global script modules and alarms, and classic WinCC screens, screen templates, pop-up screens, tag tables and text lists to disk, in folders mirroring the TIA Portal project tree — the whole project, or only the items, groups or sections (`Screens`, `HMI tags`) you name:
+`read_source_tree` exports PLC blocks, tag tables, UDTs, alarm text lists, watch tables and the force table, WinCC Unified HMI tag tables, text lists, screens, global script modules and alarms, and classic WinCC screens, screen templates, pop-up screens, tag tables and text lists to disk, in folders mirroring the TIA Portal project tree — the whole project, or only the items, groups or sections (`Screens`, `HMI tags`) you name:
 
 ```
 <targetDirectory>/
@@ -215,6 +223,9 @@ A new `.graph.il` file in the source tree is created by cloning an existing GRAP
       SomeUdt.s7dcl
     PLC alarm text lists/
       Textlist_ErrorsMessages.csv
+    Watch and force tables/<group path>/
+      Conveyor checks.csv
+      Force table.csv                             (read-only)
   <HmiName>/
     HMI tags/<group path>/
       Default tag table.csv/xml                   (Unified/classic)
@@ -244,13 +255,15 @@ WinCC Unified global script modules are exported as `Scripts/<module>.js`. They 
 
 A `/` in a group name gives a folder per part (`Valve fwd / rev` → `Valve fwd/ rev/`), and folder names lose trailing spaces and dots, as Windows does. A new file in such a folder goes to the group read into it; the group tools take the name as it is (`groupPath: "Valve fwd / rev/Sub"`).
 
-Read and edit the files with your own file tools, then call `write_source_tree`. It writes back only what changed since the read — edited files, plus new files as new blocks, UDTs, tag tables or Unified screens — in dependency order, and then reads the written items back so the files show what TIA Portal made of them. Removing a row from a tag table or HMI alarm CSV deletes that tag or alarm (a dry run names what it would delete); deleting a file does not delete the item (use the `delete_*` tools). An item whose write failed halfway keeps your edit in its file; fix the cause and write it again. A WinCC Unified tag table bound to a connection the HMI doesn't have is refused as a whole, naming the connections it does have. HMI alarm texts are plain text in the editing language only. Alarm texts that older versions wrapped in `<body><p>` again on every write are read back repaired; the next write fixes them in the project.
+Read and edit the files with your own file tools, then call `write_source_tree`. It writes back only what changed since the read — edited files, plus new files as new blocks, UDTs, tag tables, watch tables or Unified screens — in dependency order, and then reads the written items back so the files show what TIA Portal made of them. Removing a row from a tag table or HMI alarm CSV deletes that tag or alarm (a dry run names what it would delete); deleting a file does not delete the item (use the `delete_*` tools). An item whose write failed halfway keeps your edit in its file; fix the cause and write it again. A WinCC Unified tag table bound to a connection the HMI doesn't have is refused as a whole, naming the connections it does have. HMI alarm texts are plain text in the editing language only. Alarm texts that older versions wrapped in `<body><p>` again on every write are read back repaired; the next write fixes them in the project.
 
 WinCC Unified HMI tag tables leave out the length of String/WString tags by default, because reading it costs an Openness call per tag. Read with `hmiTagLength: true` to get a `Length` column; the tree remembers the setting. Only internal tags take a written length; a PLC-bound tag has its PLC tag's.
 
 An open HMI tag editor in TIA Portal (e.g. "Show all tags") slows every Openness call on that HMI down, a read or write of its tag tables about eight times. Close it while working through TiaMcp.
 
 PLC alarm text lists: one CSV per user list (`From`, `To`, one `Text [language]` column per project language). TIA Portal's Excel import replaces whole lists, so a write starts from a fresh export, changes only the lists being written and imports that; removing a row deletes that entry (not when writing a tree read from another project). Lists can't be created through Openness - create a new list in TIA Portal first. System lists (`SYSTEM_*`) are not exported.
+
+PLC watch tables: one CSV per table in `Watch and force tables/<group path>/`, rows in table order: `Name` (symbol or `%` address as typed in TIA Portal; an address that has a tag reads back as that tag), `DisplayFormat` (empty: TIA Portal picks one by data type), `ModifyValue`, `MonitorTrigger` and `ModifyTrigger` (empty: `Permanent`), and one `Comment [language]` column per language. A comment row has `//` as `Name` and its text in the comment columns (`// text` in `Name` also works, for the first language); a blank row is all empty. The modify checkbox isn't in the export and Openness can't set it: a write replaces the table with every box unticked, so tick it in TIA Portal afterward. A write replaces the whole table (or creates it, and its group): TIA Portal must first resolve every row - the write imports the rows without display formats into a scratch table (`TiaMcp_check_...`, deleted right after) and, if that table is inconsistent, narrows it down to the rows it can't resolve; then nothing is written and those rows are listed. A dry run skips that check. TIA Portal refuses to export a table it reports inconsistent: one with a row that doesn't resolve, but also a valid one that hasn't been opened since the project was. Open the table in TIA Portal and read again, or read with `openWatchTables: true`, which opens such tables itself (the editor tabs stay open and the project may show unsaved changes). Writing a table that can't be exported for the change check is refused without `force`. The force table (`ForceValue` instead of `ModifyValue`, no `ModifyTrigger`) is read-only.
 
 WinCC Unified text lists: one CSV per list in `Text lists/`, with the same columns as a PLC alarm text list (`From`, `To`, one `Text [language]` column per project language); the list's default entry (the text for every value no other row has) is the row with `From` = `Default` and an empty `To`. Openness only reads and writes all lists of an HMI at once (as TIA Portal's YAML export), so a write starts from a fresh export, changes only the lists being written, imports that and checks what TIA Portal made of it; removing a row deletes that entry (not when writing a tree read from another project). A new CSV creates a list, but only next to an existing one: create the HMI's first list in TIA Portal. Show a list on a screen with a SymbolicIOField's `"ResourceList": "<list>"`. System text lists are not exported.
 
