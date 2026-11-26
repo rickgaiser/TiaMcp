@@ -32,6 +32,7 @@ Special features that make TiaMcp fast for LLM's and human-readable friendly:
 | Text list (WinCC Unified) | `.csv`, Excel-compatible (synthesized from TIA's YAML export) | Yes | Yes |
 | Classic WinCC (Comfort/Advanced/RT Advanced): screens, screen templates, pop-up screens, tag tables, text lists | `.xml`, native Openness XML | Yes | Yes |
 | Raw export of any block, UDT, PLC tag table or watch table, next to or instead of the formats above | `.xml`, SimaticML as Openness exports it | Yes | Yes |
+| Fail-safe (F-) block, F-DB | `.s7dcl` / `.s7res` (readable view) + `.xml` | Yes | Through `.xml` (safety login needed) |
 
 Each item line of `list_project` ends with the formats it can be read in, e.g. `tag table 'Tags' [csv, xml]`; pass such a line to `read_source_tree` to read those formats. A write uses the one format whose files were edited, and refuses an item edited in two.
 
@@ -206,6 +207,10 @@ END_GRAPH_BLOCK
 Only step/transition attributes, actions, and matched-by-number conditions are writable. Interface, `PREOPERATIONS`, `BRANCHES`, and `CONNECTIONS` (topology) are read-only in this version. GRAPH blocks must also be consistent (compiled) before they can be read or written at all — that's a Siemens API requirement, not a TiaMcp restriction.
 
 A new `.graph.il` file in the source tree is created by cloning an existing GRAPH block of the PLC and reshaping it — Openness has no from-scratch GRAPH creation API.
+
+## Fail-safe (F-) blocks
+
+TIA Portal doesn't import F-blocks from `.s7dcl`, so an F-block is read with its `.xml` next to the `.s7dcl` and written from the `.xml` (a `.s7dcl` edit is refused). Log on to the safety program in TIA Portal first. Every F-block write compiles the PLC and reports the result. A failed F import leaves orphaned cross-references in the project that only closing it without saving removes; until then further block writes are refused (`tia_connect releaseFailedImportBlock=true` lifts this after a save). A new F-block can be created from its `.s7dcl`.
 
 ## Source tree
 

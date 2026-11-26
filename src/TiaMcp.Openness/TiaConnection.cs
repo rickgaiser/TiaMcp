@@ -438,6 +438,7 @@ public sealed partial class TiaConnection : IDisposable
         _software.Clear();
         _screenDefaults.Clear();
         IndexSoftware("", project.Devices, project.DeviceGroups);
+        LoadFailsafeImportFlag();
 
         var projectPath = localSession == null
             ? project.Path?.FullName
@@ -1717,6 +1718,9 @@ public sealed partial class TiaConnection : IDisposable
 
         var (block, owner) = found.Value;
 
+        if (RefusedAfterFailedImport() is { } refused) return refused;
+        if (IsFailsafe(block)) return FailsafeFromS7dcl(block.Name, block.ProgrammingLanguage.ToString());
+
         if (block.ProgrammingLanguage == ProgrammingLanguage.GRAPH)
         {
             return WriteGraphBlock(software, block, owner, documents);
@@ -1950,6 +1954,8 @@ public sealed partial class TiaConnection : IDisposable
             return new ImportResult(false, new[] { $"Group '{groupPath}' not found in PLC '{plcName}'. Use create_group first, or pass an empty groupPath for the root." });
         }
 
+        if (IsFailsafeSource(documents)) return Imported(plcName, blockName, CreateFailsafeBlock(software, resolved.Value.Blocks, blockName, documents));
+        if (RefusedAfterFailedImport() is { } refused) return refused;
         return Imported(plcName, blockName, ImportBlockDocuments(resolved.Value.Blocks, blockName, documents, ImportDocumentOptions.None));
     }
 

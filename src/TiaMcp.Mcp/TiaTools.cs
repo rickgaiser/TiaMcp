@@ -72,16 +72,26 @@ public sealed partial class TiaTools
     public Task<string> Connect(
         [Description("Optional full path to a .apXX project file or .alsXX Multiuser local session to open. Omit to use whatever project or local session is already open in TIA Portal.")] string? projectPath = null,
         [Description("Optional process id (PID) of the TIA Portal instance to attach to, from list_tia_instances. Only needed when tia_connect can't tell which instance is meant.")] int? processId = null,
-        [Description("Start the TIA Portal GUI when none is running, and open projectPath in it (required then). It runs on its own: it stays open when this server stops. Takes a minute or two. Default false.")] bool startPortal = false) => Guarded(async () =>
+        [Description("Start the TIA Portal GUI when none is running, and open projectPath in it (required then). It runs on its own: it stays open when this server stops. Takes a minute or two. Default false.")] bool startPortal = false,
+        [Description("Lift the block on block writes left by a failed F-block import - only when the project was saved since (its orphaned cross-references then stay in the project for good). Default false.")] bool releaseFailedImportBlock = false) => Guarded(async () =>
     {
         var result = await _session.ConnectAsync(projectPath, processId, startPortal);
         if (!result.Success)
         {
             return $"Connect failed: {result.Error}" + (result.Error?.Contains(OpennessGroup) == true ? $"\n{OpennessGroupHint}" : "");
         }
-        return result.ProjectPath == null
+        var text = result.ProjectPath == null
             ? $"Connected to project '{result.ProjectName}'."
             : $"Connected to project '{result.ProjectName}' at {result.ProjectPath}.";
+        if (releaseFailedImportBlock)
+        {
+            var released = await _session.ReleaseFailedImportBlockAsync();
+            return text + (released == null ? "\nNo failed-import block was set."
+                : $"\nReleased the block left by the failed import of '{released}'. Its orphaned cross-references stay in the project.");
+        }
+        var blocked = await _session.FailedImportBlockAsync();
+        return blocked == null ? text
+            : text + $"\nBLOCKED: the F-block import of '{blocked}' failed in this project state - block writes are refused until the project was closed without saving and reopened. If it was saved since, releaseFailedImportBlock=true lifts the block (the orphans stay).";
     });
 
     [McpServerTool(Name = "list_tia_instances")]

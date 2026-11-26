@@ -14,6 +14,7 @@ For object types TiaMcp doesn't support yet, the notes say what the Openness API
 | Block: GRAPH | ✅ | ⚠️ | ✅ | ⚠️ | ✅ | ✅ | `.graph.il`; create clones an existing GRAPH block as template; topology editing is limited |
 | Block: STL (whole block) | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | `.awl` |
 | Block: embedded STL networks | ✅ | ⚠️ | ✅ | ⚠️ | ✅ | ✅ | Read-only sidecar (`.stl-networks.awl`); the block is writable through its `.xml` only; rename/delete act on the whole block |
+| Block: fail-safe (F_FBD, F_LAD, F-DB) | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | Written from `.xml` (read by default next to the `.s7dcl`); needs the safety login. Compiles after each write; a failed F import blocks further block writes in that project state |
 | Instance-DB | ✅ | ✅ | ✅ | ❌ | ✅ | ✅ | Created from its `.s7dcl` or bound to an FB; read adds the resolved member list (`.interface.txt`) |
 | Block number | ✅ | — | ✅ | ✅ | — | — | Shown by `list_project` and `_export_summary.txt` (`FB44`); changed with `renumber_plc_blocks` (fixed or automatic, many blocks per call), not through the files |
 | Block group | ⚠️ | ✅ | — | — | ✅ | ✅ | Only visible through the group paths of the blocks in it; empty groups are not listed |
