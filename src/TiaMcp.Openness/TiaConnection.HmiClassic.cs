@@ -10,6 +10,7 @@ using ClassicScreenFolder = Siemens.Engineering.Hmi.Screen.ScreenFolder;
 using ClassicScreenTemplateFolder = Siemens.Engineering.Hmi.Screen.ScreenTemplateFolder;
 using ClassicScreenPopupFolder = Siemens.Engineering.Hmi.Screen.ScreenPopupFolder;
 using ClassicTagFolder = Siemens.Engineering.Hmi.Tag.TagFolder;
+using ClassicVBScriptFolder = Siemens.Engineering.Hmi.RuntimeScripting.VBScriptFolder;
 using ClassicTextListComposition = Siemens.Engineering.Hmi.TextGraphicList.TextListComposition;
 using ClassicGraphicListComposition = Siemens.Engineering.Hmi.TextGraphicList.GraphicListComposition;
 
@@ -17,18 +18,19 @@ namespace TiaMcp.Openness;
 
 /// <summary>
 /// The kinds of classic WinCC (Comfort/Advanced) objects. The array order is the import order
-/// (lists before the tags that use them, templates/popups before the screens).
+/// (lists before the tags that use them, VB scripts, templates and popups before the screens).
 /// </summary>
 public static class HmiClassicKinds
 {
     public const string TextList = "TextLists";
     public const string GraphicList = "GraphicLists";
     public const string TagTable = "TagTables";
+    public const string VBScript = "VBScripts";
     public const string ScreenTemplate = "ScreenTemplates";
     public const string PopupScreen = "PopupScreens";
     public const string Screen = "Screens";
 
-    public static readonly string[] All = { TextList, GraphicList, TagTable, ScreenTemplate, PopupScreen, Screen };
+    public static readonly string[] All = { TextList, GraphicList, TagTable, VBScript, ScreenTemplate, PopupScreen, Screen };
 
     // Openness XML root object element -> kind, for import_hmi_classic's file detection.
     internal static readonly Dictionary<string, string> ByXmlElement = new(StringComparer.Ordinal)
@@ -36,6 +38,7 @@ public static class HmiClassicKinds
         ["Hmi.TextGraphicList.TextList"] = TextList,
         ["Hmi.TextGraphicList.GraphicList"] = GraphicList,
         ["Hmi.Tag.TagTable"] = TagTable,
+        ["Hmi.RuntimeScripting.VBScript"] = VBScript,
         ["Hmi.Screen.ScreenTemplate"] = ScreenTemplate,
         ["Hmi.Screen.ScreenPopup"] = PopupScreen,
         ["Hmi.Screen.Screen"] = Screen,
@@ -46,7 +49,7 @@ public static class HmiClassicKinds
 
 /// <summary>
 /// Classic WinCC (HmiTarget) support: screens, screen templates, popup screens, tag tables,
-/// text lists and graphic lists, as Openness XML export/import. Classic Openness has no typed
+/// VB scripts, text lists and graphic lists, as Openness XML export/import. Classic Openness has no typed
 /// object model for these (only GetAttribute/SetAttribute), so everything here goes through
 /// whole-object XML. HMI discrete/analog alarms are not exposed by classic Openness at all.
 /// </summary>
@@ -66,7 +69,7 @@ public sealed partial class TiaConnection
         return target;
     }
 
-    // ---- Uniform folder model over the six differently-typed classic compositions ----
+    // ---- Uniform folder model over the seven differently-typed classic compositions ----
 
     private sealed class ClassicItem
     {
@@ -129,6 +132,13 @@ public sealed partial class TiaConnection
         () => f.TagTables.Select(t => new ClassicItem(t.Name, fi => t.Export(fi, ExportOptions.WithDefaults))).ToList(),
         (fi, o) => f.TagTables.Import(fi, o));
 
+    private static ClassicFolder Wrap(ClassicVBScriptFolder f) => new(
+        f.Name,
+        () => f.Folders.Select(c => Wrap(c)).ToList(),
+        n => Wrap(f.Folders.Create(n)),
+        () => f.VBScripts.Select(s => new ClassicItem(s.Name, fi => s.Export(fi, ExportOptions.WithDefaults))).ToList(),
+        (fi, o) => f.VBScripts.Import(fi, o));
+
     private static ClassicFolder Wrap(ClassicTextListComposition lists) => new(
         HmiClassicKinds.TextList,
         () => Enumerable.Empty<ClassicFolder>(),
@@ -149,6 +159,7 @@ public sealed partial class TiaConnection
         HmiClassicKinds.ScreenTemplate => Wrap(target.ScreenTemplateFolder),
         HmiClassicKinds.PopupScreen => Wrap(target.ScreenPopupFolder),
         HmiClassicKinds.TagTable => Wrap(target.TagFolder),
+        HmiClassicKinds.VBScript => Wrap(target.VBScriptFolder),
         HmiClassicKinds.TextList => Wrap(target.TextLists),
         HmiClassicKinds.GraphicList => Wrap(target.GraphicLists),
         _ => throw new ArgumentException($"Unknown classic HMI object kind '{kind}'. Valid: {string.Join(", ", HmiClassicKinds.All)}."),

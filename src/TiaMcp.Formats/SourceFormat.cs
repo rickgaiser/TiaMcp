@@ -18,6 +18,10 @@ public static class SourceFormat
     // WinCC Unified global script modules, as exported by Openness.
     public const string Js = "js";
 
+    // Classic WinCC VB scripts: the script's code, taken from (and written into) its raw XML
+    // (see VbScriptXml).
+    public const string Vbs = "vbs";
+
     // Tables, converted from the raw XML or the object model.
     public const string Csv = "csv";
 
@@ -27,7 +31,7 @@ public static class SourceFormat
     // The raw SimaticML export, as Openness writes and imports it (without DocumentInfo).
     public const string Xml = "xml";
 
-    public static readonly IReadOnlyList<string> All = new[] { S7dcl, GraphIL, Awl, Js, Csv, Json, Xml };
+    public static readonly IReadOnlyList<string> All = new[] { S7dcl, GraphIL, Awl, Js, Vbs, Csv, Json, Xml };
 
     // The file extension of a format's main file.
     public static string Extension(string format) => "." + format;

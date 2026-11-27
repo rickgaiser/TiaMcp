@@ -63,6 +63,7 @@ For object types TiaMcp doesn't support yet, the notes say what the Openness API
 | Screen / template / pop-up folder | ⚠️ | ✅ | — | — | ❌ | ❌ | Folders follow the tree; created on write; empty folders not listed |
 | HMI tag table | ✅ | ✅ | ✅ | ✅ | ❌ | ❌ | `.xml` |
 | Text list | ✅ | ✅ | ✅ | ✅ | ❌ | ❌ | `.xml` |
+| VB script (+ folder) | ✅ | ✅ | ✅ | ✅ | ❌ | ❌ | `.vbs` (code only, patched into a fresh export on write) or `.xml`; create from `.xml` only |
 | Graphic list | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | Export crashes TIA Portal V21; skipped with a note |
 | Alarms | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | Not in the classic Openness object model |
 
