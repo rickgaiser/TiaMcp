@@ -144,6 +144,15 @@ Screen content is read and written through the source tree; these tools manage s
 | `describe_hmi_item_type` | Properties, events and dynamization options per screen item type |
 | `list_library_types` / `read_faceplate_type` | Project library types and versions / a faceplate's interface |
 
+### Hardware
+
+| Tool | Purpose |
+|---|---|
+| `list_hardware` | Devices with their modules (slot, order number, firmware, I/Q range), drive telegrams and network data (IP, PROFINET name, IO system, device number) |
+| `read_io_map` | Per PLC: every module address range with the tags inside it, plus tags outside every module, overlapping ranges and modules without tags |
+| `set_io_address` | Move one module's I or Q range to a new start byte and move the tags in it along; refuses overlaps, fail-safe modules and online PLCs; dry run by default |
+| `export_hardware_aml` | Export one device or the whole project as AutomationML |
+
 ### Source tree (reading and writing all source)
 
 | Tool | Purpose |
@@ -293,7 +302,7 @@ AGPL-3.0 (see [LICENSE](LICENSE)). Contributions require signing the [CLA](CLA.m
 
 ## Not (yet) supported
 
-- Hardware config.
+- Changing hardware beyond I/O start addresses (adding modules, network settings).
 - Explicit block numbering (manual vs. automatic, specific number).
 
 ## Known limitations
