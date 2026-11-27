@@ -16,10 +16,12 @@ public sealed partial class TiaConnection
     public ImportResult ImportBlockXml(string plcName, string groupPath, string blockName, string xml)
     {
         EnsureConnected();
-        var group = ResolveGroup(GetSoftware(plcName), groupPath);
-        return group == null
-            ? NotFound(groupPath)
-            : Imported(plcName, blockName, ImportXml(xml, "SW.Blocks.", "a block", blockName, file => group.Value.Blocks.Import(file, ImportOptions.Override)));
+        var software = GetSoftware(plcName);
+        var group = ResolveGroup(software, groupPath);
+        if (group == null) return NotFound(groupPath);
+        if (IsFailsafeXml(xml)) return Imported(plcName, blockName, ImportFailsafeBlockXml(software, group.Value.Blocks, blockName, xml));
+        if (RefusedAfterFailedImport() is { } refused) return refused;
+        return Imported(plcName, blockName, ImportXml(xml, "SW.Blocks.", "a block", blockName, file => group.Value.Blocks.Import(file, ImportOptions.Override)));
     }
 
     public ImportResult ImportUdtXml(string plcName, string groupPath, string typeName, string xml)

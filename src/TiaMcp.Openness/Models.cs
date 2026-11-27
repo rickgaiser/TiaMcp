@@ -24,7 +24,9 @@ public sealed record ExportResult(bool Success, IReadOnlyList<BlockDocument> Doc
 // objects the read exports, and its group path and name. For progress reporting.
 public delegate void ExportingItem(int index, int count, string groupPath, string name);
 
-public sealed record ImportResult(bool Success, IReadOnlyList<string> Messages);
+// ShowMessages: the messages belong in the report even on success, and a failed create is not
+// retried (an F-block write: its compile result and cross-reference check).
+public sealed record ImportResult(bool Success, IReadOnlyList<string> Messages, bool ShowMessages = false);
 
 public sealed record CompileResult(string State, int ErrorCount, int WarningCount, IReadOnlyList<string> Messages);
 

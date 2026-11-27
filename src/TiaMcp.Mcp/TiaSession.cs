@@ -202,6 +202,16 @@ public sealed class TiaSession
         return Change(() => _connection.ImportBlockXml(plcName, groupPath, blockName, xml));
     }
 
+    public Task<string?> ReleaseFailedImportBlockAsync()
+    {
+        return Change(() => _connection.ReleaseFailedImportBlock());
+    }
+
+    public Task<string?> FailedImportBlockAsync()
+    {
+        return Read(() => _connection.FailedImportBlock);
+    }
+
     public Task<ImportResult> ImportUdtXmlAsync(string plcName, string groupPath, string typeName, string xml)
     {
         return Change(() => _connection.ImportUdtXml(plcName, groupPath, typeName, xml));

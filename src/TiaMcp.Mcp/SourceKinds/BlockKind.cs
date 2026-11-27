@@ -32,7 +32,19 @@ internal sealed class BlockKind : ISourceKind
 
     public async Task Export(TiaSession session, string plc, Func<string, string, IReadOnlyCollection<string>?> formats, ExportOptions options, List<ExportedItem> items, ExportingItem? exporting)
     {
-        foreach (var (b, result) in await session.ReadAllBlocksAsync(plc, formats, exporting))
+        // A fail-safe block is written from its XML (TIA Portal doesn't import F-blocks from
+        // .s7dcl), so by default it is read with the XML next to its .s7dcl.
+        var failsafe = (await session.ListBlocksAsync(plc)).Where(b => b.Language.StartsWith("F_", StringComparison.Ordinal))
+            .Select(b => (b.GroupPath, b.Name)).ToHashSet();
+        IReadOnlyCollection<string>? Formats(string groupPath, string name)
+        {
+            var requested = formats(groupPath, name);
+            return requested != null && requested.Count == 0 && failsafe.Contains((groupPath, name))
+                ? new[] { SourceFormat.S7dcl, SourceFormat.Xml }
+                : requested;
+        }
+
+        foreach (var (b, result) in await session.ReadAllBlocksAsync(plc, Formats, exporting))
         {
             var item = ExportedItem.FromDocuments(plc, Name, b.GroupPath, b.Name, result, FormatsOf(b.Language));
             item.Number = b.Number;

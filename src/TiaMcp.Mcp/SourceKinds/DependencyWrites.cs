@@ -48,8 +48,10 @@ internal static class DependencyWrites
                 if (context.Progress.Cancelled) { log.Skipped.Add($"{write.Label} - not written, the call was cancelled"); continue; }
                 context.Progress.Item($"{context.Device}: {kind}", ++done, writes.Count, write.Label);
                 var result = await write.Write();
-                if (result.Success) { (write.IsCreate ? log.Created : log.Updated).Add(write.Label); context.Written.Add(write.Item); }
-                else if (write.IsCreate) { retry.Add(write); lastError[write] = string.Join(" | ", result.Messages); }
+                if (result.Success) { (write.IsCreate ? log.Created : log.Updated).Add(write.Label + Notes(result)); context.Written.Add(write.Item); }
+                // A create that reports its own outcome (an F-block created but not compiled
+                // cleanly) exists now - creating it again would import onto it.
+                else if (write.IsCreate && !result.ShowMessages) { retry.Add(write); lastError[write] = string.Join(" | ", result.Messages); }
                 else log.Failed.Add($"{write.Label}: {string.Join(" | ", result.Messages)}");
             }
         }
@@ -64,7 +66,8 @@ internal static class DependencyWrites
                 if (context.Progress.Cancelled) { stillFailing.Add(write); continue; }
                 context.Progress.Note($"{context.Device}: {write.Label} (retry)");
                 var result = await write.Write();
-                if (result.Success) { log.Created.Add(write.Label); context.Written.Add(write.Item); }
+                if (result.Success) { log.Created.Add(write.Label + Notes(result)); context.Written.Add(write.Item); }
+                else if (result.ShowMessages) log.Failed.Add($"{write.Label}: {string.Join(" | ", result.Messages)}");
                 else { stillFailing.Add(write); lastError[write] = string.Join(" | ", result.Messages); }
             }
             if (stillFailing.Count == retry.Count) break;
@@ -76,6 +79,9 @@ internal static class DependencyWrites
             else log.Failed.Add($"{write.Label}: {lastError[write]}");
         }
     }
+
+    // An F-block write reports its compile and cross-reference check - kept in the report.
+    private static string Notes(ImportResult result) => result.ShowMessages ? $"  [{string.Join(" ", result.Messages)}]" : "";
 
     private static readonly Regex IdentifierToken = new("\"([^\"]+)\"|[A-Za-z_][A-Za-z0-9_]*", RegexOptions.Compiled);
 
